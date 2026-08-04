@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Without an explicit rootDir, TypeScript infers it from the widest common
+    // directory of the input files. Including scripts/ alongside src/ makes that
+    // the project root, so the entrypoint lands at dist/src/main.js instead of
+    // dist/main.js - and every start command (Dockerfile CMD, both railway
+    // configs, package.json) silently points at a file that does not exist.
+    "rootDir": "src"
+  },
+  // Build output is src/ only. Test files and the operational scripts are
+  // type-checked by the root tsconfig and run through ts-jest / ts-node; they
+  // have no business in the production image.
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.spec.ts", "**/*.test.ts"]
+}

@@ -1,0 +1,50 @@
+# Local development environment.
+#
+# Postgres here is only a stand-in so you can develop without touching your
+# Supabase project. It ships pgvector so the migrations in supabase/migrations
+# apply cleanly. Point DATABASE_URL at Supabase when you want the real thing.
+#
+# Ports are deliberately NOT the defaults (5433 instead of 5432, 6380 instead
+# of 6379) so this project cannot collide with another Postgres or Redis you
+# already run locally. The project name, container names and volumes are all
+# prefixed too, so `docker compose down -v` here touches nothing else.
+
+name: vakeel-saathi
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: vakeel-postgres
+    environment:
+      POSTGRES_USER: vakeel
+      POSTGRES_PASSWORD: vakeel
+      POSTGRES_DB: vakeel_saathi
+    ports:
+      - '5433:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Applied in filename order on first boot of an empty volume.
+      - ./supabase/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U vakeel -d vakeel_saathi']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: vakeel-redis
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction
+    ports:
+      - '6380:6379'
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:

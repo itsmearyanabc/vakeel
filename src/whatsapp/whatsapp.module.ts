@@ -1,0 +1,34 @@
+import { Module } from '@nestjs/common';
+import { AiModule } from '../ai/ai.module';
+import { EcourtsModule } from '../ecourts/ecourts.module';
+import { QuotaModule } from '../quota/quota.module';
+import { UsersModule } from '../users/users.module';
+import { ConversationService } from './conversation.service';
+import { InboundProcessor } from './inbound.processor';
+import { WebhookController } from './webhook.controller';
+import { WhatsAppApiService } from './whatsapp-api.service';
+
+/**
+ * The webhook controller and the queue consumer are separated on purpose.
+ *
+ * `WhatsAppModule` (web process) exposes the webhook and enqueues.
+ * `WhatsAppWorkerModule` (worker process) consumes and replies.
+ *
+ * Registering the BullMQ worker in the web process would mean every web replica
+ * also competes for jobs, which defeats the point of scaling the two
+ * independently - and a web replica restart mid-deploy would then interrupt
+ * message processing.
+ */
+@Module({
+  imports: [AiModule, EcourtsModule, QuotaModule, UsersModule],
+  controllers: [WebhookController],
+  providers: [WhatsAppApiService, ConversationService],
+  exports: [WhatsAppApiService, ConversationService],
+})
+export class WhatsAppModule {}
+
+@Module({
+  imports: [AiModule, EcourtsModule, QuotaModule, UsersModule],
+  providers: [WhatsAppApiService, ConversationService, InboundProcessor],
+})
+export class WhatsAppWorkerModule {}
