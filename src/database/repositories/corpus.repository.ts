@@ -1,7 +1,21 @@
 import { Injectable } from '@nestjs/common';
 import { getLogger } from '../../common/logger';
 import { DatabaseService } from '../database.service';
-import { CitationCheck, RetrievedChunk, StatuteRefCheck, StatuteRow } from '../types';
+import { CitationCheck, PrecedentRow, RetrievedChunk, StatuteRefCheck, StatuteRow } from '../types';
+
+export interface PrecedentSearchOptions {
+  queryText: string;
+  embedding: number[] | null;
+  denseK: number;
+  sparseK: number;
+  rrfK: number;
+  /** Hard cap on distinct judgments returned for one research question. */
+  maxResults: number;
+  courtType?: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  sections?: string[] | null;
+}
 
 export interface HybridSearchOptions {
   queryText: string;
@@ -98,6 +112,44 @@ export class CorpusRepository {
          AND (${opts.sections ?? null}::text[] IS NULL OR c.act_sections && ${opts.sections ?? null}::text[])
        ORDER BY score DESC
        LIMIT ${opts.finalK}
+    `;
+  }
+
+  /**
+   * Precedent list: one row per judgment, newest first.
+   *
+   * See migration 0008 for why this is not `hybridSearch` with a larger limit -
+   * in short, that returns passages, and an advocate asking for precedents
+   * wants distinct authorities, not the same case quoted three times.
+   *
+   * A null embedding is passed through rather than short-circuited: the SQL
+   * function degrades to lexical-only on its own, so there is no separate
+   * fallback path to keep in sync here.
+   */
+  async searchPrecedents(opts: PrecedentSearchOptions): Promise<PrecedentRow[]> {
+    const { sql } = this.db;
+    const vector = opts.embedding ? this.toVectorLiteral(opts.embedding) : null;
+
+    return sql<PrecedentRow[]>`
+      SELECT * FROM search_precedents(
+        ${vector}::vector,
+        ${opts.queryText},
+        ${opts.denseK},
+        ${opts.sparseK},
+        ${opts.rrfK},
+        ${opts.maxResults},
+        ${opts.courtType ?? null},
+        ${opts.dateFrom ?? null}::date,
+        ${opts.dateTo ?? null}::date,
+        ${opts.sections ?? null}::text[]
+      )
+    `;
+  }
+
+  /** Direct fetch when the advocate already knows the citation. */
+  async lookupByCitation(citation: string): Promise<PrecedentRow[]> {
+    return this.db.sql<PrecedentRow[]>`
+      SELECT * FROM lookup_judgment_by_citation(${citation})
     `;
   }
 

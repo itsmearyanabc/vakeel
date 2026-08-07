@@ -1,8 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { getLogger, maskPhone } from '../common/logger';
-import { InjectEnv } from '../config/config.module';
-import { AppEnv } from '../config/env';
 import { MessageRepository } from '../database/repositories/message.repository';
+import { SettingsService } from '../settings/settings.service';
 import { splitForWhatsApp, textMessage, toWhatsAppMarkup } from './message-builder';
 import { OutboundMessage } from './whatsapp.types';
 
@@ -17,28 +16,31 @@ export interface SendResult {
  *
  * When credentials are absent the client logs what it would have sent and
  * reports success. That is what makes the whole pipeline runnable locally
- * without a Meta account - and it is gated on `whatsappConfigured`, so a
- * production deploy missing its token fails loudly at boot instead of silently
- * swallowing every reply.
+ * without a Meta account.
+ *
+ * Every credential is read from SettingsService on each call rather than
+ * captured in the constructor. That is what lets an admin paste in a different
+ * number's credentials and have the very next message go out on the new number,
+ * with no redeploy and no restart.
  */
 @Injectable()
 export class WhatsAppApiService {
   private readonly logger = getLogger().child({ module: 'whatsapp:api' });
 
   constructor(
-    @InjectEnv() private readonly env: AppEnv,
+    private readonly settings: SettingsService,
     private readonly messages: MessageRepository,
   ) {}
 
   private get headers(): Record<string, string> {
     return {
-      authorization: `Bearer ${this.env.WHATSAPP_ACCESS_TOKEN}`,
+      authorization: `Bearer ${this.settings.whatsappAccessToken}`,
       'content-type': 'application/json',
     };
   }
 
   async send(message: OutboundMessage): Promise<SendResult> {
-    if (!this.env.whatsappConfigured) {
+    if (!this.settings.whatsappConfigured) {
       this.logger.info(
         { to: maskPhone(message.to), type: message.type, preview: this.preview(message) },
         'WhatsApp credentials not configured - message logged instead of sent',
@@ -48,7 +50,7 @@ export class WhatsAppApiService {
     }
 
     try {
-      const response = await fetch(`${this.env.whatsappApiBase}/messages`, {
+      const response = await fetch(`${this.settings.whatsappApiBase}/messages`, {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify(message),
@@ -109,10 +111,10 @@ export class WhatsAppApiService {
    * Best-effort: a failure here is cosmetic and must never fail the job.
    */
   async markAsRead(waMessageId: string): Promise<void> {
-    if (!this.env.whatsappConfigured) return;
+    if (!this.settings.whatsappConfigured) return;
 
     try {
-      await fetch(`${this.env.whatsappApiBase}/messages`, {
+      await fetch(`${this.settings.whatsappApiBase}/messages`, {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify({ messaging_product: 'whatsapp', status: 'read', message_id: waMessageId }),
@@ -130,13 +132,14 @@ export class WhatsAppApiService {
    * requires the same bearer token, which is a common thing to miss.
    */
   async downloadMedia(mediaId: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
-    if (!this.env.whatsappConfigured) return null;
+    if (!this.settings.whatsappConfigured) return null;
 
     try {
-      const metaResponse = await fetch(
-        `${this.env.WHATSAPP_GRAPH_BASE_URL}/${this.env.WHATSAPP_API_VERSION}/${mediaId}`,
-        { method: 'GET', headers: this.headers, signal: AbortSignal.timeout(10000) },
-      );
+      const metaResponse = await fetch(`${this.settings.whatsappGraphRoot}/${mediaId}`, {
+        method: 'GET',
+        headers: this.headers,
+        signal: AbortSignal.timeout(10000),
+      });
 
       if (!metaResponse.ok) {
         this.logger.warn({ mediaId, status: metaResponse.status }, 'Could not resolve media URL');
@@ -150,7 +153,7 @@ export class WhatsAppApiService {
       // bearer token - fetching it unauthenticated returns a 401.
       const fileResponse = await fetch(meta.url, {
         method: 'GET',
-        headers: { authorization: `Bearer ${this.env.WHATSAPP_ACCESS_TOKEN}` },
+        headers: { authorization: `Bearer ${this.settings.whatsappAccessToken}` },
         signal: AbortSignal.timeout(20000),
       });
 

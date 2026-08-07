@@ -1,13 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { IntentService } from '../ai/intent.service';
 import { extractCnr } from '../ai/legal-patterns';
+import { PrecedentsService, formatPrecedentPage } from '../ai/precedents.service';
 import { ProviderRegistry } from '../ai/providers/provider.registry';
 import { RagService } from '../ai/rag.service';
 import { TranscriptionService } from '../ai/transcription.service';
 import { getLogger, maskPhone } from '../common/logger';
 import { AnalyticsRepository } from '../database/repositories/analytics.repository';
 import { ConversationRepository } from '../database/repositories/conversation.repository';
-import { UserRow } from '../database/types';
+import { PrecedentRow, UserRow } from '../database/types';
 import { CnrNotFoundError, EcourtsService } from '../ecourts/ecourts.service';
 import { CircuitOpenError } from '../common/circuit-breaker';
 import { QuotaService } from '../quota/quota.service';
@@ -26,7 +27,17 @@ const STATE = {
   AWAITING_SECTION: 'AWAITING_SECTION',
   AWAITING_BAR_ID: 'AWAITING_BAR_ID',
   AWAITING_ID_CARD: 'AWAITING_ID_CARD',
+  /** Holding a precedent result set so "more" can page through it. */
+  SHOWING_PRECEDENTS: 'SHOWING_PRECEDENTS',
 } as const;
+
+/**
+ * How long a precedent result set stays pageable.
+ *
+ * Long enough that an advocate can read five judgments and ask for more; short
+ * enough that "more" tomorrow does not silently continue yesterday's research.
+ */
+const PRECEDENT_SESSION_TTL_SECONDS = 3600;
 
 /**
  * The conversation state machine.
@@ -54,6 +65,7 @@ export class ConversationService {
     private readonly conversations: ConversationRepository,
     private readonly intents: IntentService,
     private readonly rag: RagService,
+    private readonly precedents: PrecedentsService,
     private readonly ecourts: EcourtsService,
     private readonly quota: QuotaService,
     private readonly analytics: AnalyticsRepository,
@@ -312,6 +324,18 @@ export class ConversationService {
         await this.conversations.clear(user.id);
         return false;
 
+      case STATE.SHOWING_PRECEDENTS: {
+        // Only "more" continues the list. Anything else is a new question, so
+        // fall through - an advocate who follows up with a different query
+        // should not have to escape a paging mode first.
+        if (!/^(more|next|aur|और|continue|\d+)$/i.test(text.trim())) {
+          await this.conversations.clear(user.id);
+          return false;
+        }
+        await this.sendNextPrecedentPage(user, job);
+        return true;
+      }
+
       case STATE.AWAITING_QUERY:
       case STATE.AWAITING_SECTION:
         // The prompt was just a nudge; the message is a normal query.
@@ -391,6 +415,10 @@ export class ConversationService {
         }
         return;
 
+      case 'PRECEDENT_SEARCH':
+        await this.answerPrecedents(user, intent, text, job);
+        return;
+
       default:
         await this.answerWithRag(user, intent, text, job);
     }
@@ -434,6 +462,124 @@ export class ConversationService {
       }
       this.logger.error({ err, cnr }, 'CNR lookup failed');
       await this.api.sendText(user.phone_number, Replies.ECOURTS_UNAVAILABLE);
+    }
+  }
+
+  /**
+   * Priority feature 3: case law and precedent search.
+   *
+   * Deliberately does NOT go through the LLM. The deliverable is a list of real
+   * authorities, and the surest way to guarantee every citation is real is for
+   * no part of the list to be generated - each entry is assembled from corpus
+   * rows. That also means this feature keeps working with no model provider
+   * configured, which the RAG path cannot.
+   *
+   * The whole result set is stashed in the conversation so "more" pages through
+   * it without re-running retrieval (and without spending another embedding
+   * call on a query we already answered).
+   */
+  private async answerPrecedents(
+    user: UserRow,
+    intent: Awaited<ReturnType<IntentService['classify']>>,
+    originalText: string,
+    job: InboundMessageJob,
+  ): Promise<void> {
+    const decision = await this.quota.claim(user.id, user.role);
+    if (!decision.allowed) {
+      await this.api.sendText(job.from, Replies.quotaExceeded(decision.limit));
+      return;
+    }
+
+    const result = await this.precedents.search(intent);
+    const pageSize = this.precedents.pageSize;
+
+    const body = formatPrecedentPage(result.precedents, 0, pageSize, intent.searchQuery, {
+      lexicalOnly: result.lexicalOnly,
+    });
+    await this.api.sendText(job.from, body);
+
+    // Keep the set only when there is a second page to serve.
+    if (result.precedents.length > pageSize) {
+      await this.conversations.set(
+        user.id,
+        STATE.SHOWING_PRECEDENTS,
+        { query: intent.searchQuery, offset: pageSize, lexicalOnly: result.lexicalOnly, rows: result.precedents },
+        PRECEDENT_SESSION_TTL_SECONDS,
+      );
+    } else {
+      await this.conversations.clear(user.id);
+    }
+
+    await this.analytics.recordSearch({
+      userId: user.id,
+      queryText: originalText,
+      detectedLanguage: intent.language,
+      resolvedQuery: intent.searchQuery,
+      intent: 'PRECEDENT_SEARCH',
+      // Every citation here came straight out of the corpus, so they are
+      // verified by construction - nothing for the guardrail to strip.
+      citations: result.precedents.map((p) => p.neutral_citation ?? p.reporter_citations?.[0] ?? p.case_title),
+      resultCount: result.precedents.length,
+      modelUsed: null,
+      inputTokens: 0,
+      outputTokens: 0,
+      latencyMs: result.latencyMs,
+      guardrailFlagged: false,
+    });
+
+    this.logger.info(
+      {
+        userId: user.id,
+        phone: maskPhone(user.phone_number),
+        precedents: result.precedents.length,
+        totalMatches: result.totalMatches,
+        lexicalOnly: result.lexicalOnly,
+        latencyMs: result.latencyMs,
+      },
+      'Precedent search answered',
+    );
+  }
+
+  /** Serve the next page of a stored precedent result set. */
+  private async sendNextPrecedentPage(user: UserRow, job: InboundMessageJob): Promise<void> {
+    const state = await this.conversations.get(user.id);
+    const context = (state?.context ?? {}) as {
+      query?: string;
+      offset?: number;
+      lexicalOnly?: boolean;
+      rows?: PrecedentRow[];
+    };
+
+    const rows = context.rows ?? [];
+    const offset = context.offset ?? 0;
+
+    if (rows.length === 0 || offset >= rows.length) {
+      await this.conversations.clear(user.id);
+      await this.api.sendText(
+        job.from,
+        'That was the last result. Send another research question, or type *menu* for options.',
+      );
+      return;
+    }
+
+    const pageSize = this.precedents.pageSize;
+    await this.api.sendText(
+      job.from,
+      formatPrecedentPage(rows, offset, pageSize, context.query ?? 'your search', {
+        lexicalOnly: context.lexicalOnly,
+      }),
+    );
+
+    const nextOffset = offset + pageSize;
+    if (nextOffset < rows.length) {
+      await this.conversations.set(
+        user.id,
+        STATE.SHOWING_PRECEDENTS,
+        { ...context, offset: nextOffset },
+        PRECEDENT_SESSION_TTL_SECONDS,
+      );
+    } else {
+      await this.conversations.clear(user.id);
     }
   }
 

@@ -94,6 +94,12 @@ const envSchema = z.object({
   RAG_FINAL_TOP_K: z.coerce.number().int().min(1).max(50).default(5),
   RAG_MIN_RELEVANCE: z.coerce.number().min(0).max(1).default(0.15),
 
+  // Precedent listing (priority feature 3). Distinct from RAG_FINAL_TOP_K:
+  // that governs how much context the LLM is given, this governs how many
+  // distinct authorities the advocate is shown.
+  PRECEDENT_MAX_RESULTS: z.coerce.number().int().min(1).max(50).default(15),
+  PRECEDENT_PAGE_SIZE: z.coerce.number().int().min(1).max(15).default(5),
+
   // --- Quotas ---------------------------------------------------------------
   QUOTA_GUEST_DAILY: z.coerce.number().int().default(5),
   QUOTA_VERIFIED_DAILY: z.coerce.number().int().default(-1),

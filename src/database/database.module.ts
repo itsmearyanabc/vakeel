@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { DatabaseService } from './database.service';
+import { AdminRepository } from './repositories/admin.repository';
 import { AnalyticsRepository } from './repositories/analytics.repository';
 import { ConversationRepository } from './repositories/conversation.repository';
 import { CorpusRepository } from './repositories/corpus.repository';
@@ -13,6 +14,7 @@ const providers = [
   ConversationRepository,
   CorpusRepository,
   AnalyticsRepository,
+  AdminRepository,
 ];
 
 /**

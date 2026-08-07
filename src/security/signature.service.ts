@@ -20,6 +20,16 @@ import { AppEnv } from '../config/env';
  *
  *  2. The comparison must be constant-time. A `===` on the hex digest leaks
  *     enough timing information to forge a signature byte by byte.
+ *
+ * ## Why the secret is a parameter
+ *
+ * The app secret is now runtime-configurable from the admin panel, so it cannot
+ * be captured from the environment at construction time - a value read once in
+ * the constructor would keep verifying against the old credentials after an
+ * admin switched the bot to a different WhatsApp number.
+ *
+ * Passing it in also makes this class a pure function of its inputs, which is
+ * why the tests need no DI container.
  */
 @Injectable()
 export class SignatureService {
@@ -28,18 +38,23 @@ export class SignatureService {
   constructor(@InjectEnv() private readonly env: AppEnv) {}
 
   /**
-   * @param rawBody exact bytes received, before any JSON parsing
-   * @param header  value of the X-Hub-Signature-256 header ("sha256=...")
+   * @param rawBody   exact bytes received, before any JSON parsing
+   * @param header    value of the X-Hub-Signature-256 header ("sha256=...")
+   * @param appSecret current Meta app secret, resolved through SettingsService
    */
-  verifyWhatsAppSignature(rawBody: Buffer | string | undefined, header: string | undefined): boolean {
-    if (!this.env.WHATSAPP_APP_SECRET) {
+  verifyWhatsAppSignature(
+    rawBody: Buffer | string | undefined,
+    header: string | undefined,
+    appSecret: string,
+  ): boolean {
+    if (!appSecret) {
       // Local development without Meta credentials. Refuse in production
       // rather than quietly accepting unsigned traffic.
       if (this.env.isProduction) {
-        this.logger.error('WHATSAPP_APP_SECRET is not set; rejecting webhook in production');
+        this.logger.error('No WhatsApp app secret configured; rejecting webhook in production');
         return false;
       }
-      this.logger.warn('WHATSAPP_APP_SECRET is not set; skipping signature check (development only)');
+      this.logger.warn('No WhatsApp app secret configured; skipping signature check (development only)');
       return true;
     }
 
@@ -53,7 +68,7 @@ export class SignatureService {
       return false;
     }
 
-    const expected = createHmac('sha256', this.env.WHATSAPP_APP_SECRET)
+    const expected = createHmac('sha256', appSecret)
       .update(typeof rawBody === 'string' ? Buffer.from(rawBody, 'utf8') : rawBody)
       .digest();
 
@@ -75,10 +90,14 @@ export class SignatureService {
    * verbatim if it matches. Constant-time here too - the token is a shared
    * secret like any other.
    */
-  verifySubscription(mode: string | undefined, token: string | undefined): boolean {
-    if (mode !== 'subscribe' || !token) return false;
+  verifySubscription(
+    mode: string | undefined,
+    token: string | undefined,
+    expectedToken: string,
+  ): boolean {
+    if (mode !== 'subscribe' || !token || !expectedToken) return false;
 
-    const expected = Buffer.from(this.env.WHATSAPP_VERIFY_TOKEN);
+    const expected = Buffer.from(expectedToken);
     const received = Buffer.from(token);
     if (expected.length !== received.length) return false;
     return timingSafeEqual(expected, received);

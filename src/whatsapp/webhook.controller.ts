@@ -9,6 +9,7 @@ import { InboundMessageJob } from '../redis/queue.constants';
 import { QueueService } from '../redis/queue.service';
 import { RedisService } from '../redis/redis.service';
 import { SignatureService } from '../security/signature.service';
+import { SettingsService } from '../settings/settings.service';
 import { WebhookMessage, WebhookStatus, WhatsAppWebhookPayload } from './whatsapp.types';
 
 /** Fastify request carrying the raw body captured by the parser in main.ts. */
@@ -40,6 +41,7 @@ export class WebhookController {
     private readonly queue: QueueService,
     private readonly redis: RedisService,
     private readonly messages: MessageRepository,
+    private readonly settings: SettingsService,
     @InjectEnv() private readonly env: AppEnv,
   ) {}
 
@@ -56,8 +58,11 @@ export class WebhookController {
     @Query('hub.verify_token') token: string,
     @Query('hub.challenge') challenge: string,
   ): RawResponse<string> {
-    if (!this.signature.verifySubscription(mode, token)) {
-      this.logger.warn({ mode }, 'Webhook verification failed - check WHATSAPP_VERIFY_TOKEN');
+    if (!this.signature.verifySubscription(mode, token, this.settings.whatsappVerifyToken)) {
+      this.logger.warn(
+        { mode },
+        'Webhook verification failed - the verify token Meta sent does not match the configured one',
+      );
       throw new ForbiddenException({ code: 'VERIFICATION_FAILED', message: 'Invalid verify token.' });
     }
 
@@ -72,6 +77,7 @@ export class WebhookController {
     const valid = this.signature.verifyWhatsAppSignature(
       req.rawBody,
       req.headers['x-hub-signature-256'] as string | undefined,
+      this.settings.whatsappAppSecret,
     );
 
     if (!valid) {
@@ -94,7 +100,7 @@ export class WebhookController {
         const value = change.value;
         if (!value) continue;
 
-        const phoneNumberId = value.metadata?.phone_number_id ?? this.env.WHATSAPP_PHONE_NUMBER_ID;
+        const phoneNumberId = value.metadata?.phone_number_id ?? this.settings.whatsappPhoneNumberId;
 
         for (const message of value.messages ?? []) {
           await this.handleMessage(message, value.contacts?.[0]?.profile?.name, phoneNumberId);

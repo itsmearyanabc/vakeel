@@ -1,19 +1,28 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { maskPhone } from '../common/logger';
+import { AdminRepository } from '../database/repositories/admin.repository';
 import { AnalyticsRepository } from '../database/repositories/analytics.repository';
 import { CorpusRepository } from '../database/repositories/corpus.repository';
 import { UserRepository } from '../database/repositories/user.repository';
+import { SETTING_DEFINITIONS, SETTING_GROUPS } from '../settings/settings.catalog';
+import { SettingsService } from '../settings/settings.service';
+import { WhatsAppConnectionTester } from '../settings/whatsapp-tester.service';
 import { UsersService } from '../users/users.service';
 import { WhatsAppApiService } from '../whatsapp/whatsapp-api.service';
 import { AdminGuard } from './admin.guard';
 
+const int = (v: string | undefined, fallback: number, max = 500): number => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.min(n, max) : fallback;
+};
+
 /**
- * Minimal admin surface.
+ * The admin API behind the governance panel.
  *
- * Exists because bar council verification is otherwise a dead end - an advocate
- * submits their enrolment number and nothing can ever approve it. These are the
- * endpoints the governance portal will call; until it exists they are usable
- * directly with curl (see the README).
+ * Everything here is guarded by a shared bearer token (see AdminGuard). The HTML
+ * shell itself is served unguarded by AdminUiController - a browser cannot
+ * attach an Authorization header to a plain navigation, so the page loads first
+ * and then authenticates every API call with the token you paste at login.
  */
 @Controller('admin')
 @UseGuards(AdminGuard)
@@ -22,21 +31,104 @@ export class AdminController {
     private readonly users: UsersService,
     private readonly userRepo: UserRepository,
     private readonly analytics: AnalyticsRepository,
+    private readonly adminRepo: AdminRepository,
     private readonly corpus: CorpusRepository,
     private readonly whatsapp: WhatsAppApiService,
+    private readonly settings: SettingsService,
+    private readonly tester: WhatsAppConnectionTester,
   ) {}
 
-  /** Platform counters for the dashboard. */
+  // --- Dashboard ------------------------------------------------------------
+
+  /** Single round trip for the whole dashboard, so the page paints once. */
+  @Get('dashboard')
+  async dashboard(@Query('days') days?: string) {
+    const window = int(days, 14, 90);
+
+    const [platform, corpus, series, intents, messages, pending] = await Promise.all([
+      this.analytics.platformStats(window),
+      this.corpus.countCorpus(),
+      this.adminRepo.timeSeries(window),
+      this.adminRepo.intentBreakdown(window),
+      this.adminRepo.messageStats(window),
+      this.users.listPending(),
+    ]);
+
+    return {
+      window,
+      platform,
+      corpus,
+      series,
+      intents,
+      messages,
+      pendingVerifications: pending.length,
+      whatsapp: {
+        configured: this.settings.whatsappConfigured,
+        phoneNumberId: this.settings.whatsappPhoneNumberId || null,
+      },
+      providers: {
+        synthesis: this.settings.get('LLM_SYNTHESIS_PROVIDER') || 'mock',
+        router: this.settings.get('LLM_ROUTER_PROVIDER') || 'mock',
+        embedding: this.settings.get('EMBEDDING_PROVIDER') || 'mock',
+      },
+    };
+  }
+
+  /** Kept from the pre-panel API; the dashboard endpoint supersedes it. */
   @Get('stats')
   async stats(@Query('days') days?: string) {
     const [platform, corpus] = await Promise.all([
-      this.analytics.platformStats(days ? Number(days) : 7),
+      this.analytics.platformStats(int(days, 7, 90)),
       this.corpus.countCorpus(),
     ]);
     return { platform, corpus };
   }
 
-  /** Verification review queue. */
+  // --- Tables ---------------------------------------------------------------
+
+  @Get('users')
+  async listUsers(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('q') search?: string,
+  ) {
+    return this.adminRepo.listUsers(int(limit, 50), int(offset, 0) || 0, search?.trim() || undefined);
+  }
+
+  @Get('searches')
+  async listSearches(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('flagged') flagged?: string,
+  ) {
+    return this.adminRepo.listSearches(int(limit, 50), int(offset, 0) || 0, flagged === 'true');
+  }
+
+  @Get('messages')
+  async listMessages(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('phone') phone?: string,
+  ) {
+    return this.adminRepo.listMessages(int(limit, 50), int(offset, 0) || 0, phone?.trim() || undefined);
+  }
+
+  @Get('corpus')
+  async corpusBreakdown() {
+    const [totals, byCourt] = await Promise.all([
+      this.corpus.countCorpus(),
+      this.adminRepo.corpusBreakdown(),
+    ]);
+    return { totals, byCourt };
+  }
+
+  @Get('audit')
+  async audit() {
+    return this.adminRepo.listSettingsAudit(100);
+  }
+
+  // --- Verification queue ---------------------------------------------------
+
   @Get('verifications')
   async pending() {
     const users = await this.users.listPending();
@@ -93,6 +185,83 @@ export class AdminController {
     await this.userRepo.setRole(userId, body.role);
     return { updated: true };
   }
+
+  // --- Settings -------------------------------------------------------------
+
+  /**
+   * The catalogue plus current state.
+   *
+   * Secret values are never returned - only whether one is set and a four
+   * character hint, which is enough to tell two tokens apart without disclosing
+   * either.
+   */
+  @Get('settings')
+  settingsList() {
+    return {
+      groups: SETTING_GROUPS,
+      definitions: SETTING_DEFINITIONS,
+      values: this.settings.describeAll(),
+    };
+  }
+
+  /**
+   * Save a batch of settings.
+   *
+   * A blank value for a secret is treated as "leave unchanged", because the
+   * form never renders existing secrets and would otherwise wipe them on every
+   * save. Use the DELETE endpoint to genuinely clear one.
+   */
+  @Post('settings')
+  async saveSettings(@Body() body: Record<string, string>) {
+    const applied = await this.settings.setMany(body ?? {}, 'admin-panel');
+    return { updated: true, applied };
+  }
+
+  @Delete('settings/:key')
+  async clearSetting(@Param('key') key: string) {
+    await this.settings.clear(key, 'admin-panel');
+    return { cleared: true, key };
+  }
+
+  /** Live credential check against Meta, for the Settings page button. */
+  @Post('settings/whatsapp/test')
+  async testWhatsApp() {
+    return this.tester.test();
+  }
+
+  /**
+   * Send a real message to a number you control, to prove the loop end to end.
+   *
+   * The connection test only proves the credentials are valid; this proves the
+   * bot can actually deliver. Note that WhatsApp will not accept a free-form
+   * message to someone who has not messaged you in the last 24 hours - see the
+   * 24-hour window note in brain.md.
+   */
+  @Post('settings/whatsapp/send-test')
+  async sendTest(@Body() body: { to: string; message?: string }) {
+    const to = (body?.to ?? '').replace(/\D/g, '');
+    if (!to) {
+      return { ok: false, error: 'Provide a destination number in international format, digits only.' };
+    }
+
+    const result = await this.whatsapp.sendText(
+      to,
+      body?.message?.trim() ||
+        '*Vakeel Saathi test message*\n\nIf you can read this, the WhatsApp connection is working.',
+    );
+
+    return {
+      ok: result.ok,
+      error: result.error ?? null,
+      waMessageId: result.waMessageId ?? null,
+      hint:
+        !result.ok && /24|window|re-?engage/i.test(result.error ?? '')
+          ? 'WhatsApp only allows free-form messages within 24 hours of the user last messaging you. Message the bot from that number first, then retry.'
+          : null,
+    };
+  }
+
+  // --- Maintenance ----------------------------------------------------------
 
   /** Manual trigger for the DPDP retention sweep (also runs nightly). */
   @Post('retention/purge')

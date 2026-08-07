@@ -5,6 +5,7 @@ import { InjectEnv } from '../config/config.module';
 import { AppEnv } from '../config/env';
 import { isValidCnr } from '../ai/legal-patterns';
 import { RedisService } from '../redis/redis.service';
+import { SettingsService } from '../settings/settings.service';
 
 export interface CaseStatus {
   cnr: string;
@@ -66,8 +67,14 @@ export class EcourtsService {
   constructor(
     @InjectEnv() private readonly env: AppEnv,
     private readonly redis: RedisService,
+    private readonly settings: SettingsService,
   ) {
     this.breaker = new CircuitBreaker('ecourts', env.ECOURTS_BREAKER_THRESHOLD, env.ECOURTS_BREAKER_RESET_MS);
+  }
+
+  /** Read per-call so the admin panel can flip mock/http without a redeploy. */
+  private get mode(): string {
+    return this.settings.get('ECOURTS_MODE') || this.env.ECOURTS_MODE;
   }
 
   async lookup(rawCnr: string): Promise<CaseStatus> {
@@ -85,7 +92,7 @@ export class EcourtsService {
     }
 
     const result =
-      this.env.ECOURTS_MODE === 'mock'
+      this.mode === 'mock'
         ? this.mockLookup(cnr)
         : await this.breaker.execute(
             () => this.httpLookup(cnr),
@@ -103,15 +110,18 @@ export class EcourtsService {
   }
 
   private async httpLookup(cnr: string): Promise<CaseStatus> {
-    if (!this.env.ECOURTS_BASE_URL) {
-      throw new Error('ECOURTS_MODE=http but ECOURTS_BASE_URL is not set');
+    const baseUrl = this.settings.get('ECOURTS_BASE_URL') || this.env.ECOURTS_BASE_URL;
+    const apiKey = this.settings.get('ECOURTS_API_KEY') || this.env.ECOURTS_API_KEY;
+
+    if (!baseUrl) {
+      throw new Error('eCourts mode is set to http but no provider base URL is configured');
     }
 
-    const response = await fetch(`${this.env.ECOURTS_BASE_URL.replace(/\/$/, '')}/case/${cnr}`, {
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/case/${cnr}`, {
       method: 'GET',
       headers: {
         accept: 'application/json',
-        ...(this.env.ECOURTS_API_KEY ? { authorization: `Bearer ${this.env.ECOURTS_API_KEY}` } : {}),
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
       },
       signal: AbortSignal.timeout(this.env.ECOURTS_TIMEOUT_MS),
     });

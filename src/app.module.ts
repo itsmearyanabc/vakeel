@@ -9,6 +9,7 @@ import { HealthModule } from './health/health.module';
 import { QuotaModule } from './quota/quota.module';
 import { RedisModule } from './redis/redis.module';
 import { SecurityModule } from './security/security.module';
+import { SettingsModule } from './settings/settings.module';
 import { UsersModule } from './users/users.module';
 import { WhatsAppModule, WhatsAppWorkerModule } from './whatsapp/whatsapp.module';
 import { RetentionJob } from './jobs/retention.job';
@@ -16,7 +17,7 @@ import { RetentionJob } from './jobs/retention.job';
 /**
  * Shared infrastructure. Both process entrypoints build on this.
  */
-const INFRASTRUCTURE = [ConfigModule, DatabaseModule, RedisModule, SecurityModule];
+const INFRASTRUCTURE = [ConfigModule, DatabaseModule, RedisModule, SecurityModule, SettingsModule];
 
 /**
  * The web process: WhatsApp webhook, admin API, health checks.

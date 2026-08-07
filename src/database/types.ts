@@ -87,6 +87,39 @@ export interface RetrievedChunk {
   score: number;
 }
 
+/**
+ * One judgment in a precedent list (priority feature 3).
+ *
+ * Distinct from {@link RetrievedChunk}: that is a passage, and three of them can
+ * come from the same case. This is one row per authority, carrying the
+ * judgment-level metadata an advocate needs to decide whether to read it -
+ * bench, disposition, citations - plus the single best-matching passage as a
+ * synopsis.
+ */
+export interface PrecedentRow {
+  judgment_id: string;
+  case_title: string;
+  neutral_citation: string | null;
+  reporter_citations: string[];
+  court_name: string | null;
+  court_type: string | null;
+  judgment_date: Date | null;
+  bench: string[];
+  bench_strength: number | null;
+  act_sections: string[];
+  headnote: string | null;
+  ratio_decidendi: string | null;
+  disposition: string | null;
+  source_url: string | null;
+  best_excerpt: string;
+  para_number: number | null;
+  score: number;
+  /** 1 = most relevant. Rows arrive date-sorted, so this is not the row order. */
+  relevance_rank: number;
+  /** Total judgments that matched before the per-session cap was applied. */
+  total_matches: number;
+}
+
 export interface CitationCheck {
   citation: string;
   exists: boolean;
