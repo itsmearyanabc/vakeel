@@ -1,3 +1,8 @@
+import dns from 'dns';
+// Force IPv4 DNS resolution. Supabase returns AAAA (IPv6) records but Render
+// containers lack IPv6 connectivity, causing ENETUNREACH on every DB connect.
+dns.setDefaultResultOrder('ipv4first');
+
 import 'reflect-metadata';
 
 import { NestFactory } from '@nestjs/core';
