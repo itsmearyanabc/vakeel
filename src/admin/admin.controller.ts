@@ -1,9 +1,13 @@
 import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { maskPhone } from '../common/logger';
+import { DatabaseService } from '../database/database.service';
 import { AdminRepository } from '../database/repositories/admin.repository';
 import { AnalyticsRepository } from '../database/repositories/analytics.repository';
 import { CorpusRepository } from '../database/repositories/corpus.repository';
 import { UserRepository } from '../database/repositories/user.repository';
+import { QueueService } from '../redis/queue.service';
+import { RedisService } from '../redis/redis.service';
+import { KanoonService } from '../kanoon/kanoon.service';
 import { SETTING_DEFINITIONS, SETTING_GROUPS } from '../settings/settings.catalog';
 import { SettingsService } from '../settings/settings.service';
 import { WhatsAppConnectionTester } from '../settings/whatsapp-tester.service';
@@ -36,6 +40,10 @@ export class AdminController {
     private readonly whatsapp: WhatsAppApiService,
     private readonly settings: SettingsService,
     private readonly tester: WhatsAppConnectionTester,
+    private readonly kanoon: KanoonService,
+    private readonly queue: QueueService,
+    private readonly db: DatabaseService,
+    private readonly redis: RedisService,
   ) {}
 
   // --- Dashboard ------------------------------------------------------------
@@ -70,6 +78,17 @@ export class AdminController {
         synthesis: this.settings.get('LLM_SYNTHESIS_PROVIDER') || 'mock',
         router: this.settings.get('LLM_ROUTER_PROVIDER') || 'mock',
         embedding: this.settings.get('EMBEDDING_PROVIDER') || 'mock',
+      },
+      // Without this the dashboard cannot tell whether an empty local corpus
+      // actually matters: with Indian Kanoon configured it is irrelevant, and
+      // telling the operator to run an ingestion they do not need is worse
+      // than saying nothing.
+      precedents: {
+        source: this.settings.get('PRECEDENT_SOURCE') || 'auto',
+        kanoonConfigured: this.kanoon.isConfigured,
+        kanoonDegraded: this.kanoon.isDegraded,
+        /** True when precedent search genuinely depends on the local corpus. */
+        needsLocalCorpus: !this.kanoon.isConfigured || this.settings.get('PRECEDENT_SOURCE') === 'local',
       },
     };
   }
@@ -213,8 +232,18 @@ export class AdminController {
    */
   @Post('settings')
   async saveSettings(@Body() body: Record<string, string>) {
-    const applied = await this.settings.setMany(body ?? {}, 'admin-panel');
-    return { updated: true, applied };
+    const { applied, rejected } = await this.settings.setMany(body ?? {}, 'admin-panel');
+    return {
+      updated: true,
+      applied,
+      rejected,
+      // Named explicitly so the panel can explain the refusal rather than
+      // silently dropping the field.
+      rejectedReason:
+        rejected.length > 0
+          ? 'Credentials can only be changed through environment variables on the hosting platform.'
+          : null,
+    };
   }
 
   @Delete('settings/:key')
@@ -258,6 +287,49 @@ export class AdminController {
         !result.ok && /24|window|re-?engage/i.test(result.error ?? '')
           ? 'WhatsApp only allows free-form messages within 24 hours of the user last messaging you. Message the bot from that number first, then retry.'
           : null,
+    };
+  }
+
+  /**
+   * Runtime health: queue depth, dependencies, process stats.
+   *
+   * The queue numbers are the operationally important ones. A rising `waiting`
+   * with a flat `completed` means the worker is dead or stuck - which otherwise
+   * presents to users as "the bot received my message and never replied", with
+   * nothing in the web logs to explain it.
+   */
+  @Get('system')
+  async system() {
+    const [queue, database, redis] = await Promise.all([
+      this.queue.stats().catch(() => ({}) as Record<string, number>),
+      this.db.ping().catch(() => false),
+      this.redis.ping().catch(() => false),
+    ]);
+
+    const memory = process.memoryUsage();
+
+    return {
+      queue,
+      dependencies: { database, redis },
+      process: {
+        uptimeSeconds: Math.floor(process.uptime()),
+        nodeVersion: process.version,
+        environment: this.settings.get('NODE_ENV') || 'unknown',
+        heapUsedMb: Math.round(memory.heapUsed / 1048576),
+        heapTotalMb: Math.round(memory.heapTotal / 1048576),
+        rssMb: Math.round(memory.rss / 1048576),
+      },
+      config: {
+        whatsappConfigured: this.settings.whatsappConfigured,
+        whatsappPhoneNumberId: this.settings.whatsappPhoneNumberId || null,
+        precedentSource: this.settings.get('PRECEDENT_SOURCE') || 'auto',
+        kanoonConfigured: this.kanoon.isConfigured,
+        kanoonDegraded: this.kanoon.isDegraded,
+        synthesisProvider: this.settings.get('LLM_SYNTHESIS_PROVIDER') || 'mock',
+        routerProvider: this.settings.get('LLM_ROUTER_PROVIDER') || 'mock',
+        embeddingProvider: this.settings.get('EMBEDDING_PROVIDER') || 'mock',
+        memoryEnabled: this.settings.getBoolean('MEMORY_ENABLED', true),
+      },
     };
   }
 

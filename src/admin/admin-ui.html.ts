@@ -197,6 +197,18 @@ export const ADMIN_UI_HTML = String.raw`<!doctype html>
   .sticky-save{position:sticky;bottom:0;background:var(--panel);
     border-top:2px solid var(--olive);padding:14px 18px;margin:18px -18px -18px;
     display:flex;gap:10px;align-items:center;border-radius:0 0 var(--radius) var(--radius)}
+  /* Read-only credential rows */
+  .cred{background:var(--panel-2);border:1px solid var(--border);border-radius:9px;padding:12px 14px}
+  .cred-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .cred-name{font-weight:650;font-size:13px;display:flex;flex-direction:column;gap:2px}
+  .cred-key{color:var(--muted);font-size:11px;font-weight:400}
+  .cred-state{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:12px}
+  .cred-state .mono{color:var(--muted)}
+
+  /* Pagination */
+  .pager{display:flex;gap:8px;align-items:center;margin-top:14px;font-size:12.5px;color:var(--muted)}
+  .pager .grow{flex:1}
+
   .checks{list-style:none;padding:0;margin:12px 0 0}
   .checks li{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px}
   .checks li:last-child{border-bottom:none}
@@ -286,6 +298,7 @@ var CACHE       = {};
 
 var VIEWS = [
   { id:'dashboard',     label:'Dashboard',     icon:'◳' },
+  { id:'system',        label:'System',        icon:'⬢' },
   { id:'verifications', label:'Verifications', icon:'✓' },
   { id:'users',         label:'Users',         icon:'●' },
   { id:'searches',      label:'Queries',       icon:'▤' },
@@ -294,6 +307,15 @@ var VIEWS = [
   { id:'settings',      label:'Settings',      icon:'⚙' },
   { id:'audit',         label:'Audit log',     icon:'⌚' }
 ];
+
+/** Rows per page for the tables. */
+var PAGE = 50;
+/** Per-view offsets, so paging survives switching views and back. */
+var OFFSET = { users:0, searches:0, messages:0 };
+/** Dashboard auto-refresh handle, and whether it is enabled. */
+var REFRESH_TIMER = null;
+var AUTO_REFRESH = localStorage.getItem('vs_autorefresh') === '1';
+var REFRESH_SECONDS = 30;
 
 function api(path, options) {
   options = options || {};
@@ -478,16 +500,67 @@ function renderNav(pending) {
 function go(view) {
   VIEW = view;
   renderNav(CACHE.pending);
+
+  // Auto-refresh belongs to the dashboard only; leaving it running while the
+  // operator is editing settings would blow away their half-typed form.
+  if (REFRESH_TIMER) { clearInterval(REFRESH_TIMER); REFRESH_TIMER = null; }
+
   var main = document.getElementById('main');
   main.innerHTML = '<div class="loading">Loading…</div>';
   var fn = ({
-    dashboard: viewDashboard, verifications: viewVerifications, users: viewUsers,
-    searches: viewSearches, messages: viewMessages, corpus: viewCorpus,
-    settings: viewSettings, audit: viewAudit
+    dashboard: viewDashboard, system: viewSystem, verifications: viewVerifications,
+    users: viewUsers, searches: viewSearches, messages: viewMessages,
+    corpus: viewCorpus, settings: viewSettings, audit: viewAudit
   })[view];
+
   Promise.resolve()
     .then(fn)
-    .catch(function (err) { main.innerHTML = '<div class="err">' + esc(err.message) + '</div>'; });
+    .catch(function (err) {
+      // Per-view recovery: one failing endpoint must not leave a dead page with
+      // no way back other than reloading.
+      main.innerHTML = '<div class="err">' + esc(err.message) + '</div>' +
+        '<button class="btn secondary" onclick="go(\'' + view + '\')">Retry</button> ' +
+        '<button class="btn secondary" onclick="go(\'dashboard\')">Back to dashboard</button>';
+    });
+}
+
+/** Shared next/previous controls for the paged tables. */
+function pager(view, count) {
+  var offset = OFFSET[view] || 0;
+  var from = count === 0 ? 0 : offset + 1;
+  return '<div class="pager">' +
+    '<button class="btn secondary sm" ' + (offset === 0 ? 'disabled' : '') +
+      ' onclick="pageBy(\'' + view + '\', -1)">← Previous</button>' +
+    '<button class="btn secondary sm" ' + (count < PAGE ? 'disabled' : '') +
+      ' onclick="pageBy(\'' + view + '\', 1)">Next →</button>' +
+    '<span class="grow"></span>' +
+    '<span>showing ' + from + '–' + (offset + count) + '</span>' +
+    '</div>';
+}
+
+function pageBy(view, direction) {
+  OFFSET[view] = Math.max(0, (OFFSET[view] || 0) + direction * PAGE);
+  go(view);
+}
+
+/** Download the current table as CSV, for anything that needs a spreadsheet. */
+function exportCsv(rows, filename) {
+  if (!rows || !rows.length) { toast('Nothing to export.', true); return; }
+  var cols = Object.keys(rows[0]);
+  var esc2 = function (v) {
+    if (v === null || v === undefined) return '';
+    var s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  var csv = [cols.join(',')].concat(rows.map(function (r) {
+    return cols.map(function (c) { return esc2(r[c]); }).join(',');
+  })).join('\n');
+
+  var url = URL.createObjectURL(new Blob([csv], { type:'text/csv' }));
+  var a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
 }
 
 /* =========================================================================
@@ -600,9 +673,19 @@ function viewDashboard() {
       warnings.push('Synthesis provider is set to <strong>mock</strong> — answers are canned placeholders, ' +
                     'not real legal analysis. Add an API key in Settings.');
     }
-    if (c.judgments === 0) {
-      warnings.push('The judgment corpus is empty — precedent search cannot return anything. ' +
-                    'Run <code class="mono">npm run ingest</code> to load case law.');
+    // Only a problem when precedent search actually depends on the local
+    // corpus. With Indian Kanoon configured, an empty corpus is the normal
+    // state and telling the operator to ingest would be wrong.
+    var pre = d.precedents || {};
+    if (c.judgments === 0 && pre.needsLocalCorpus) {
+      warnings.push('The judgment corpus is empty and no case law source is configured — ' +
+                    'precedent search cannot return anything. Either add an ' +
+                    '<strong>Indian Kanoon API key</strong> in Settings for live case law, ' +
+                    'or run <code class="mono">npm run ingest</code> to load a local corpus.');
+    }
+    if (pre.kanoonDegraded) {
+      warnings.push('Indian Kanoon is failing and has been temporarily taken out of use. ' +
+                    'Precedent search is falling back to the local corpus until it recovers.');
     }
 
     // The alert flag turns a tile's rail and figure red. Reserved for numbers
@@ -617,8 +700,13 @@ function viewDashboard() {
         foot:'target < 2500ms', alert: p.avgLatencyMs > 2500 },
       { label:'Guardrail hits',  value:num(p.guardrailFlagged),
         foot:'ungrounded citations blocked', alert: p.guardrailFlagged > 0 },
-      { label:'Corpus',          value:num(c.judgments),
-        foot:num(c.chunks) + ' chunks · ' + embedPct + '% embedded', alert: c.judgments === 0 }
+      // Not red when Kanoon is serving case law - an empty local corpus is the
+      // expected state then, not a fault.
+      { label:'Local corpus',    value:num(c.judgments),
+        foot: pre.kanoonConfigured
+          ? 'Kanoon is the live source'
+          : num(c.chunks) + ' chunks · ' + embedPct + '% embedded',
+        alert: c.judgments === 0 && pre.needsLocalCorpus }
     ];
 
     document.getElementById('main').innerHTML =
@@ -626,7 +714,11 @@ function viewDashboard() {
       '<span class="pill ' + (d.whatsapp.configured ? 'ok' : 'bad') + '">WhatsApp ' +
       (d.whatsapp.configured ? 'connected' : 'not connected') + '</span>' +
       '<span class="pill ' + (d.providers.synthesis === 'mock' ? 'warn' : 'ok') + '">AI: ' +
-      esc(d.providers.synthesis) + '</span></div>' +
+      esc(d.providers.synthesis) + '</span>' +
+      '<span class="pill ' + (pre.kanoonConfigured ? 'ok' : 'neutral') + '">Case law: ' +
+      esc(pre.kanoonConfigured ? 'Indian Kanoon' : 'local corpus') + '</span>' +
+      '<button class="btn secondary sm" onclick="toggleAutoRefresh()">' +
+      (AUTO_REFRESH ? '⏸ Auto-refresh on' : '▶ Auto-refresh off') + '</button></div>' +
 
       warnings.map(function (w) { return '<div class="note alert">' + w + '</div>'; }).join('') +
 
@@ -660,7 +752,7 @@ function viewDashboard() {
                  '<td>' + (s.avgLatencyMs ? s.avgLatencyMs + 'ms' : '—') + '</td></tr>';
         }).join('') + '</tbody></table></div></div>' +
 
-        '<div class="card"><h3>Message delivery</h3>' +
+        '<div class="card" id="deliveryCard"><h3>Message delivery</h3>' +
         '<p class="hint">Outbound failures usually mean an expired token or the 24-hour window.</p>' +
         (d.messages.length
           ? '<table><tbody>' + d.messages.map(function (m) {
@@ -669,6 +761,113 @@ function viewDashboard() {
             }).join('') + '</tbody></table>'
           : empty('No messages yet')) +
         '</div>' +
+      '</div>';
+
+    scheduleAutoRefresh();
+  });
+}
+
+/**
+ * Re-run the dashboard on a timer.
+ *
+ * Only ever armed from the dashboard, and cleared by go() on navigation, so it
+ * cannot fire while the operator is halfway through the settings form and wipe
+ * what they typed.
+ */
+function scheduleAutoRefresh() {
+  if (REFRESH_TIMER) { clearInterval(REFRESH_TIMER); REFRESH_TIMER = null; }
+  if (!AUTO_REFRESH) return;
+
+  REFRESH_TIMER = setInterval(function () {
+    // Refreshing a hidden tab burns database queries for nobody.
+    if (document.hidden || VIEW !== 'dashboard') return;
+    viewDashboard().catch(function () { /* transient - the next tick retries */ });
+  }, REFRESH_SECONDS * 1000);
+}
+
+function toggleAutoRefresh() {
+  AUTO_REFRESH = !AUTO_REFRESH;
+  localStorage.setItem('vs_autorefresh', AUTO_REFRESH ? '1' : '0');
+  go('dashboard');
+}
+
+/**
+ * Runtime health.
+ *
+ * The queue numbers are the ones that matter operationally: a rising "waiting"
+ * with a flat "completed" means the worker is dead or wedged, which otherwise
+ * shows up only as users saying the bot ignored them.
+ *
+ * (No backticks in this file - it is one String.raw literal.)
+ */
+function viewSystem() {
+  return api('/system').then(function (s) {
+    var q = s.queue || {}, dep = s.dependencies || {}, p = s.process || {}, c = s.config || {};
+
+    var waiting = Number(q.waiting || 0);
+    var failed = Number(q.failed || 0);
+
+    var tiles = [
+      { label:'Queue waiting',  value:num(waiting), foot:'jobs not yet picked up', alert: waiting > 50 },
+      { label:'Active',         value:num(q.active || 0), foot:'being processed now' },
+      { label:'Completed',      value:num(q.completed || 0), foot:'since worker start' },
+      { label:'Failed',         value:num(failed), foot:'dead-lettered', alert: failed > 0 },
+      { label:'Uptime',         value:Math.floor((p.uptimeSeconds||0)/60) + 'm', foot:'this web process' },
+      { label:'Heap',           value:(p.heapUsedMb||0) + 'MB', foot:'of ' + (p.heapTotalMb||0) + 'MB · RSS ' + (p.rssMb||0) + 'MB' }
+    ];
+
+    var row = function (label, ok, detail) {
+      return '<tr><td>' + esc(label) + '</td>' +
+        '<td><span class="pill ' + (ok ? 'ok' : 'bad') + '">' + (ok ? 'ok' : 'problem') + '</span></td>' +
+        '<td class="mono">' + esc(detail) + '</td></tr>';
+    };
+
+    document.getElementById('main').innerHTML =
+      '<div class="head"><h2>System</h2><div class="grow"></div>' +
+      '<button class="btn secondary sm" onclick="go(\'system\')">Refresh</button></div>' +
+
+      (waiting > 50
+        ? '<div class="note alert"><strong>' + waiting + ' jobs are waiting.</strong> ' +
+          'If this keeps climbing while <em>Completed</em> stays flat, the worker process is not ' +
+          'consuming the queue — check that it is running.</div>' : '') +
+      (failed > 0
+        ? '<div class="note alert"><strong>' + failed + ' failed jobs.</strong> ' +
+          'These exhausted their retries and will not be delivered. Check Messages for the errors.</div>' : '') +
+
+      '<div class="grid kpis" style="margin-bottom:14px">' +
+        tiles.map(function (t) {
+          return '<div class="card kpi' + (t.alert ? ' alert' : '') + '">' +
+            '<div class="label">' + esc(t.label) + '</div>' +
+            '<div class="value">' + t.value + '</div>' +
+            '<div class="foot">' + esc(t.foot) + '</div></div>';
+        }).join('') +
+      '</div>' +
+
+      '<div class="grid two">' +
+        '<div class="card"><h3>Dependencies</h3><p class="hint">Live connectivity from this process.</p>' +
+        '<table><tbody>' +
+          row('PostgreSQL (Supabase)', dep.database, dep.database ? 'reachable' : 'UNREACHABLE') +
+          row('Redis', dep.redis, dep.redis ? 'reachable' : 'UNREACHABLE') +
+          row('WhatsApp credentials', c.whatsappConfigured, c.whatsappPhoneNumberId || 'not configured') +
+        '</tbody></table></div>' +
+
+        '<div class="card"><h3>Active configuration</h3>' +
+        '<p class="hint">What the bot is actually using right now.</p>' +
+        '<table><tbody>' +
+          '<tr><td>Case law source</td><td class="mono">' + esc(c.precedentSource) + '</td>' +
+            '<td>' + (c.kanoonConfigured
+              ? '<span class="pill ' + (c.kanoonDegraded ? 'bad' : 'ok') + '">Kanoon ' +
+                (c.kanoonDegraded ? 'degraded' : 'live') + '</span>'
+              : '<span class="pill neutral">local corpus</span>') + '</td></tr>' +
+          '<tr><td>Synthesis model</td><td class="mono">' + esc(c.synthesisProvider) + '</td>' +
+            '<td>' + (c.synthesisProvider === 'mock' ? '<span class="pill warn">placeholder answers</span>' : '') + '</td></tr>' +
+          '<tr><td>Router model</td><td class="mono">' + esc(c.routerProvider) + '</td><td></td></tr>' +
+          '<tr><td>Embeddings</td><td class="mono">' + esc(c.embeddingProvider) + '</td>' +
+            '<td>' + (c.embeddingProvider === 'mock' ? '<span class="pill warn">keyword-only search</span>' : '') + '</td></tr>' +
+          '<tr><td>Chat memory</td><td class="mono">' + (c.memoryEnabled ? 'on' : 'off') + '</td><td></td></tr>' +
+          '<tr><td>Node</td><td class="mono">' + esc(p.nodeVersion) + '</td>' +
+            '<td class="mono">' + esc(p.environment) + '</td></tr>' +
+        '</tbody></table></div>' +
       '</div>';
   });
 }
@@ -715,11 +914,14 @@ function reject(id) {
 
 function viewUsers() {
   var q = (CACHE.userQuery || '');
-  return api('/users?limit=100' + (q ? '&q=' + encodeURIComponent(q) : '')).then(function (rows) {
+  var off = OFFSET.users || 0;
+  return api('/users?limit=' + PAGE + '&offset=' + off + (q ? '&q=' + encodeURIComponent(q) : '')).then(function (rows) {
+    CACHE.usersRows = rows;
     document.getElementById('main').innerHTML =
       '<div class="head"><h2>Users</h2><div class="grow"></div>' +
       '<input id="uq" placeholder="Search name or number…" style="max-width:250px" value="' + esc(q) + '">' +
-      '<button class="btn sm" onclick="searchUsers()">Search</button></div>' +
+      '<button class="btn sm" onclick="searchUsers()">Search</button>' +
+      '<button class="btn secondary sm" onclick="exportCsv(CACHE.usersRows, \'users.csv\')">Export CSV</button></div>' +
       '<div class="card">' +
       (rows.length
         ? '<div class="scroll"><table><thead><tr><th>Phone</th><th>Name</th><th>Role</th>' +
@@ -740,13 +942,17 @@ function viewUsers() {
               }).join('') + '</select></td></tr>';
           }).join('') + '</tbody></table></div>'
         : empty('No users yet', 'Users are created automatically on their first WhatsApp message.')) +
+      pager('users', rows.length) +
       '</div>';
     var input = document.getElementById('uq');
     if (input) input.addEventListener('keydown', function (e) { if (e.key === 'Enter') searchUsers(); });
   });
 }
 function searchUsers() {
-  CACHE.userQuery = document.getElementById('uq').value.trim();
+  var input = document.getElementById('uq');
+  CACHE.userQuery = input ? input.value.trim() : '';
+  // A new search must start at the beginning, not page 4 of the old one.
+  OFFSET.users = 0;
   go('users');
 }
 function setRole(id, role) {
@@ -757,11 +963,14 @@ function setRole(id, role) {
 
 function viewSearches() {
   var flagged = CACHE.flaggedOnly ? 'true' : 'false';
-  return api('/searches?limit=100&flagged=' + flagged).then(function (rows) {
+  var off = OFFSET.searches || 0;
+  return api('/searches?limit=' + PAGE + '&offset=' + off + '&flagged=' + flagged).then(function (rows) {
+    CACHE.searchRows = rows;
     document.getElementById('main').innerHTML =
       '<div class="head"><h2>Queries</h2><div class="grow"></div>' +
       '<button class="btn sm ' + (CACHE.flaggedOnly ? '' : 'secondary') + '" onclick="toggleFlagged()">' +
-      (CACHE.flaggedOnly ? 'Showing flagged only' : 'Show flagged only') + '</button></div>' +
+      (CACHE.flaggedOnly ? 'Showing flagged only' : 'Show flagged only') + '</button>' +
+      '<button class="btn secondary sm" onclick="exportCsv(CACHE.searchRows, 'queries.csv')">Export CSV</button></div>' +
       '<div class="note"><strong>Flagged</strong> means the citation validator found a case reference in the ' +
       'answer that does not exist in the corpus, and stripped it before the advocate saw it. ' +
       'A rising count here means the model is straining against the retrieved context.</div>' +
@@ -783,15 +992,19 @@ function viewSearches() {
               '</td></tr>';
           }).join('') + '</tbody></table></div>'
         : empty('No queries recorded')) +
+      pager('searches', rows.length) +
       '</div>';
   });
 }
-function toggleFlagged() { CACHE.flaggedOnly = !CACHE.flaggedOnly; go('searches'); }
+function toggleFlagged() { CACHE.flaggedOnly = !CACHE.flaggedOnly; OFFSET.searches = 0; go('searches'); }
 
 function viewMessages() {
-  return api('/messages?limit=100').then(function (rows) {
+  var off = OFFSET.messages || 0;
+  return api('/messages?limit=' + PAGE + '&offset=' + off).then(function (rows) {
+    CACHE.messageRows = rows;
     document.getElementById('main').innerHTML =
-      '<div class="head"><h2>Message log</h2></div>' +
+      '<div class="head"><h2>Message log</h2><div class="grow"></div>' +
+      '<button class="btn secondary sm" onclick="exportCsv(CACHE.messageRows, 'messages.csv')">Export CSV</button></div>' +
       '<div class="note">Every inbound and outbound WhatsApp message. This is the first place to look ' +
       'when someone reports the bot did not reply.</div>' +
       '<div class="card">' +
@@ -808,6 +1021,7 @@ function viewMessages() {
               '<td class="trunc" style="max-width:200px;color:var(--bad)">' + esc(m.error_detail || '') + '</td></tr>';
           }).join('') + '</tbody></table></div>'
         : empty('No messages yet')) +
+      pager('messages', rows.length) +
       '</div>';
   });
 }
@@ -896,10 +1110,13 @@ function viewSettings() {
 
     document.getElementById('main').innerHTML =
       '<div class="head"><h2>Settings</h2></div>' +
-      '<div class="note">Changes take effect within seconds on both the web and worker processes — ' +
-      '<strong>no redeploy needed</strong>. Values saved here override the Railway environment variables. ' +
-      'Clearing a field reverts it to the environment value. ' +
-      '<strong>Secrets are write-only</strong>: leave a secret blank to keep the current one.</div>' +
+      '<div class="note">Operational settings save here and take effect within seconds on ' +
+      'both the web and worker processes — <strong>no redeploy needed</strong>.</div>' +
+      '<div class="note alert"><strong>Credentials are read-only here.</strong> API keys and tokens ' +
+      'can only be changed through environment variables on your hosting platform. ' +
+      'A value saved in this panel used to <em>override</em> the environment, which meant updating ' +
+      'a token in Render changed nothing and the bot kept using the dead one. ' +
+      'Two sources of truth for a secret is one too many — the hosting dashboard wins.</div>' +
       '<form id="setForm" onsubmit="saveSettings(event)">' + groups +
       '<div class="sticky-save"><button class="btn" type="submit">Save changes</button>' +
       '<span class="hint" style="margin:0">Only fields you edit are written.</span></div></form>';
@@ -911,18 +1128,39 @@ function renderField(def, state) {
   var id = 'set_' + def.key;
   var control;
 
+  // Credentials are environment-only. Rendering an input for them would be a
+  // lie: the server refuses the write. Show where the value comes from instead,
+  // which is the thing an operator is actually trying to find out.
+  if (def.type === 'secret') {
+    var set = state.isSet;
+    return '<div class="field cred">' +
+      '<div class="cred-row">' +
+        '<div class="cred-name">' + esc(def.label) +
+          '<code class="mono cred-key">' + esc(def.key) + '</code></div>' +
+        '<div class="cred-state">' +
+          (set
+            ? '<span class="pill ok">set</span> <span class="mono">' + esc(state.hint || '') + '</span>'
+            : '<span class="pill bad">not set</span>') +
+          (state.source === 'panel'
+            ? ' <span class="pill warn">legacy DB value — click Reset</span>' +
+              '<button class="btn secondary sm" type="button" style="margin-left:8px" ' +
+              'onclick="clearSetting(\'' + def.key + '\')">Reset</button>'
+            : '') +
+        '</div>' +
+      '</div>' +
+      '<div class="help">' + esc(def.help) + '</div>' +
+      (!set && def.requiredFor
+        ? '<div class="help" style="color:var(--red)">Required for ' + esc(def.requiredFor) + '.</div>'
+        : '') +
+      '</div>';
+  }
+
   if (def.type === 'select') {
     control = '<select id="' + id + '" data-key="' + def.key + '">' +
       (def.options || []).map(function (o) {
         return '<option value="' + esc(o.value) + '"' +
                (state.value === o.value ? ' selected' : '') + '>' + esc(o.label) + '</option>';
       }).join('') + '</select>';
-  } else if (def.type === 'secret') {
-    // Never render the value. The placeholder tells the operator whether one is
-    // already stored without disclosing it.
-    control = '<input id="' + id + '" data-key="' + def.key + '" type="password" ' +
-      'autocomplete="new-password" placeholder="' +
-      (state.isSet ? esc(state.hint || 'stored — leave blank to keep') : esc(def.placeholder || '')) + '">';
   } else if (def.type === 'number') {
     control = '<input id="' + id + '" data-key="' + def.key + '" type="number" ' +
       (def.min !== undefined ? 'min="' + def.min + '" ' : '') +
@@ -934,7 +1172,7 @@ function renderField(def, state) {
   }
 
   var stateLabel = state.isSet
-    ? '<span class="set-state on">● set' + (state.overridden ? ' (panel)' : ' (env)') + '</span>'
+    ? '<span class="set-state on">● ' + esc(state.source === 'panel' ? 'panel' : 'env') + '</span>'
     : '<span class="set-state off">○ unset</span>';
 
   var clearBtn = state.overridden
@@ -961,7 +1199,11 @@ function saveSettings(e) {
 
   api('/settings', { method:'POST', body:payload })
     .then(function (r) {
-      toast('Saved ' + r.applied.length + ' setting' + (r.applied.length === 1 ? '' : 's') + '.');
+      if (r.rejected && r.rejected.length) {
+        toast(r.rejectedReason || 'Some settings were refused.', true);
+      } else {
+        toast('Saved ' + r.applied.length + ' setting' + (r.applied.length === 1 ? '' : 's') + '.');
+      }
       go('settings');
     })
     .catch(function (err) { toast(err.message, true); });

@@ -37,8 +37,26 @@ export interface SettingView {
   hint: string | null;
   /** True when the live value comes from app_settings rather than the env. */
   overridden: boolean;
+  /** Where the live value is coming from, for the panel to display. */
+  source: 'environment' | 'panel' | 'unset';
+  /** True when this key can only ever be changed via the environment. */
+  envOnly: boolean;
   updatedBy: string | null;
   updatedAt: string | null;
+}
+
+/**
+ * Raised when something tries to write a credential through the panel.
+ *
+ * Credentials are environment-only by policy - see {@link SettingsService.set}.
+ */
+export class CredentialWriteRejectedError extends Error {
+  constructor(readonly key: string) {
+    super(
+      `${key} is a credential and can only be set through an environment variable, not the admin panel.`,
+    );
+    this.name = 'CredentialWriteRejectedError';
+  }
 }
 
 /**
@@ -164,13 +182,25 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
 
   // --- Reads ----------------------------------------------------------------
 
-  /** Database override, else environment, else empty string. */
+  /**
+   * Database override, else environment, else empty string.
+   *
+   * Values are trimmed. This is not cosmetic: credentials are pasted into
+   * hosting dashboards by humans, and a trailing newline or space rides along
+   * far more often than anyone expects. `Bearer eyJ...\n` is rejected by every
+   * API as an invalid token, and the resulting error says nothing about
+   * whitespace - you see "Authentication Error" and start regenerating keys
+   * that were fine all along.
+   *
+   * No setting in the catalogue legitimately begins or ends with whitespace,
+   * so trimming is free.
+   */
   get(key: string): string {
     const override = this.cache.get(key);
-    if (override !== undefined && override !== '') return override;
+    if (override !== undefined && override.trim() !== '') return override.trim();
 
     const fromEnv = (this.env as unknown as Record<string, unknown>)[key];
-    return fromEnv === undefined || fromEnv === null ? '' : String(fromEnv);
+    return fromEnv === undefined || fromEnv === null ? '' : String(fromEnv).trim();
   }
 
   getNumber(key: string, fallback: number): number {
@@ -235,20 +265,38 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
   /**
    * Persist a setting and tell every process to re-read.
    *
-   * Secrets are encrypted here, so the plaintext never reaches the database.
+   * ## Credentials are refused here, on purpose
+   *
+   * API keys and tokens can only be set through environment variables. The
+   * panel used to accept them, and that caused a real production outage: a
+   * value saved here silently *overrides* the environment, so updating the
+   * WhatsApp token in Render changed nothing and the bot kept using a dead
+   * credential with no indication why.
+   *
+   * Two sources of truth for a secret is one too many. The hosting dashboard
+   * wins, always - it is also the only place that survives losing database
+   * access, and the only place an operator can fix things from when the panel
+   * itself will not load.
+   *
+   * Non-secret operational settings (retrieval tuning, quotas, precedent
+   * source) stay editable here, because changing those without a redeploy is
+   * the entire point of the panel.
    */
   async set(key: string, value: string, changedBy = 'admin'): Promise<void> {
     if (!isKnownSetting(key)) {
       throw new Error(`Unknown setting: ${key}`);
     }
 
-    const secret = isSecretSetting(key);
-    const stored = secret ? this.crypto.encrypt(value) : value;
+    if (isSecretSetting(key)) {
+      throw new CredentialWriteRejectedError(key);
+    }
+
+    const stored = value;
     const previous = this.cache.get(key);
 
     await this.db.sql`
       INSERT INTO app_settings (key, value, is_secret, updated_by)
-      VALUES (${key}, ${stored}, ${secret}, ${changedBy})
+      VALUES (${key}, ${stored}, FALSE, ${changedBy})
       ON CONFLICT (key) DO UPDATE
         SET value      = EXCLUDED.value,
             is_secret  = EXCLUDED.is_secret,
@@ -256,13 +304,18 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
             updated_at = NOW()
     `;
 
-    await this.audit(key, 'SET', previous, value, secret, changedBy);
+    await this.audit(key, 'SET', previous, value, false, changedBy);
     await this.publishChange();
 
-    this.logger.info({ key, changedBy, secret }, 'Setting updated');
+    this.logger.info({ key, changedBy }, 'Setting updated');
   }
 
-  /** Remove the override so the environment value applies again. */
+  /**
+   * Remove the override so the environment value applies again.
+   *
+   * Still allowed for secrets: a credential row may exist from before the
+   * env-only policy, and clearing it is exactly how you get rid of one.
+   */
   async clear(key: string, changedBy = 'admin'): Promise<void> {
     if (!isKnownSetting(key)) {
       throw new Error(`Unknown setting: ${key}`);
@@ -276,19 +329,36 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     this.logger.info({ key, changedBy }, 'Setting cleared - reverting to environment value');
   }
 
-  /** Apply several settings in one go, skipping blanks. */
-  async setMany(values: Record<string, string>, changedBy = 'admin'): Promise<string[]> {
+  /**
+   * Apply several settings in one go.
+   *
+   * Credentials are skipped rather than throwing, so one stray secret in a
+   * form post does not discard the whole batch. The caller is told which keys
+   * were refused so the panel can say so.
+   */
+  async setMany(
+    values: Record<string, string>,
+    changedBy = 'admin',
+  ): Promise<{ applied: string[]; rejected: string[] }> {
     const applied: string[] = [];
+    const rejected: string[] = [];
+
     for (const [key, value] of Object.entries(values)) {
       if (!isKnownSetting(key)) continue;
-      // A blank secret means "leave the existing one alone" - otherwise the
-      // admin form, which never renders secret values, would wipe every secret
-      // on each save.
-      if (value === '' && isSecretSetting(key)) continue;
+      if (isSecretSetting(key)) {
+        rejected.push(key);
+        continue;
+      }
+      if (value === '') continue;
       await this.set(key, value, changedBy);
       applied.push(key);
     }
-    return applied;
+
+    if (rejected.length > 0) {
+      this.logger.warn({ rejected, changedBy }, 'Refused panel writes to credential settings');
+    }
+
+    return { applied, rejected };
   }
 
   private async audit(
@@ -333,14 +403,19 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
       const live = this.get(def.key);
       const meta = this.meta.get(def.key);
       const secret = def.type === 'secret';
+      const overridden = override !== undefined && override.trim() !== '';
 
       return {
         key: def.key,
         value: secret ? null : live,
         isSecret: secret,
         isSet: live !== '',
+        // Four characters is enough to tell two keys apart when checking which
+        // one is deployed, and not enough to be useful to anyone else.
         hint: secret && live !== '' ? `••••${live.slice(-4)}` : null,
-        overridden: override !== undefined && override !== '',
+        overridden,
+        source: live === '' ? 'unset' : overridden ? 'panel' : 'environment',
+        envOnly: secret,
         updatedBy: meta?.updatedBy ?? null,
         updatedAt: meta?.updatedAt ? new Date(meta.updatedAt).toISOString() : null,
       };

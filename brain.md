@@ -639,6 +639,53 @@ adapter exists, or in `.env` locally.
 
 ## 📝 Change log
 
+### 2026-08-08 — Credentials are environment-only; advanced admin
+
+**Policy change: API keys and tokens can no longer be set from the panel.**
+
+This is not tidying — the old behaviour caused a production outage. A credential
+saved in `app_settings` **overrode** the environment variable, so updating the
+WhatsApp token in Render changed nothing and the bot kept using a dead one, with
+no indication why. Two sources of truth for a secret is one too many.
+
+| Layer | Behaviour now |
+|---|---|
+| `SettingsService.set()` | Throws `CredentialWriteRejectedError` for any secret key |
+| `setMany()` | Skips secrets and reports them as `rejected` rather than failing the batch |
+| `clear()` | Still permitted — how you remove a legacy row written before this policy |
+| Admin UI | Secrets render as **read-only status rows**: set / not set, a 4-character hint, and where the value came from |
+| `POST /admin/settings` | Returns `rejected[]` and a reason the panel displays |
+
+Operational tuning (retrieval, quotas, precedent source, cache TTLs) stays
+editable — changing those without a redeploy is the entire point of the panel.
+
+`settings.policy.spec.ts` asserts the boundary: any key matching
+`_KEY|_TOKEN|_SECRET|_PASSWORD` must be `type: 'secret'`, so a future credential
+added as plain text fails the build rather than silently becoming writable.
+
+#### Panel bugs fixed
+
+| Bug | Effect |
+|---|---|
+| Corpus warning ignored Kanoon | Told the operator to run an ingestion they did not need |
+| Kanoon circuit-breaker trip was invisible | Precedent quality silently degraded to the local corpus with nothing saying why |
+| A failing view left a dead page | No retry, no way back except reloading the browser |
+| `searchUsers()` read `#uq` unguarded | Threw if the element was absent |
+| Search did not reset paging | A new search landed on page 4 of the old results |
+| Backtick inside the `String.raw` literal | Truncated the whole document — the same mistake the tests were written for, made again |
+
+#### Advanced features
+
+- **System view** — queue depth (waiting / active / completed / failed), dependency
+  reachability, heap and uptime, and the live configuration the bot is actually
+  using. A rising *waiting* with a flat *completed* means the worker is wedged,
+  which otherwise only shows up as users saying they were ignored.
+- **Pagination** on users, queries and messages, with per-view offsets.
+- **CSV export** on the same three tables.
+- **Dashboard auto-refresh** (30s, off by default, persisted). Armed only on the
+  dashboard and cleared on navigation, so it can never wipe a half-typed form,
+  and skipped while the tab is hidden.
+
 ### 2026-08-08 — Indian Kanoon, persona, and two bugs found in production
 
 **The bot answered its first real advocate.** That conversation exposed two
