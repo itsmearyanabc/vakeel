@@ -27,7 +27,7 @@
 | Feature 2 — Law sections | 🟡 Works, thin corpus | 10 seeded sections; needs bulk bare-act ingestion |
 | Feature 3 — Precedents | 🟢 Built | Needs judgment corpus loaded to return anything |
 | AI providers | 🔴 All on `mock` | No API keys yet — answers are placeholders |
-| Deployment | 🔴 Not deployed | Railway config ready, never pushed |
+| Deployment | 🟡 Render — builds, won't boot | Image builds fine; needs env vars **and a pooler DB URL** (IPv6 trap) |
 | Billing / payments | ⚫ Out of scope | Deliberately skipped — see [Not built](#-deliberately-not-built) |
 
 **Legend:** 🟢 done · 🟡 partial / needs data · 🔴 blocked on you · ⚫ intentionally excluded
@@ -336,7 +336,77 @@ Variables tab. Requires a restart, and the panel overrides them if both are set.
 
 ---
 
-## 🚀 Deploying to Railway
+## 🚀 Deploying to Render
+
+> Blueprint: `render.yaml`. Railway config (`railway.*.json`) is kept for
+> portability; Render ignores it and vice versa.
+
+### The two failures you will hit, in order
+
+**1. Missing environment variables** — the app refuses to boot and prints exactly
+which are missing. This is the fail-fast guard in `src/config/env.ts` working as
+intended: a missing `WHATSAPP_APP_SECRET` should crash the container at startup,
+not surface three hours later as a stream of rejected webhooks.
+
+Five are required:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | Supabase **pooler** URL — see #2 below |
+| `REDIS_URL` | From your Render Key Value instance |
+| `JWT_SECRET` | `a8792423422e7b2318c3174a8d1050d63b2def4c8bc7fc7a8b67b7c554e31b26` |
+| `ENCRYPTION_KEY` | `2c01fae8989e949e126b280562d1d3136981b3d6dcd39913aca1f5fb6de68245` |
+| `WHATSAPP_VERIFY_TOKEN` | `9d59c2f4b8110c5ae98c3b4de6190804ca8b670b45df3673` |
+
+**2. 🔴 The Supabase IPv6 trap** — this is the one that wastes an afternoon,
+because it looks like a credentials problem.
+
+Verified by DNS lookup on 2026-08-07:
+
+```
+db.biwncplbeatjuaixcekf.supabase.co   →  IPv6 only  (2406:da1c:16f1:f601:…)
+aws-0-ap-south-1.pooler.supabase.com  →  IPv4       (65.0.195.55, 3.111.105.85)
+```
+
+Supabase's **direct** host is IPv6-only. **Render's outbound network is IPv4**,
+so it cannot reach it — you get `ENETUNREACH` / `ETIMEDOUT` *after* your
+credentials are correct.
+
+Migrations ran fine from the dev machine only because it has IPv6. That does not
+generalise to the deploy target.
+
+**Fix:** use a **pooler** connection string. Supabase → Project Settings →
+Database → Connection string → pooler tab:
+
+| Use | Tab | Port | Goes in |
+|---|---|---|---|
+| App queries | Transaction pooler | 6543 | `DATABASE_URL` |
+| Migrations | Session pooler | 5432 | `DIRECT_URL` |
+
+```
+postgresql://postgres.biwncplbeatjuaixcekf:PASSWORD@aws-0-<region>.pooler.supabase.com:6543/postgres
+```
+
+Percent-encode the password: `?`→`%3F` `/`→`%2F` `:`→`%3A` `@`→`%40`
+
+### Remaining Render steps
+
+3. **Create a Key Value (Redis) instance.** ⚠️ Set `maxmemory-policy` to
+   **`noeviction`**. BullMQ keeps job state in Redis; any eviction policy
+   silently discards queued jobs, and the symptom is "message received, no
+   reply" with nothing in the logs.
+4. **Create the worker service** — same repo, same Dockerfile, start command
+   `node dist/worker.js`. Without it the webhook accepts messages and nothing
+   ever answers them.
+5. Set `APP_PUBLIC_URL` to the web service's public URL, then register
+   `<that URL>/webhooks/whatsapp` with Meta.
+
+> 💡 Put the shared variables in a Render **environment group** attached to both
+> services, so you maintain one copy rather than two that drift.
+
+---
+
+## 🚂 Deploying to Railway (alternative)
 
 Two services from **one** repo and one Dockerfile — they differ only by start command.
 
@@ -547,6 +617,18 @@ adapter exists, or in `.env` locally.
 ---
 
 ## 📝 Change log
+
+### 2026-08-07 (evening) — Render deploy
+
+| # | Change | Why |
+|---|---|---|
+| 1 | Added `render.yaml` blueprint | Deploy target is Render, not Railway. Defines web + worker + Key Value, secrets as `sync: false` |
+| 2 | Documented the **Supabase IPv6 trap** | Direct host is IPv6-only; Render is IPv4-only. Verified by DNS lookup. Presents as a credentials failure, isn't one |
+| 3 | Documented `noeviction` requirement for Redis | Any eviction policy silently drops BullMQ jobs — symptom is a bot that receives and never replies |
+
+**First deploy outcome:** image built and pushed successfully; container exited 1
+at boot with `Invalid environment configuration` listing all five required
+variables. That is the fail-fast guard behaving correctly, not a defect.
 
 ### 2026-08-07 (later) — Supabase live, reserved-keyword bug
 

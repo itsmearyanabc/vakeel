@@ -1,0 +1,139 @@
+# Render blueprint — https://render.com/docs/blueprint-spec
+#
+# Two services from ONE image, differing only in start command:
+#
+#   vakeel-web     -> node dist/main.js    (WhatsApp webhook, admin panel, health)
+#   vakeel-worker  -> node dist/worker.js  (BullMQ consumer: RAG, eCourts, replies)
+#
+# Why split? Meta expects a webhook ack in well under a second and throttles - then
+# disables - subscriptions that are slow. All slow work (retrieval, LLM calls,
+# eCourts lookups) happens in the worker. One combined process would let a burst
+# of AI calls stall webhook acks and take the bot off the air.
+#
+# ---------------------------------------------------------------------------
+# Secrets use `sync: false`, which means "Render prompts for this, the value is
+# never stored in the repo". Set them in the dashboard after first apply, or
+# during the Blueprint creation flow.
+# ---------------------------------------------------------------------------
+
+services:
+  - type: web
+    name: vakeel-web
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: node dist/main.js
+    healthCheckPath: /health/ready
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+
+      # ---- Supabase -----------------------------------------------------
+      # ⚠️ MUST be a POOLER url (aws-N-<region>.pooler.supabase.com), NOT the
+      # direct db.<ref>.supabase.co host. See the note at the bottom of this
+      # file - the direct host is IPv6-only and Render cannot reach it.
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+
+      # ---- Redis --------------------------------------------------------
+      - key: REDIS_URL
+        sync: false
+
+      # ---- Security -----------------------------------------------------
+      # generateValue makes Render mint a random value once and keep it stable
+      # across deploys. Do NOT use it for ENCRYPTION_KEY (see below).
+      - key: JWT_SECRET
+        generateValue: true
+      # ⚠️ NEVER regenerate this. Rotating it makes every encrypted bar council
+      # ID and every admin-panel secret permanently undecryptable. It must also
+      # be exactly 64 hex characters, which generateValue does not guarantee -
+      # hence sync: false and a value you generate once and keep.
+      - key: ENCRYPTION_KEY
+        sync: false
+
+      # ---- WhatsApp -----------------------------------------------------
+      # Only the verify token is needed at boot; the rest are pasted into the
+      # admin panel at runtime (Settings -> WhatsApp connection).
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+
+      # Set this to the service's own public URL after the first deploy.
+      # It is what you register with Meta as the webhook callback.
+      - key: APP_PUBLIC_URL
+        sync: false
+
+  - type: worker
+    name: vakeel-worker
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: node dist/worker.js
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      # The worker needs the SAME values as the web service. Easiest path is a
+      # Render environment group shared by both; otherwise re-enter them here.
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+
+# ---------------------------------------------------------------------------
+# Redis / Key Value
+#
+# Render renamed "Redis" to "Key Value". Depending on your account's blueprint
+# schema version, the service type below is either `redis` (older) or
+# `keyvalue` (newer). If `render.yaml` is rejected on apply, delete this whole
+# block, create the instance from the dashboard instead, and paste its internal
+# connection string into REDIS_URL on both services.
+#
+# ⚠️ maxmemoryPolicy MUST be noeviction. BullMQ stores job state in Redis; any
+# eviction policy silently discards queued jobs, and the symptom is "the bot
+# received the message but never replied" with nothing in the logs.
+# ---------------------------------------------------------------------------
+  - type: redis
+    name: vakeel-redis
+    plan: starter
+    maxmemoryPolicy: noeviction
+    ipAllowList: []   # empty = internal network only, no public access
+
+# ---------------------------------------------------------------------------
+# ⚠️ THE SUPABASE IPv6 TRAP
+#
+# Supabase's DIRECT connection host:
+#     db.<project-ref>.supabase.co:5432
+# resolves to an IPv6 address only. Render's outbound networking is IPv4, so
+# connecting to it fails with ENETUNREACH / ETIMEDOUT - after the environment
+# variables are correct, which makes it look like a credentials problem.
+#
+# Use a POOLER connection string instead. In Supabase:
+#   Project Settings -> Database -> Connection string -> pick a pooler tab
+#
+#   Transaction pooler, port 6543  -> DATABASE_URL   (best for the app: short
+#                                     connections, survives container churn)
+#   Session pooler,     port 5432  -> DIRECT_URL     (needed for migrations,
+#                                     which use session-level features)
+#
+# Both look like:
+#   postgresql://postgres.<ref>:<password>@aws-N-<region>.pooler.supabase.com:PORT/postgres
+#
+# Percent-encode the password: ? -> %3F   / -> %2F   : -> %3A   @ -> %40
+# ---------------------------------------------------------------------------
