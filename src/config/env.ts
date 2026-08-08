@@ -61,6 +61,20 @@ const envSchema = z.object({
     .regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters (32 bytes) - generate with: openssl rand -hex 32'),
   ADMIN_PHONE_NUMBERS: z.string().default(''),
 
+  // Admin panel sign-in. Both must be set for the login form to work; if either
+  // is blank the panel falls back to accepting JWT_SECRET as a bearer token,
+  // which is the pre-login behaviour and is kept so automation does not break.
+  ADMIN_EMAIL: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .refine((v) => v === '' || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v), 'ADMIN_EMAIL must be a valid email address')
+    .default(''),
+  ADMIN_PASSWORD: z
+    .string()
+    .refine((v) => v === '' || v.length >= 10, 'ADMIN_PASSWORD must be at least 10 characters')
+    .default(''),
+
   // --- LLM routing ----------------------------------------------------------
   LLM_SYNTHESIS_PROVIDER: providerEnum.default('mock'),
   LLM_ROUTER_PROVIDER: providerEnum.default('mock'),
@@ -128,6 +142,8 @@ export type AppEnv = RawEnv & {
   readonly whatsappApiBase: string;
   /** True when we can actually send messages (vs. log-only local dev). */
   readonly whatsappConfigured: boolean;
+  /** True when the admin panel has a real email/password pair configured. */
+  readonly adminLoginConfigured: boolean;
 };
 
 /**
@@ -168,6 +184,7 @@ export function parseEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     adminPhoneNumbers,
     whatsappApiBase: `${env.WHATSAPP_GRAPH_BASE_URL}/${env.WHATSAPP_API_VERSION}/${env.WHATSAPP_PHONE_NUMBER_ID}`,
     whatsappConfigured,
+    adminLoginConfigured: Boolean(env.ADMIN_EMAIL && env.ADMIN_PASSWORD),
   };
 }
 

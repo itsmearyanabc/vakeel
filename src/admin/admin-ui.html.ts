@@ -25,144 +25,192 @@
  * 200KB to draw one line and one donut.
  */
 export const ADMIN_UI_HTML = String.raw`<!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>Vakeel Saathi — Control Panel</title>
 <style>
+  /* Palette: olive green (primary), white (surfaces), red (alerts + accent).
+     Olive carries navigation and confirmation; red is reserved for things that
+     are wrong or destructive, so it keeps its meaning instead of becoming
+     decoration. */
   :root {
-    --bg:#0d1117; --panel:#161b22; --panel-2:#1c2128; --border:#30363d;
-    --text:#e6edf3; --muted:#8b949e; --dim:#6e7681;
-    --accent:#4c8dff; --accent-dim:#1f6feb;
-    --ok:#3fb950; --warn:#d29922; --bad:#f85149;
-    --saffron:#ff9933; --green:#138808;
-    --radius:10px; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --bg:#F4F6EC; --panel:#FFFFFF; --panel-2:#F0F4E4; --border:#D9E2C4;
+    --text:#1C2411; --muted:#5A6B45; --dim:#8A9A72;
+
+    --olive:#6B8E23; --olive-dark:#50691A; --olive-light:#E9F1D6;
+    --red:#C1121F; --red-dark:#960D18; --red-light:#FCE4E6;
+
+    --accent:var(--olive); --accent-dim:var(--olive-dark);
+    --ok:#4F7A1F; --warn:#B35C00; --bad:var(--red);
+    --radius:12px; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --shadow:0 1px 2px rgba(28,36,17,.06),0 4px 14px rgba(28,36,17,.05);
   }
-  :root[data-theme="light"] {
-    --bg:#f6f8fa; --panel:#ffffff; --panel-2:#f0f3f6; --border:#d0d7de;
-    --text:#1f2328; --muted:#59636e; --dim:#818b98;
-    --accent:#0969da; --accent-dim:#0550ae;
-    --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e;
+  :root[data-theme="dark"] {
+    --bg:#14180E; --panel:#1D2315; --panel-2:#262E1B; --border:#3A462A;
+    --text:#EDF2E2; --muted:#A7B893; --dim:#7C8C69;
+
+    --olive:#9BC53D; --olive-dark:#7FA82B; --olive-light:#2B3519;
+    --red:#F0555F; --red-dark:#C1121F; --red-light:#3A1A1D;
+
+    --accent:var(--olive); --accent-dim:var(--olive-dark);
+    --ok:#9BC53D; --warn:#E0A44A; --bad:var(--red);
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 14px rgba(0,0,0,.25);
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
        font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-  a{color:var(--accent)}
+  a{color:var(--olive-dark)}
   button{font:inherit;cursor:pointer}
 
   /* ---------- login ---------- */
-  #login{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
-  .login-card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
-              padding:32px;width:100%;max-width:420px}
-  .brand{display:flex;align-items:center;gap:10px;margin-bottom:6px}
-  .brand-mark{width:32px;height:32px;border-radius:8px;flex:0 0 auto;
-    background:linear-gradient(135deg,var(--saffron),var(--green));
-    display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:15px}
-  .brand h1{font-size:17px;margin:0;font-weight:650}
-  .sub{color:var(--muted);font-size:13px;margin:0 0 22px}
-  label{display:block;font-size:12px;font-weight:600;color:var(--muted);
-        margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em}
-  input,select,textarea{width:100%;background:var(--bg);border:1px solid var(--border);
-    color:var(--text);padding:9px 11px;border-radius:7px;font:inherit;outline:none}
-  input:focus,select:focus,textarea:focus{border-color:var(--accent)}
-  .btn{background:var(--accent);color:#fff;border:none;padding:9px 16px;
-       border-radius:7px;font-weight:600}
-  .btn:hover{background:var(--accent-dim)}
-  .btn.secondary{background:transparent;border:1px solid var(--border);color:var(--text)}
-  .btn.secondary:hover{background:var(--panel-2)}
-  .btn.danger{background:var(--bad)}
+  #login{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;
+    background:
+      radial-gradient(1100px 520px at 12% -10%, var(--olive-light) 0%, transparent 62%),
+      radial-gradient(900px 460px at 105% 108%, var(--red-light) 0%, transparent 58%),
+      var(--bg)}
+  .login-card{background:var(--panel);border:1px solid var(--border);border-radius:18px;
+              padding:34px;width:100%;max-width:430px;box-shadow:var(--shadow)}
+  .brand{display:flex;align-items:center;gap:11px;margin-bottom:6px}
+  .brand-mark{width:38px;height:38px;border-radius:11px;flex:0 0 auto;
+    background:linear-gradient(140deg,var(--olive) 0%,var(--olive-dark) 55%,var(--red) 100%);
+    display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;
+    font-size:15px;letter-spacing:.5px;box-shadow:0 2px 8px rgba(107,142,35,.35)}
+  .brand h1{font-size:18px;margin:0;font-weight:700;letter-spacing:-.01em}
+  .brand .tag{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;
+    letter-spacing:.1em;margin-top:1px}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 24px}
+  label{display:block;font-size:11.5px;font-weight:700;color:var(--muted);
+        margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em}
+  input,select,textarea{width:100%;background:var(--panel);border:1.5px solid var(--border);
+    color:var(--text);padding:10px 12px;border-radius:9px;font:inherit;outline:none;
+    transition:border-color .12s,box-shadow .12s}
+  input:focus,select:focus,textarea:focus{
+    border-color:var(--olive);box-shadow:0 0 0 3.5px var(--olive-light)}
+  .btn{background:var(--olive);color:#fff;border:none;padding:10px 18px;
+       border-radius:9px;font-weight:650;transition:background .12s,transform .06s}
+  .btn:hover{background:var(--olive-dark)}
+  .btn:active{transform:translateY(1px)}
+  .btn.secondary{background:var(--panel);border:1.5px solid var(--border);color:var(--text)}
+  .btn.secondary:hover{background:var(--panel-2);border-color:var(--olive)}
+  .btn.danger{background:var(--red)}
+  .btn.danger:hover{background:var(--red-dark)}
   .btn:disabled{opacity:.5;cursor:not-allowed}
-  .btn.sm{padding:5px 10px;font-size:12px}
+  .btn.sm{padding:6px 11px;font-size:12px;border-radius:7px}
 
   /* ---------- shell ---------- */
-  #app{display:none;grid-template-columns:216px 1fr;min-height:100vh}
-  aside{background:var(--panel);border-right:1px solid var(--border);
-        padding:16px 12px;display:flex;flex-direction:column;gap:3px}
-  aside .brand{padding:6px 8px 14px}
-  nav button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;
-    background:none;border:none;color:var(--muted);padding:8px 10px;
-    border-radius:7px;font-size:13.5px;font-weight:500}
-  nav button:hover{background:var(--panel-2);color:var(--text)}
-  nav button.active{background:var(--accent);color:#fff}
-  nav button .badge{margin-left:auto;background:var(--bad);color:#fff;
-    border-radius:10px;padding:1px 7px;font-size:11px;font-weight:700}
-  nav button.active .badge{background:rgba(255,255,255,.25)}
+  #app{display:none;grid-template-columns:228px 1fr;min-height:100vh}
+  aside{background:linear-gradient(178deg,var(--olive-dark) 0%,#3E5214 100%);
+        padding:18px 13px;display:flex;flex-direction:column;gap:3px}
+  :root[data-theme="dark"] aside{background:linear-gradient(178deg,#232C15 0%,#161C0D 100%);
+        border-right:1px solid var(--border)}
+  aside .brand{padding:6px 8px 18px}
+  aside .brand h1{color:#fff}
+  aside .brand .tag{color:rgba(255,255,255,.62)}
+  aside .brand-mark{background:#fff;color:var(--olive-dark)}
+  nav button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+    background:none;border:none;color:rgba(255,255,255,.8);padding:9px 11px;
+    border-radius:9px;font-size:13.5px;font-weight:550;transition:background .12s}
+  nav button:hover{background:rgba(255,255,255,.13);color:#fff}
+  nav button.active{background:#fff;color:var(--olive-dark);font-weight:700;
+    box-shadow:0 2px 8px rgba(0,0,0,.16)}
+  nav button .ico{width:17px;text-align:center;opacity:.9}
+  nav button .badge{margin-left:auto;background:var(--red);color:#fff;
+    border-radius:11px;padding:1px 8px;font-size:11px;font-weight:800}
+  nav button.active .badge{background:var(--red)}
   .spacer{flex:1}
-  main{padding:22px 26px;overflow-x:hidden;min-width:0}
-  .head{display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap}
-  .head h2{margin:0;font-size:19px;font-weight:650}
+  main{padding:24px 28px;overflow-x:hidden;min-width:0}
+  .head{display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+  .head h2{margin:0;font-size:21px;font-weight:750;letter-spacing:-.02em}
   .head .grow{flex:1}
 
   /* ---------- pieces ---------- */
   .card{background:var(--panel);border:1px solid var(--border);
-        border-radius:var(--radius);padding:16px;min-width:0}
-  .card h3{margin:0 0 3px;font-size:13.5px;font-weight:650}
+        border-radius:var(--radius);padding:18px;min-width:0;box-shadow:var(--shadow)}
+  .card h3{margin:0 0 3px;font-size:14px;font-weight:700}
   .card .hint{color:var(--muted);font-size:12px;margin:0 0 14px}
   .grid{display:grid;gap:14px}
-  .kpis{grid-template-columns:repeat(auto-fit,minmax(158px,1fr))}
-  .kpi .label{color:var(--muted);font-size:11.5px;text-transform:uppercase;
-              letter-spacing:.05em;font-weight:600}
-  .kpi .value{font-size:26px;font-weight:680;margin-top:5px;letter-spacing:-.02em}
-  .kpi .foot{color:var(--dim);font-size:11.5px;margin-top:3px}
+  .kpis{grid-template-columns:repeat(auto-fit,minmax(162px,1fr))}
+  .kpi{position:relative;overflow:hidden}
+  /* Olive rail on every tile; red only on the ones that need attention. */
+  .kpi::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--olive)}
+  .kpi.alert::before{background:var(--red)}
+  .kpi .label{color:var(--muted);font-size:11px;text-transform:uppercase;
+              letter-spacing:.07em;font-weight:700}
+  .kpi .value{font-size:29px;font-weight:780;margin-top:6px;letter-spacing:-.03em;
+              color:var(--olive-dark)}
+  :root[data-theme="dark"] .kpi .value{color:var(--olive)}
+  .kpi.alert .value{color:var(--red)}
+  .kpi .foot{color:var(--dim);font-size:11.5px;margin-top:4px}
   .two{grid-template-columns:1.65fr 1fr}
   @media(max-width:1080px){.two{grid-template-columns:1fr}}
   @media(max-width:760px){#app{grid-template-columns:1fr}aside{display:none}}
 
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th{text-align:left;color:var(--muted);font-weight:600;font-size:11.5px;
-     text-transform:uppercase;letter-spacing:.04em;
-     padding:8px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
-  td{padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{text-align:left;color:var(--olive-dark);font-weight:750;font-size:11px;
+     text-transform:uppercase;letter-spacing:.06em;background:var(--olive-light);
+     padding:9px 10px;border-bottom:2px solid var(--olive);white-space:nowrap}
+  :root[data-theme="dark"] th{color:var(--olive)}
+  td{padding:10px;border-bottom:1px solid var(--border);vertical-align:top}
   tbody tr:hover{background:var(--panel-2)}
   tbody tr:last-child td{border-bottom:none}
-  .scroll{overflow-x:auto;margin:0 -16px;padding:0 16px}
+  .scroll{overflow-x:auto;margin:0 -18px;padding:0 18px}
   .mono{font-family:var(--mono);font-size:12px}
   .trunc{max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-  .pill{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;
-        font-weight:650;white-space:nowrap}
-  .pill.ok{background:rgba(63,185,80,.16);color:var(--ok)}
-  .pill.warn{background:rgba(210,153,34,.16);color:var(--warn)}
-  .pill.bad{background:rgba(248,81,73,.16);color:var(--bad)}
-  .pill.neutral{background:var(--panel-2);color:var(--muted)}
-  .pill.info{background:rgba(76,141,255,.16);color:var(--accent)}
+  .pill{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;
+        font-weight:700;white-space:nowrap}
+  .pill.ok{background:var(--olive-light);color:var(--ok);border:1px solid var(--olive)}
+  .pill.warn{background:#FFF3DC;color:var(--warn);border:1px solid #E8B76A}
+  .pill.bad{background:var(--red-light);color:var(--red);border:1px solid var(--red)}
+  .pill.neutral{background:var(--panel-2);color:var(--muted);border:1px solid var(--border)}
+  .pill.info{background:var(--olive-light);color:var(--olive-dark);border:1px solid var(--olive)}
+  :root[data-theme="dark"] .pill.warn{background:#3A2A12;color:var(--warn);border-color:#7A5A20}
+  :root[data-theme="dark"] .pill.info{color:var(--olive)}
 
-  .empty{text-align:center;padding:40px 20px;color:var(--muted)}
-  .empty .big{font-size:30px;margin-bottom:8px;opacity:.5}
-  .err{background:rgba(248,81,73,.1);border:1px solid var(--bad);color:var(--bad);
-       padding:10px 13px;border-radius:7px;margin-bottom:14px;font-size:13px}
-  .note{background:var(--panel-2);border-left:3px solid var(--accent);
-        padding:11px 14px;border-radius:0 7px 7px 0;margin-bottom:16px;
-        color:var(--muted);font-size:12.5px}
-  .note strong{color:var(--text)}
+  .empty{text-align:center;padding:44px 20px;color:var(--muted)}
+  .empty .big{font-size:34px;margin-bottom:10px;opacity:.4;color:var(--olive)}
+  .err{background:var(--red-light);border:1.5px solid var(--red);color:var(--red-dark);
+       padding:11px 14px;border-radius:9px;margin-bottom:14px;font-size:13px;font-weight:550}
+  :root[data-theme="dark"] .err{color:var(--red)}
+  /* Olive by default; red when it is a problem you must act on. */
+  .note{background:var(--olive-light);border-left:4px solid var(--olive);
+        padding:12px 15px;border-radius:0 9px 9px 0;margin-bottom:16px;
+        color:var(--text);font-size:12.5px}
+  .note.alert{background:var(--red-light);border-left-color:var(--red)}
+  .note strong{color:var(--olive-dark);font-weight:700}
+  .note.alert strong{color:var(--red-dark)}
+  :root[data-theme="dark"] .note strong{color:var(--olive)}
+  :root[data-theme="dark"] .note.alert strong{color:var(--red)}
 
   /* ---------- settings ---------- */
-  .field{margin-bottom:16px}
+  .field{margin-bottom:17px}
   .field .help{color:var(--muted);font-size:12px;margin-top:5px;line-height:1.45}
   .field .row{display:flex;gap:8px;align-items:center}
   .field .row input,.field .row select{flex:1;min-width:0}
-  .set-state{font-size:11px;font-weight:650;white-space:nowrap}
-  .set-state.on{color:var(--ok)}
+  .set-state{font-size:11px;font-weight:750;white-space:nowrap}
+  .set-state.on{color:var(--olive-dark)}
+  :root[data-theme="dark"] .set-state.on{color:var(--olive)}
   .set-state.off{color:var(--dim)}
   .sticky-save{position:sticky;bottom:0;background:var(--panel);
-    border-top:1px solid var(--border);padding:13px 16px;margin:16px -16px -16px;
+    border-top:2px solid var(--olive);padding:14px 18px;margin:18px -18px -18px;
     display:flex;gap:10px;align-items:center;border-radius:0 0 var(--radius) var(--radius)}
   .checks{list-style:none;padding:0;margin:12px 0 0}
-  .checks li{display:flex;gap:9px;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px}
+  .checks li{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);font-size:13px}
   .checks li:last-child{border-bottom:none}
   .checks .fix{color:var(--muted);font-size:12px;margin-top:3px}
-  .toast{position:fixed;bottom:20px;right:20px;background:var(--panel);
-    border:1px solid var(--border);border-left:3px solid var(--ok);
-    padding:12px 16px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);
-    font-size:13px;z-index:50;max-width:380px}
-  .toast.bad{border-left-color:var(--bad)}
-  .loading{color:var(--muted);padding:26px;text-align:center;font-size:13px}
+  .toast{position:fixed;bottom:22px;right:22px;background:var(--panel);
+    border:1px solid var(--border);border-left:4px solid var(--olive);
+    padding:13px 17px;border-radius:10px;box-shadow:0 10px 30px rgba(28,36,17,.18);
+    font-size:13px;z-index:50;max-width:390px;font-weight:550}
+  .toast.bad{border-left-color:var(--red)}
+  .loading{color:var(--muted);padding:30px;text-align:center;font-size:13px}
   svg{display:block;max-width:100%}
-  .legend{display:flex;flex-wrap:wrap;gap:9px;margin-top:12px;font-size:12px}
-  .legend span{display:flex;align-items:center;gap:5px;color:var(--muted)}
-  .dot{width:9px;height:9px;border-radius:3px;flex:0 0 auto}
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;font-size:12px}
+  .legend span{display:flex;align-items:center;gap:6px;color:var(--muted)}
+  .dot{width:10px;height:10px;border-radius:3px;flex:0 0 auto}
 </style>
 </head>
 <body>
@@ -172,18 +220,37 @@ export const ADMIN_UI_HTML = String.raw`<!doctype html>
   <form class="login-card" onsubmit="doLogin(event)">
     <div class="brand">
       <div class="brand-mark">VS</div>
-      <h1>Vakeel Saathi</h1>
+      <div>
+        <h1>Vakeel Saathi</h1>
+        <div class="tag">Control Panel</div>
+      </div>
     </div>
-    <p class="sub">Control panel — sign in with your admin token.</p>
+    <p class="sub" id="loginSub">Sign in to manage the bot.</p>
     <div id="loginErr"></div>
-    <div class="field">
-      <label for="token">Admin token</label>
-      <input id="token" type="password" placeholder="Your JWT_SECRET value" autocomplete="current-password" required>
-      <p class="help">This is the <code class="mono">JWT_SECRET</code> environment variable
-        set on the Railway <strong>web</strong> service. It is held in this tab only
-        (sessionStorage) and cleared when you close it.</p>
+
+    <!-- Email + password. Hidden when the service has no ADMIN_EMAIL /
+         ADMIN_PASSWORD set, in which case the token field below is shown. -->
+    <div id="emailFields" style="display:none">
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" placeholder="you@example.com" autocomplete="username">
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" placeholder="••••••••••" autocomplete="current-password">
+      </div>
     </div>
-    <button class="btn" style="width:100%" type="submit">Sign in</button>
+
+    <!-- Legacy fallback for deployments where login is not configured yet. -->
+    <div id="tokenFields" style="display:none">
+      <div class="field">
+        <label for="token">Admin token</label>
+        <input id="token" type="password" placeholder="Your JWT_SECRET value" autocomplete="current-password">
+        <p class="help" id="tokenHelp"></p>
+      </div>
+    </div>
+
+    <button class="btn" style="width:100%;margin-top:4px" type="submit" id="loginBtn">Sign in</button>
   </form>
 </div>
 
@@ -192,10 +259,15 @@ export const ADMIN_UI_HTML = String.raw`<!doctype html>
   <aside>
     <div class="brand">
       <div class="brand-mark">VS</div>
-      <h1>Vakeel Saathi</h1>
+      <div>
+        <h1>Vakeel Saathi</h1>
+        <div class="tag">Control Panel</div>
+      </div>
     </div>
     <nav id="nav"></nav>
     <div class="spacer"></div>
+    <div id="whoami" style="color:rgba(255,255,255,.62);font-size:11px;padding:0 10px 8px;
+         overflow:hidden;text-overflow:ellipsis"></div>
     <button class="btn secondary sm" onclick="toggleTheme()">Toggle theme</button>
     <button class="btn secondary sm" style="margin-top:6px" onclick="logout()">Sign out</button>
   </aside>
@@ -206,9 +278,11 @@ export const ADMIN_UI_HTML = String.raw`<!doctype html>
 /* =========================================================================
    State + transport
    ========================================================================= */
-var TOKEN = sessionStorage.getItem('vs_admin_token') || '';
-var VIEW  = 'dashboard';
-var CACHE = {};
+var TOKEN       = sessionStorage.getItem('vs_admin_token') || '';
+var ADMIN_EMAIL = sessionStorage.getItem('vs_admin_email') || '';
+var EMAIL_LOGIN = false;
+var VIEW        = 'dashboard';
+var CACHE       = {};
 
 var VIEWS = [
   { id:'dashboard',     label:'Dashboard',     icon:'◳' },
@@ -240,33 +314,102 @@ function api(path, options) {
   });
 }
 
+/**
+ * Ask the server which sign-in mode it is in and render the matching form.
+ * Falls back to the token field if the probe itself fails, so a transient error
+ * never leaves the page with no way in.
+ */
+function initLoginForm() {
+  return fetch('/admin/auth/mode', { method: 'POST' })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      var d = (j && j.data) ? j.data : j;
+      EMAIL_LOGIN = !!(d && d.emailLogin);
+      document.getElementById('emailFields').style.display = EMAIL_LOGIN ? 'block' : 'none';
+      document.getElementById('tokenFields').style.display = EMAIL_LOGIN ? 'none' : 'block';
+      document.getElementById('loginSub').textContent = EMAIL_LOGIN
+        ? 'Sign in to manage the bot.'
+        : 'Token sign-in.';
+      if (!EMAIL_LOGIN && d && d.hint) {
+        document.getElementById('tokenHelp').textContent = d.hint;
+      }
+    })
+    .catch(function () {
+      EMAIL_LOGIN = false;
+      document.getElementById('tokenFields').style.display = 'block';
+    });
+}
+
 function doLogin(e) {
   e.preventDefault();
+  var errBox = document.getElementById('loginErr');
+  var btn = document.getElementById('loginBtn');
+  errBox.innerHTML = '';
+
+  var fail = function (msg) {
+    TOKEN = '';
+    btn.disabled = false;
+    btn.textContent = 'Sign in';
+    errBox.innerHTML = '<div class="err">' + esc(msg) + '</div>';
+  };
+
+  btn.disabled = true;
+  btn.textContent = 'Signing in…';
+
+  if (EMAIL_LOGIN) {
+    var email = document.getElementById('email').value.trim();
+    var password = document.getElementById('password').value;
+    if (!email || !password) return fail('Enter your email and password.');
+
+    fetch('/admin/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: email, password: password })
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) throw new Error((j && j.error && j.error.message) || 'Sign-in failed.');
+        return (j && j.data) ? j.data : j;
+      });
+    }).then(function (d) {
+      TOKEN = d.token;
+      ADMIN_EMAIL = d.email || email;
+      sessionStorage.setItem('vs_admin_token', TOKEN);
+      sessionStorage.setItem('vs_admin_email', ADMIN_EMAIL);
+      btn.disabled = false;
+      btn.textContent = 'Sign in';
+      boot();
+    }).catch(function (err) { fail(err.message); });
+    return;
+  }
+
+  // Token mode: no login endpoint, so validate by calling a cheap guarded route.
   var value = document.getElementById('token').value.trim();
-  if (!value) return;
+  if (!value) return fail('Enter your admin token.');
   TOKEN = value;
-  document.getElementById('loginErr').innerHTML = '';
-  // Cheapest authenticated endpoint, purely to validate the token.
   api('/stats').then(function () {
     sessionStorage.setItem('vs_admin_token', TOKEN);
+    btn.disabled = false;
+    btn.textContent = 'Sign in';
     boot();
-  }).catch(function (err) {
-    TOKEN = '';
-    document.getElementById('loginErr').innerHTML =
-      '<div class="err">' + esc(err.message) + '</div>';
-  });
+  }).catch(function (err) { fail(err.message); });
 }
 
 function logout() {
   sessionStorage.removeItem('vs_admin_token');
+  sessionStorage.removeItem('vs_admin_email');
   TOKEN = '';
+  ADMIN_EMAIL = '';
   document.getElementById('app').style.display = 'none';
   document.getElementById('login').style.display = 'flex';
+  var pw = document.getElementById('password');
+  if (pw) pw.value = '';
+  initLoginForm();
 }
 
 function boot() {
   document.getElementById('login').style.display = 'none';
   document.getElementById('app').style.display = 'grid';
+  document.getElementById('whoami').textContent = ADMIN_EMAIL ? 'Signed in as ' + ADMIN_EMAIL : '';
   renderNav();
   go(VIEW);
 }
@@ -328,7 +471,7 @@ function renderNav(pending) {
   document.getElementById('nav').innerHTML = VIEWS.map(function (v) {
     var badge = (v.id === 'verifications' && pending) ? '<span class="badge">' + pending + '</span>' : '';
     return '<button class="' + (v.id === VIEW ? 'active' : '') + '" onclick="go(\'' + v.id + '\')">' +
-           '<span>' + v.icon + '</span>' + esc(v.label) + badge + '</button>';
+           '<span class="ico">' + v.icon + '</span>' + esc(v.label) + badge + '</button>';
   }).join('');
 }
 
@@ -397,7 +540,9 @@ function lineChart(points, opts) {
     '<span style="margin-left:auto">peak ' + max + '</span></div>';
 }
 
-var SLICE_COLOURS = ['#4c8dff','#3fb950','#d29922','#f85149','#a371f7','#39c5cf','#ff9933','#db61a2'];
+/* Olive family first (the common intents), red last (the exceptional ones), with
+   enough separation between adjacent entries to stay distinguishable. */
+var SLICE_COLOURS = ['#6B8E23','#C1121F','#A3B858','#E07A5F','#4F6B18','#8A9A72','#F2A65A','#7D2E33'];
 
 /** Donut chart. Slices are [{label, value}]. */
 function donutChart(slices) {
@@ -460,13 +605,20 @@ function viewDashboard() {
                     'Run <code class="mono">npm run ingest</code> to load case law.');
     }
 
+    // The alert flag turns a tile's rail and figure red. Reserved for numbers
+    // that mean something is wrong, so red keeps its meaning across the panel.
+    // (No backticks anywhere in this file - it is one big String.raw literal,
+    // and a stray backtick silently terminates it.)
     var kpis = [
       { label:'Total users',     value:num(p.totalUsers),   foot:num(p.verifiedUsers) + ' verified' },
       { label:'Active (14d)',    value:num(p.activeUsers),  foot:'distinct advocates' },
       { label:'Queries (14d)',   value:num(p.queries),      foot:'answered' },
-      { label:'Avg latency',     value:p.avgLatencyMs ? p.avgLatencyMs + 'ms' : '—', foot:'target < 2500ms' },
-      { label:'Guardrail hits',  value:num(p.guardrailFlagged), foot:'ungrounded citations blocked' },
-      { label:'Corpus',          value:num(c.judgments),    foot:num(c.chunks) + ' chunks · ' + embedPct + '% embedded' }
+      { label:'Avg latency',     value:p.avgLatencyMs ? p.avgLatencyMs + 'ms' : '—',
+        foot:'target < 2500ms', alert: p.avgLatencyMs > 2500 },
+      { label:'Guardrail hits',  value:num(p.guardrailFlagged),
+        foot:'ungrounded citations blocked', alert: p.guardrailFlagged > 0 },
+      { label:'Corpus',          value:num(c.judgments),
+        foot:num(c.chunks) + ' chunks · ' + embedPct + '% embedded', alert: c.judgments === 0 }
     ];
 
     document.getElementById('main').innerHTML =
@@ -476,11 +628,12 @@ function viewDashboard() {
       '<span class="pill ' + (d.providers.synthesis === 'mock' ? 'warn' : 'ok') + '">AI: ' +
       esc(d.providers.synthesis) + '</span></div>' +
 
-      warnings.map(function (w) { return '<div class="note">' + w + '</div>'; }).join('') +
+      warnings.map(function (w) { return '<div class="note alert">' + w + '</div>'; }).join('') +
 
       '<div class="grid kpis" style="margin-bottom:14px">' +
         kpis.map(function (k) {
-          return '<div class="card kpi"><div class="label">' + esc(k.label) + '</div>' +
+          return '<div class="card kpi' + (k.alert ? ' alert' : '') + '">' +
+                 '<div class="label">' + esc(k.label) + '</div>' +
                  '<div class="value">' + k.value + '</div>' +
                  '<div class="foot">' + esc(k.foot) + '</div></div>';
         }).join('') +
@@ -862,10 +1015,20 @@ function sendTestMessage() {
 (function init() {
   var saved = localStorage.getItem('vs_theme');
   if (saved) document.documentElement.setAttribute('data-theme', saved);
+
   if (TOKEN) {
-    api('/stats').then(boot).catch(logout);
+    // Resume the session if the stored token is still valid. A session JWT can
+    // expire while the tab is closed, so this must be checked, not assumed.
+    api('/stats').then(boot).catch(function () {
+      sessionStorage.removeItem('vs_admin_token');
+      sessionStorage.removeItem('vs_admin_email');
+      TOKEN = ''; ADMIN_EMAIL = '';
+      document.getElementById('login').style.display = 'flex';
+      initLoginForm();
+    });
   } else {
     document.getElementById('login').style.display = 'flex';
+    initLoginForm();
   }
 })();
 </script>

@@ -162,8 +162,29 @@ exhaustive. Always verify before citing._
 
 ## 🖥 Admin panel
 
-**URL:** `https://<your-app>.up.railway.app/admin` (locally `http://localhost:3000/admin`)
-**Login:** paste your `JWT_SECRET` value. Held in `sessionStorage`, cleared when the tab closes.
+**URL:** `https://vakeel-ek9u.onrender.com/admin` (locally `http://localhost:3000/admin`)
+
+**Login: email + password.** Set these two on the Render service:
+
+| Variable | Notes |
+|---|---|
+| `ADMIN_EMAIL` | Any address you control — it is a username, no mail is sent |
+| `ADMIN_PASSWORD` | Minimum 10 characters. `openssl rand -base64 18` |
+
+Signing in returns a **session JWT** (HS256, signed with `JWT_SECRET`, expiring
+per `JWT_EXPIRES_IN`, default 12h), held in `sessionStorage` and cleared when the
+tab closes. Eight failed attempts from one IP triggers a 15-minute lockout,
+tracked in Redis.
+
+**If either variable is unset**, the panel falls back to the older behaviour —
+pasting `JWT_SECRET` as a bearer token — and the login page says so. That path is
+also kept permanently as a *service token* for curl and CI, which cannot complete
+a login form. To close it off once email login works, delete the `serviceToken`
+branch in `admin.guard.ts`.
+
+**Colour scheme:** olive green (navigation, confirmation), white (surfaces), red
+(alerts and destructive actions only, so it keeps its meaning). Light by default;
+the theme toggle switches to a dark olive variant.
 
 | Page | What it gives you |
 |---|---|
@@ -617,6 +638,25 @@ adapter exists, or in `.env` locally.
 ---
 
 ## 📝 Change log
+
+### 2026-08-08 — Admin login + visual overhaul
+
+| # | Change | Why |
+|---|---|---|
+| 1 | **Email + password sign-in** — `ADMIN_EMAIL` / `ADMIN_PASSWORD`, `POST /admin/login` issues a session JWT | Pasting a 64-char secret into a form is not a login |
+| 2 | Hand-rolled HS256 JWT (`src/admin/jwt.ts`) | Two operations on one algorithm; Node ships HMAC-SHA256. Explicitly immune to the `alg=none` confusion attack — the verifier decides the algorithm, never the token |
+| 3 | `AdminGuard` verifies session JWTs, keeps raw-token path | Automation and CI cannot fill in a login form |
+| 4 | Redis brute-force lockout: 8 attempts / 15 min per IP | The global limiter (300/min) is far too loose for a password field |
+| 5 | Identical error for wrong email and wrong password | Distinguishing them makes the form an account-enumeration oracle |
+| 6 | **Repainted olive / white / red** | Requested. Red reserved for genuine problems so it keeps meaning |
+| 7 | 21 new tests, incl. `alg=none`, tamper, expiry, and UI document integrity | |
+
+> 🐛 **Bug found while building this:** the panel is one big `String.raw`
+> template literal, and I wrote a comment containing backticks inside it. A
+> backtick silently terminates the literal, producing a half-page that still
+> looks plausible. `jwt.spec.ts` now asserts the document starts with
+> `<!doctype html>`, ends with `</html>`, contains no backticks, and has
+> balanced `<script>`/`<style>` tags.
 
 ### 2026-08-07 (evening) — Render deploy
 
