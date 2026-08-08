@@ -38,6 +38,8 @@ ENV NODE_ENV=production
 COPY --from=prod-deps --chown=vakeel:nodejs /app/node_modules ./node_modules
 COPY --from=build     --chown=vakeel:nodejs /app/dist ./dist
 COPY --chown=vakeel:nodejs supabase ./supabase
+# scripts/start-all.js supervises both processes when they share one container.
+COPY --chown=vakeel:nodejs scripts ./scripts
 COPY --chown=vakeel:nodejs package.json ./
 
 USER vakeel

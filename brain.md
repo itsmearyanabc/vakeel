@@ -21,7 +21,7 @@
 |---|---|---|
 | Backend code | 🟢 Complete | 99 files, compiles clean, 111 tests passing |
 | Database schema | 🟢 **Applied** | Supabase `biwncplbeatjuaixcekf` · PG 17.6 · 12 tables · both HNSW indexes live · 31 statutes seeded |
-| WhatsApp connection | 🔴 Not connected | Needs Meta credentials — [walkthrough below](#-connecting-whatsapp-step-by-step) |
+| WhatsApp connection | 🟡 Receiving, cannot reply | Webhook verified and delivering. Sends fail with Meta **error 190** — expired token. Needs a permanent System User token |
 | Admin panel | 🟢 Built | Served at `/admin`, no separate deploy |
 | Feature 1 — CNR case status | 🟡 Works, mock data | Real data needs an eCourts provider subscription |
 | Feature 2 — Law sections | 🟡 Works, thin corpus | 10 seeded sections; needs bulk bare-act ingestion |
@@ -638,6 +638,30 @@ adapter exists, or in `.env` locally.
 ---
 
 ## 📝 Change log
+
+### 2026-08-08 (live) — First real WhatsApp traffic
+
+**Milestone: the full pipeline ran end to end in production.** An inbound message
+from a real number was HMAC-verified, queued to Upstash Redis, picked up by the
+worker, answered, and a send attempted. Webhook → queue → worker → reply all
+work.
+
+**Blocked on one thing:** the send failed with Meta `code: 190` /
+`Authentication Error` — an expired access token. The bot can hear but cannot
+speak. Fix is a permanent System User token (Step 5 of the WhatsApp walkthrough).
+
+| # | Change | Why |
+|---|---|---|
+| 1 | `scripts/start-all.js` process supervisor | Both processes now share one container to halve hosting cost. The shell form `node dist/main.js & node dist/worker.js` waits only on the **worker** — so a crashed *web* process leaves a container that looks healthy with nothing listening, and every webhook Meta sends is refused until the number gets throttled. The supervisor makes either death fatal and exits non-zero so the platform restarts. Verified: web crash → worker drained → exit code 3 in 764ms |
+| 2 | `RootController` — `GET /` | Render probes `/` on every deploy; each probe logged a 404 and buried real errors. Returns a pointer to the panel and nothing about internal state (it is an unauthenticated public URL) |
+| 3 | Dockerfile copies `scripts/` into the runtime image | `start:all` needs the supervisor at runtime |
+
+> ⚠️ **Single-container tradeoff.** Running web + worker together is a real cost
+> saving on a small instance, but they can no longer scale independently — a
+> burst of AI calls competes with webhook acks in the same container. Fine at
+> current volume. When webhook latency starts climbing, split them back into two
+> Render services (`railway.web.json` / `railway.worker.json` describe the same
+> split) rather than raising the instance size.
 
 ### 2026-08-08 — Admin login + visual overhaul
 

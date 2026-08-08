@@ -21,6 +21,7 @@ export class HealthController {
     private readonly queue: QueueService,
   ) {}
 
+
   /** Process is alive. Deliberately checks nothing external. */
   @Get('live')
   @HttpCode(HttpStatus.OK)
