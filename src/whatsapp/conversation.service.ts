@@ -312,12 +312,32 @@ export class ConversationService {
     switch (state) {
       case STATE.AWAITING_CNR: {
         const cnr = extractCnr(text);
-        if (!cnr) {
-          await this.api.sendText(job.from, Replies.CNR_NOT_FOUND);
+        if (cnr) {
+          await this.conversations.clear(user.id);
+          await this.answerCaseStatus(user, cnr, text);
           return true;
         }
-        await this.conversations.clear(user.id);
-        await this.answerCaseStatus(user, cnr, text);
+
+        // Was that even an attempt at a CNR?
+        //
+        // Answering "I could not find that CNR" to every message traps the
+        // user: having once asked for a CNR we would reject "hindi please" and
+        // "actually, what is section 420" forever, and the only escape is
+        // knowing to type "menu". A natural-language message is a change of
+        // subject, not a malformed CNR - so release the state and let it be
+        // handled as an ordinary question.
+        //
+        // The test is a run of 10+ alphanumerics: real CNRs are 16 unbroken
+        // characters, so a genuine typo still gets the corrective message.
+        const compact = text.replace(/[\s\-_/]/g, '');
+        const looksLikeCnrAttempt = /[A-Za-z0-9]{10,}/.test(compact);
+
+        if (!looksLikeCnrAttempt) {
+          await this.conversations.clear(user.id);
+          return false;
+        }
+
+        await this.api.sendText(job.from, Replies.CNR_NOT_FOUND);
         return true;
       }
 
@@ -408,9 +428,29 @@ export class ConversationService {
     }
 
     switch (intent.intent) {
-      case 'SMALL_TALK':
-        await this.api.sendText(job.from, 'Namaste. Ask me a legal question, or type *menu* for options.');
+      case 'SMALL_TALK': {
+        // Deliberately not quota-checked: greeting the bot must never consume
+        // one of an unverified advocate's five daily queries.
+        const history = await this.memory.load(user.id);
+        try {
+          const reply = await this.rag.answerSmallTalk(
+            text,
+            intent.language,
+            user.full_name ?? job.profileName ?? null,
+            history,
+          );
+          if (reply) {
+            await this.api.sendText(job.from, reply);
+            await this.memory.append(user.id, text, reply);
+            return;
+          }
+        } catch (err) {
+          this.logger.warn({ err }, 'Small talk generation failed - using the fixed greeting');
+        }
+        // Fallback only. A greeting is never worth failing a message over.
+        await this.api.sendText(job.from, 'Namaste. What can I help you with?');
         return;
+      }
 
       case 'MENU_NAVIGATION':
         await this.sendMainMenu(user);
@@ -512,6 +552,7 @@ export class ConversationService {
 
     const body = formatPrecedentPage(result.precedents, 0, pageSize, intent.searchQuery, {
       lexicalOnly: result.lexicalOnly,
+      source: result.source,
     });
     await this.api.sendText(job.from, body);
 
@@ -520,7 +561,7 @@ export class ConversationService {
       await this.conversations.set(
         user.id,
         STATE.SHOWING_PRECEDENTS,
-        { query: intent.searchQuery, offset: pageSize, lexicalOnly: result.lexicalOnly, rows: result.precedents },
+        { query: intent.searchQuery, offset: pageSize, lexicalOnly: result.lexicalOnly, source: result.source, rows: result.precedents },
         PRECEDENT_SESSION_TTL_SECONDS,
       );
     } else {
@@ -564,6 +605,7 @@ export class ConversationService {
       query?: string;
       offset?: number;
       lexicalOnly?: boolean;
+      source?: 'local' | 'kanoon';
       rows?: PrecedentRow[];
     };
 
@@ -584,6 +626,7 @@ export class ConversationService {
       job.from,
       formatPrecedentPage(rows, offset, pageSize, context.query ?? 'your search', {
         lexicalOnly: context.lexicalOnly,
+        source: context.source,
       }),
     );
 

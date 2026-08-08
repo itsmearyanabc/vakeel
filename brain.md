@@ -639,6 +639,44 @@ adapter exists, or in `.env` locally.
 
 ## 📝 Change log
 
+### 2026-08-08 — Indian Kanoon, persona, and two bugs found in production
+
+**The bot answered its first real advocate.** That conversation exposed two
+defects, both now fixed.
+
+| # | Change | Why |
+|---|---|---|
+| 1 | **Indian Kanoon integration** (`src/kanoon/`) | Live case law across ~millions of judgments with no ingestion. Redis-cached (billed per search), circuit-breakered, honest mapping |
+| 2 | `PRECEDENT_SOURCE` = `local` \| `kanoon` \| `auto` | Not a silent either/or. `auto` falls back to the local corpus when Kanoon fails, so research survives an outage |
+| 3 | 🐛 **Fixed: the CNR state trap** | After asking for a CNR, *every* later message got "could not find that CNR" — "Okay let me" and "Hindi please" both. The state never released and the only escape was knowing to type "menu". Now a natural-language message releases the state; only a 10+ character alphanumeric run is treated as a failed CNR |
+| 4 | 🐛 **Fixed: incomplete local builds** | `incremental: true` + `deleteOutDir: true` = the cache says "already emitted" after dist was wiped, so whole directories vanish and the build still reports success. Docker was immune (fresh container), so it only broke local work — which is worse, because it looks like your code is wrong. `incremental: false` in `tsconfig.build.json` |
+| 5 | **Persona rewrite** (`VAKEEL_PERSONA`) | Replies read like a call centre. The general prompt appended "unverified against case law" to *every* message including greetings, and small talk was a hardcoded string |
+| 6 | Small talk routed through the model | Runs on the cheap router model, not synthesis, and is exempt from quota — greeting the bot must not cost an advocate one of five daily queries |
+| 7 | 33 new tests against **real captured API payloads** | |
+
+#### What Indian Kanoon actually returns
+
+Verified against the live API rather than its documentation. Three fields are
+not what their names suggest, and each was wrong in the original integration
+plan:
+
+| Field | Looks like | Actually is |
+|---|---|---|
+| `found` | a count | a **string**: `"1 - 10 of 6142"` |
+| `bench` | judge names | **numeric author IDs** `[520,528,535]` — rendering it shows an advocate "520, 528" as the coram |
+| `headline` | a headnote | a search snippet with `<b>` tags around matched terms |
+
+> ⚠️ **Kanoon exposes no citation of any kind** — not in `/search/`, not in
+> `/doc/`. Neither neutral nor reporter. Rows therefore carry
+> `neutral_citation: null` and offer the indiankanoon.org link instead.
+> Synthesising a citation-shaped string from the title would produce something
+> that looks quotable in a filing and is not — the exact failure this product
+> exists to prevent.
+
+**Verified live:** 20 docs fetched → deduped and capped to 15, newest first
+(2026-07-27 → 2026-04-21 → …) out of 5,331 available, excerpts stripped of
+markup, links working.
+
 ### 2026-08-08 (live) — First real WhatsApp traffic
 
 **Milestone: the full pipeline ran end to end in production.** An inbound message

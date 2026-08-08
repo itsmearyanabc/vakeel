@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { KanoonModule } from '../kanoon/kanoon.module';
 import { EmbeddingService } from './embedding.service';
 import { GuardrailsService } from './guardrails.service';
 import { IntentService } from './intent.service';
@@ -19,5 +20,5 @@ const providers = [
   ChatMemoryService,
 ];
 
-@Module({ providers, exports: providers })
+@Module({ imports: [KanoonModule], providers, exports: providers })
 export class AiModule {}

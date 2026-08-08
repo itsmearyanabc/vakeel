@@ -38,7 +38,7 @@ export interface SettingDefinition {
   requiredFor?: string;
 }
 
-export type SettingGroupId = 'whatsapp' | 'ai' | 'retrieval' | 'quotas' | 'ecourts';
+export type SettingGroupId = 'whatsapp' | 'ai' | 'research' | 'retrieval' | 'quotas' | 'ecourts';
 
 export interface SettingGroup {
   id: SettingGroupId;
@@ -58,6 +58,12 @@ export const SETTING_GROUPS: readonly SettingGroup[] = [
     title: 'AI providers',
     description:
       'Which model answers which kind of question. Any task left on "mock" returns a canned placeholder instead of calling a real model, which is what lets you exercise the bot before you have keys.',
+  },
+  {
+    id: 'research',
+    title: 'Case law source',
+    description:
+      'Where precedents come from. Indian Kanoon gives you live access to millions of judgments without ingesting anything — but it is billed per query, so results are cached for a day. The local corpus is whatever you have ingested into Postgres.',
   },
   {
     id: 'retrieval',
@@ -217,6 +223,37 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     type: 'secret',
     placeholder: 'AIza...',
     help: 'From Google AI Studio. Needed only if a task above is set to Google.',
+  },
+
+  // --- Case law source ------------------------------------------------------
+  {
+    key: 'PRECEDENT_SOURCE',
+    group: 'research',
+    label: 'Precedent source',
+    type: 'select',
+    options: [
+      { value: 'auto', label: 'Auto — Indian Kanoon if keyed, else local corpus' },
+      { value: 'kanoon', label: 'Indian Kanoon only (live)' },
+      { value: 'local', label: 'Local corpus only (ingested judgments)' },
+    ],
+    help: 'On "auto" the bot uses Indian Kanoon when a key is present and silently falls back to the local corpus if Kanoon is unreachable, so research keeps working during an outage.',
+  },
+  {
+    key: 'KANOON_API_KEY',
+    group: 'research',
+    label: 'Indian Kanoon API key',
+    type: 'secret',
+    placeholder: '40-character token',
+    help: 'From indiankanoon.org/api. Billed per search — results are cached for a day, so repeated questions on the same matter cost once.',
+    requiredFor: 'live case law search',
+  },
+  {
+    key: 'KANOON_CACHE_TTL_SECONDS',
+    group: 'research',
+    label: 'Cache lifetime (seconds)',
+    type: 'number',
+    min: 0,
+    help: 'How long a search result is reused before Kanoon is charged again. Reported judgments do not change once published, so a long TTL is safe. 86400 = one day.',
   },
 
   // --- Retrieval ------------------------------------------------------------

@@ -12,6 +12,7 @@ import {
   buildGeneralLegalPrompt,
   buildPrecedentSearchPrompt,
   buildSectionExplanationPrompt,
+  buildSmallTalkPrompt,
 } from './prompts';
 import { LlmMessage } from './providers/llm-provider.interface';
 import { ProviderRegistry } from './providers/provider.registry';
@@ -132,6 +133,33 @@ export class RagService {
     const started = startedAt ?? Date.now();
     const system = buildGeneralLegalPrompt(intent.language);
     return this.generate(system, intent, [], [], started, history);
+  }
+
+  /**
+   * Greetings, thanks and "what can you do".
+   *
+   * Runs on the cheap router model, not the synthesis one - this is a
+   * pleasantry, and paying synthesis rates for "hi" on every new user would be
+   * a meaningful share of the bill.
+   *
+   * History is passed so a second "hi" in the same conversation does not get
+   * the identical sentence back, which is what made the bot feel like a phone
+   * tree. If the call fails the caller falls back to a fixed string; a greeting
+   * is never worth failing a message over.
+   */
+  async answerSmallTalk(
+    userMessage: string,
+    language: string,
+    userName: string | null,
+    history: LlmMessage[] = [],
+  ): Promise<string> {
+    const result = await this.registry.complete({
+      task: 'router',
+      system: buildSmallTalkPrompt(language, userName),
+      messages: [...history.slice(-4), { role: 'user', content: userMessage }],
+      maxTokens: 300,
+    });
+    return result.text.trim();
   }
 
   /** Dispatch on intent. CASE_STATUS is handled upstream by the eCourts adapter. */

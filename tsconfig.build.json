@@ -6,7 +6,18 @@
     // the project root, so the entrypoint lands at dist/src/main.js instead of
     // dist/main.js - and every start command (Dockerfile CMD, both railway
     // configs, package.json) silently points at a file that does not exist.
-    "rootDir": "src"
+    "rootDir": "src",
+    // MUST stay false here. nest-cli.json sets deleteOutDir:true, which wipes
+    // dist/ before each build - but an incremental build consults
+    // .tsbuildinfo, concludes the unchanged files are already emitted, and
+    // writes nothing for them. The result is a dist/ missing whole
+    // directories, with a build that reports success.
+    //
+    // Docker never sees it (fresh container, no cache), so this only breaks
+    // local builds - which is worse, because it looks like your code is wrong.
+    // Type-checking still uses the incremental root tsconfig, so nothing slows
+    // down meaningfully.
+    "incremental": false
   },
   // Build output is src/ only. Test files and the operational scripts are
   // type-checked by the root tsconfig and run through ts-jest / ts-node; they

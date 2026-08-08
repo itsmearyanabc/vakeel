@@ -144,6 +144,25 @@ const envSchema = z.object({
   PRECEDENT_MAX_RESULTS: z.coerce.number().int().min(1).max(50).default(15),
   PRECEDENT_PAGE_SIZE: z.coerce.number().int().min(1).max(15).default(5),
 
+  /**
+   * Where precedents come from.
+   *   local  - the ingested Postgres corpus only
+   *   kanoon - Indian Kanoon's live API only
+   *   auto   - Kanoon when a key is set, otherwise local; local as fallback
+   *            whenever Kanoon fails
+   */
+  PRECEDENT_SOURCE: z.enum(['local', 'kanoon', 'auto']).default('auto'),
+
+  // --- Indian Kanoon --------------------------------------------------------
+  // Billed per query, so caching is on by default and the TTL is long: reported
+  // judgments do not change once published.
+  KANOON_API_KEY: z.string().default(''),
+  KANOON_BASE_URL: z.string().default('https://api.indiankanoon.org'),
+  KANOON_TIMEOUT_MS: z.coerce.number().int().min(1000).default(15000),
+  KANOON_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).default(86_400),
+  KANOON_BREAKER_THRESHOLD: z.coerce.number().int().min(1).default(5),
+  KANOON_BREAKER_RESET_MS: z.coerce.number().int().min(1000).default(60_000),
+
   // --- Quotas ---------------------------------------------------------------
   QUOTA_GUEST_DAILY: z.coerce.number().int().default(5),
   QUOTA_VERIFIED_DAILY: z.coerce.number().int().default(-1),

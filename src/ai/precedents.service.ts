@@ -4,18 +4,21 @@ import { InjectEnv } from '../config/config.module';
 import { AppEnv } from '../config/env';
 import { CorpusRepository } from '../database/repositories/corpus.repository';
 import { PrecedentRow } from '../database/types';
+import { KanoonNotConfiguredError, KanoonService } from '../kanoon/kanoon.service';
 import { SettingsService } from '../settings/settings.service';
 import { EmbeddingService } from './embedding.service';
 import { ClassifiedIntent } from './intent.service';
 import { expandQuery } from './legal-patterns';
 
 export interface PrecedentSearchResult {
-  /** Already sorted newest-first by the SQL function. */
+  /** Already sorted newest-first, whichever source produced them. */
   precedents: PrecedentRow[];
   /** How many matched before the per-session cap. */
   totalMatches: number;
   /** True when retrieval ran keyword-only because no embedding was available. */
   lexicalOnly: boolean;
+  /** Which backend actually answered - shown to the user and logged. */
+  source: 'local' | 'kanoon';
   latencyMs: number;
 }
 
@@ -51,6 +54,7 @@ export class PrecedentsService {
   constructor(
     private readonly corpus: CorpusRepository,
     private readonly embeddings: EmbeddingService,
+    private readonly kanoon: KanoonService,
     private readonly settings: SettingsService,
     @InjectEnv() private readonly env: AppEnv,
   ) {}
@@ -63,9 +67,50 @@ export class PrecedentsService {
     return this.settings.getNumber('PRECEDENT_PAGE_SIZE', this.env.PRECEDENT_PAGE_SIZE);
   }
 
+  /** local | kanoon | auto — resolved per call so the panel can switch it live. */
+  private get source(): string {
+    return this.settings.get('PRECEDENT_SOURCE') || this.env.PRECEDENT_SOURCE;
+  }
+
   async search(intent: ClassifiedIntent): Promise<PrecedentSearchResult> {
     const started = Date.now();
+    const mode = this.source;
 
+    // Indian Kanoon reaches far more case law than any corpus we would ingest,
+    // so it is preferred when available. `auto` falls back to local on failure
+    // rather than leaving the advocate with nothing.
+    const useKanoon = mode === 'kanoon' || (mode === 'auto' && this.kanoon.isConfigured);
+
+    if (useKanoon) {
+      try {
+        const precedents = await this.kanoon.search(intent.searchQuery, this.maxResults);
+        return {
+          precedents,
+          totalMatches: precedents[0]?.total_matches ?? precedents.length,
+          // Kanoon runs its own relevance ranking; the local dense/lexical
+          // distinction does not apply, so this is never a degraded state.
+          lexicalOnly: false,
+          source: 'kanoon',
+          latencyMs: Date.now() - started,
+        };
+      } catch (err) {
+        if (err instanceof KanoonNotConfiguredError) {
+          this.logger.warn('PRECEDENT_SOURCE is kanoon but no API key is set - using the local corpus');
+        } else if (mode === 'kanoon') {
+          // Explicitly pinned to Kanoon: silently serving local results would
+          // misrepresent where the authorities came from.
+          throw err;
+        } else {
+          this.logger.error({ err }, 'Indian Kanoon search failed - falling back to the local corpus');
+        }
+      }
+    }
+
+    return this.searchLocal(intent, started);
+  }
+
+  /** Hybrid dense + lexical search over the ingested Postgres corpus. */
+  private async searchLocal(intent: ClassifiedIntent, started: number): Promise<PrecedentSearchResult> {
     const expanded = expandQuery(intent.searchQuery);
     const embedding = await this.embeddings.embedQuery(expanded);
 
@@ -93,6 +138,7 @@ export class PrecedentsService {
       precedents,
       totalMatches: precedents[0]?.total_matches ?? precedents.length,
       lexicalOnly: !embedding,
+      source: 'local',
       latencyMs: Date.now() - started,
     };
   }
@@ -160,7 +206,7 @@ export function formatPrecedentPage(
   offset: number,
   pageSize: number,
   query: string,
-  opts: { lexicalOnly?: boolean } = {},
+  opts: { lexicalOnly?: boolean; source?: 'local' | 'kanoon' } = {},
 ): string {
   if (all.length === 0) {
     return [
@@ -198,7 +244,11 @@ export function formatPrecedentPage(
       `${p.court_name ?? 'Court not recorded'} · ${year(p.judgment_date)}`,
     ];
 
+    // Indian Kanoon exposes no citation of any kind, so the document link is
+    // the reference an advocate can actually act on. Better an honest link than
+    // a citation-shaped string that looks quotable in a filing and is not.
     if (citation) lines.push(`📑 ${citation}`);
+    else if (p.source_url) lines.push(`🔗 ${p.source_url}`);
 
     // Bench strength is what tells an advocate whether a later smaller bench
     // could have departed from it, so it is worth the line.
@@ -224,9 +274,14 @@ export function formatPrecedentPage(
     footer.push('', '_End of results._');
   }
 
-  // The corpus is whatever you ingested; saying so prevents "the bot says there
-  // is no authority on this" being read as "there is no authority on this".
-  footer.push('', '_Results come from the loaded judgment corpus and may not be exhaustive. Always verify before citing._');
+  // Naming the source prevents "the bot found nothing" being read as "there is
+  // no authority on this" - and tells the advocate what they are relying on.
+  footer.push(
+    '',
+    opts.source === 'kanoon'
+      ? '_Results from Indian Kanoon. Open the link to read the full judgment, and always verify before citing._'
+      : '_Results come from the loaded judgment corpus and may not be exhaustive. Always verify before citing._',
+  );
 
   return [...header, '', entries.join('\n\n────────\n\n'), ...footer].join('\n');
 }
