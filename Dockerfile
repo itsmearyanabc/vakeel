@@ -49,4 +49,4 @@ EXPOSE 3000
 ENTRYPOINT ["/sbin/tini", "--"]
 
 # Overridden to `node dist/worker.js` on the worker service.
-CMD ["node", "dist/main.js"]
+CMD ["npm", "run", "start:all"]
