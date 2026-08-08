@@ -5,7 +5,7 @@
  * consumes), so the payload shape can only drift if you change it here.
  */
 
-export const QUEUE_WHATSAPP_INBOUND = 'whatsapp:inbound';
+export const QUEUE_WHATSAPP_INBOUND = 'whatsapp-inbound';
 
 /** One inbound WhatsApp message, handed off for asynchronous processing. */
 export interface InboundMessageJob {
