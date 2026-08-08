@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { KanoonModule } from '../kanoon/kanoon.module';
 import { UsersModule } from '../users/users.module';
 import { WhatsAppModule } from '../whatsapp/whatsapp.module';
 import { AdminAuthController } from './admin-auth.controller';
@@ -11,7 +12,10 @@ import { AdminGuard } from './admin.guard';
  * and the login endpoint - are matched before the guarded API catch-alls.
  */
 @Module({
-  imports: [UsersModule, WhatsAppModule],
+  // KanoonModule is needed for the dashboard's case-law source status. Nest
+  // only reports a missing import at boot, which is why module-resolution has
+  // its own test - see app.wiring.spec.ts.
+  imports: [UsersModule, WhatsAppModule, KanoonModule],
   controllers: [AdminUiController, AdminAuthController, AdminController],
   providers: [AdminGuard],
 })
