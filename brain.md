@@ -648,11 +648,43 @@ defects, both now fixed.
 |---|---|---|
 | 1 | **Indian Kanoon integration** (`src/kanoon/`) | Live case law across ~millions of judgments with no ingestion. Redis-cached (billed per search), circuit-breakered, honest mapping |
 | 2 | `PRECEDENT_SOURCE` = `local` \| `kanoon` \| `auto` | Not a silent either/or. `auto` falls back to the local corpus when Kanoon fails, so research survives an outage |
-| 3 | 🐛 **Fixed: the CNR state trap** | After asking for a CNR, *every* later message got "could not find that CNR" — "Okay let me" and "Hindi please" both. The state never released and the only escape was knowing to type "menu". Now a natural-language message releases the state; only a 10+ character alphanumeric run is treated as a failed CNR |
+| 3 | 🐛 **The CNR state trap — took three attempts** | See below. Now guarded by `looksLikeCnrAttempt()` with 21 regression tests |
 | 4 | 🐛 **Fixed: incomplete local builds** | `incremental: true` + `deleteOutDir: true` = the cache says "already emitted" after dist was wiped, so whole directories vanish and the build still reports success. Docker was immune (fresh container), so it only broke local work — which is worse, because it looks like your code is wrong. `incremental: false` in `tsconfig.build.json` |
 | 5 | **Persona rewrite** (`VAKEEL_PERSONA`) | Replies read like a call centre. The general prompt appended "unverified against case law" to *every* message including greetings, and small talk was a hardcoded string |
 | 6 | Small talk routed through the model | Runs on the cheap router model, not synthesis, and is exempt from quota — greeting the bot must not cost an advocate one of five daily queries |
 | 7 | 33 new tests against **real captured API payloads** | |
+
+#### 🐛 The CNR state trap, and two wrong fixes
+
+Worth recording in full, because the wrong fixes were more interesting than the
+bug.
+
+**The bug.** Having asked for a CNR, the handler answered *"I could not find a
+case with that CNR number"* to **every** subsequent message and stayed in the
+state. An advocate who typed "what is ipc 420" got the CNR error, forever. The
+only escape was knowing to type "menu".
+
+**Wrong fix #1 — strip whitespace, look for a 10+ character alphanumeric run.**
+Shipped and deployed. Removing spaces turns ordinary sentences into long runs:
+`"what is ipc 420"` → `"whatisipc420"` → 12 characters → read as a botched CNR.
+Whitespace was the signal, and the fix threw it away.
+
+**Wrong fix #2 — per-token length.** Better, still wrong. English is full of
+long words: `punishment` (10), `precedents` (10), `anticipatory` (12). "show me
+precedents on anticipatory bail" still tripped it.
+
+**What actually works — digit density.** A CNR is 16 characters of which **10
+are digits**. Legal English contains almost none. A token qualifies only at 10+
+alphanumerics *with 6+ digits*; grouped input (`"DLCT01 000123 2024"`) needs 14+
+alphanumerics with 8+ digits across ≤4 tokens.
+
+**Lesson:** the discriminator was a property of the *format* (digit density),
+not of the *text* (length). Both wrong fixes measured size because size was easy
+to measure.
+
+The same trap existed in `AWAITING_BAR_ID` and is fixed the same way — a bar
+council number always contains digits, so a message with none releases the
+state.
 
 #### What Indian Kanoon actually returns
 
