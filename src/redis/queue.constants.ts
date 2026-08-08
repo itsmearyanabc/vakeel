@@ -31,5 +31,5 @@ export interface InboundMessageJob {
 
 /** Deterministic BullMQ job id, so a redelivered webhook cannot double-enqueue. */
 export function inboundJobId(waMessageId: string): string {
-  return `wa:${waMessageId}`;
+  return `wa-${waMessageId}`;
 }
