@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { IntentService } from '../ai/intent.service';
 import { extractCnr } from '../ai/legal-patterns';
+import { ChatMemoryService } from '../ai/memory/chat-memory.service';
 import { PrecedentsService, formatPrecedentPage } from '../ai/precedents.service';
 import { ProviderRegistry } from '../ai/providers/provider.registry';
 import { RagService } from '../ai/rag.service';
@@ -66,6 +67,7 @@ export class ConversationService {
     private readonly intents: IntentService,
     private readonly rag: RagService,
     private readonly precedents: PrecedentsService,
+    private readonly memory: ChatMemoryService,
     private readonly ecourts: EcourtsService,
     private readonly quota: QuotaService,
     private readonly analytics: AnalyticsRepository,
@@ -99,7 +101,22 @@ export class ConversationService {
     }
     if (['stop', 'unsubscribe'].includes(lower)) {
       await this.users.setLanguage(user.id, user.preferred_language);
+      // Opting out must also drop retained context, not just stop replies.
+      await this.memory.clear(user.id);
       await this.api.sendText(job.from, 'You will not receive further messages. Send *start* to resume.');
+      return;
+    }
+
+    // Let an advocate start a clean thread. Without this, a follow-up on a new
+    // matter inherits context from the previous one and the model conflates
+    // the two - which in legal research is worse than having no memory at all.
+    if (['reset', 'new chat', 'clear', 'forget'].includes(lower)) {
+      await this.memory.clear(user.id);
+      await this.conversations.clear(user.id);
+      await this.api.sendText(
+        job.from,
+        'Cleared. I have forgotten our previous conversation — ask me something new.',
+      );
       return;
     }
     if (['verify', 'verification'].includes(lower)) {
@@ -595,7 +612,11 @@ export class ConversationService {
       return;
     }
 
-    const answer = await this.rag.answer(intent);
+    // Prior turns for THIS advocate only - keyed by user id, so two people
+    // messaging simultaneously can never pick up each other's context.
+    const history = await this.memory.load(user.id);
+
+    const answer = await this.rag.answer(intent, history);
 
     let text = answer.text.trim();
     if (!text) {
@@ -606,6 +627,12 @@ export class ConversationService {
     }
 
     await this.api.sendText(job.from, text);
+
+    // Store the exchange after a successful send. Recording it before would
+    // leave a reply in history that the advocate never actually received.
+    // The raw question is stored, not the expanded/translated one, so the
+    // model sees what the user actually wrote.
+    await this.memory.append(user.id, originalText, answer.text.trim());
 
     await this.analytics.recordSearch({
       userId: user.id,

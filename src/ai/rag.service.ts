@@ -13,6 +13,7 @@ import {
   buildPrecedentSearchPrompt,
   buildSectionExplanationPrompt,
 } from './prompts';
+import { LlmMessage } from './providers/llm-provider.interface';
 import { ProviderRegistry } from './providers/provider.registry';
 
 export interface RagAnswer {
@@ -61,7 +62,7 @@ export class RagService {
   ) {}
 
   /** Statute explanation. No case law retrieval; the acts table is authority enough. */
-  async answerSectionLookup(intent: ClassifiedIntent): Promise<RagAnswer> {
+  async answerSectionLookup(intent: ClassifiedIntent, history: LlmMessage[] = []): Promise<RagAnswer> {
     const started = Date.now();
 
     const statutes = await this.corpus.searchStatutes(
@@ -74,15 +75,15 @@ export class RagService {
     if (statutes.length === 0) {
       // Nothing matched. Fall through to a general answer rather than
       // inventing one - the general prompt forbids citing sections outright.
-      return this.answerGeneral(intent, started);
+      return this.answerGeneral(intent, started, history);
     }
 
     const system = buildSectionExplanationPrompt(statutes, intent.language);
-    return this.generate(system, intent, [], statutes, started);
+    return this.generate(system, intent, [], statutes, started, history);
   }
 
   /** Case law research over the judgment corpus. */
-  async answerPrecedentSearch(intent: ClassifiedIntent): Promise<RagAnswer> {
+  async answerPrecedentSearch(intent: ClassifiedIntent, history: LlmMessage[] = []): Promise<RagAnswer> {
     const started = Date.now();
 
     const expanded = expandQuery(intent.searchQuery);
@@ -119,33 +120,33 @@ export class RagService {
     );
 
     if (relevant.length === 0 && statutes.length === 0) {
-      return this.answerGeneral(intent, started);
+      return this.answerGeneral(intent, started, history);
     }
 
     const system = buildPrecedentSearchPrompt(relevant, statutes, intent.language);
-    return this.generate(system, intent, relevant, statutes, started);
+    return this.generate(system, intent, relevant, statutes, started, history);
   }
 
   /** No corpus support available; the prompt bars citing anything. */
-  async answerGeneral(intent: ClassifiedIntent, startedAt?: number): Promise<RagAnswer> {
+  async answerGeneral(intent: ClassifiedIntent, startedAt?: number, history: LlmMessage[] = []): Promise<RagAnswer> {
     const started = startedAt ?? Date.now();
     const system = buildGeneralLegalPrompt(intent.language);
-    return this.generate(system, intent, [], [], started);
+    return this.generate(system, intent, [], [], started, history);
   }
 
   /** Dispatch on intent. CASE_STATUS is handled upstream by the eCourts adapter. */
-  async answer(intent: ClassifiedIntent): Promise<RagAnswer> {
+  async answer(intent: ClassifiedIntent, history: LlmMessage[] = []): Promise<RagAnswer> {
     switch (intent.intent) {
       case 'SECTION_LOOKUP':
-        return this.answerSectionLookup(intent);
+        return this.answerSectionLookup(intent, history);
       case 'PRECEDENT_SEARCH':
-        return this.answerPrecedentSearch(intent);
+        return this.answerPrecedentSearch(intent, history);
       case 'DRAFTING_HELP':
       case 'GENERAL_LEGAL':
       default:
         // Drafting benefits from precedent context too, so route it through
         // retrieval rather than answering from nothing.
-        return this.answerPrecedentSearch(intent);
+        return this.answerPrecedentSearch(intent, history);
     }
   }
 
@@ -155,11 +156,14 @@ export class RagService {
     passages: RetrievedChunk[],
     statutes: StatuteRow[],
     startedAt: number,
+    history: LlmMessage[] = [],
   ): Promise<RagAnswer> {
     const result = await this.registry.complete({
       task: 'synthesis',
       system,
-      messages: [{ role: 'user', content: intent.searchQuery }],
+      // Prior turns first, then the current question. History is already
+      // trimmed and isolated per advocate by ChatMemoryService.
+      messages: [...history, { role: 'user', content: intent.searchQuery }],
     });
 
     // Every generated answer passes through verification before anyone sees it.

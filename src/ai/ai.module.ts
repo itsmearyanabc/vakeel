@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { EmbeddingService } from './embedding.service';
 import { GuardrailsService } from './guardrails.service';
 import { IntentService } from './intent.service';
+import { ChatMemoryService } from './memory/chat-memory.service';
 import { PrecedentsService } from './precedents.service';
 import { ProviderRegistry } from './providers/provider.registry';
 import { RagService } from './rag.service';
@@ -15,6 +16,7 @@ const providers = [
   RagService,
   PrecedentsService,
   TranscriptionService,
+  ChatMemoryService,
 ];
 
 @Module({ providers, exports: providers })

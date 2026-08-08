@@ -17,8 +17,13 @@ const bool = z
 
 const port = z.coerce.number().int().min(1).max(65535);
 
-/** Providers each AI task can be routed to. `mock` needs no credentials. */
-const providerEnum = z.enum(['anthropic', 'openai', 'google', 'mock']);
+/**
+ * Providers each AI task can be routed to. `mock` needs no credentials.
+ *
+ * deepseek and groq are OpenAI-wire-compatible, which is why they need nothing
+ * beyond a key and a base URL.
+ */
+const providerEnum = z.enum(['anthropic', 'openai', 'google', 'deepseek', 'groq', 'mock']);
 
 const envSchema = z.object({
   // --- Application ----------------------------------------------------------
@@ -91,6 +96,20 @@ const envSchema = z.object({
   OPENAI_ROUTER_MODEL: z.string().default('gpt-4.1-mini'),
   OPENAI_EMBEDDING_MODEL: z.string().default('text-embedding-3-large'),
   OPENAI_TRANSCRIBE_MODEL: z.string().default('whisper-1'),
+  /** Override to point the OpenAI client at any wire-compatible endpoint. */
+  OPENAI_BASE_URL: z.string().default(''),
+
+  // DeepSeek - OpenAI-compatible wire format, markedly cheaper per token.
+  DEEPSEEK_API_KEY: z.string().default(''),
+  DEEPSEEK_SYNTHESIS_MODEL: z.string().default('deepseek-chat'),
+  DEEPSEEK_ROUTER_MODEL: z.string().default('deepseek-chat'),
+  DEEPSEEK_BASE_URL: z.string().default('https://api.deepseek.com'),
+
+  // Groq - OpenAI-compatible, very fast inference on open-weight models.
+  GROQ_API_KEY: z.string().default(''),
+  GROQ_SYNTHESIS_MODEL: z.string().default('llama-3.3-70b-versatile'),
+  GROQ_ROUTER_MODEL: z.string().default('llama-3.1-8b-instant'),
+  GROQ_BASE_URL: z.string().default('https://api.groq.com/openai/v1'),
 
   GOOGLE_API_KEY: z.string().default(''),
   GOOGLE_SYNTHESIS_MODEL: z.string().default('gemini-2.5-pro'),
@@ -100,6 +119,17 @@ const envSchema = z.object({
   EMBEDDING_DIMENSIONS: z.coerce.number().int().min(64).max(4000).default(3072),
   LLM_TIMEOUT_MS: z.coerce.number().int().min(1000).default(45000),
   LLM_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
+
+  // --- Per-user conversation memory -----------------------------------------
+  // Isolated per advocate, so two people talking to the bot at the same time
+  // never see each other's context. See src/ai/memory/chat-memory.service.ts.
+  MEMORY_ENABLED: bool.default(true),
+  /** User+assistant pairs retained. Each turn costs tokens on every later call. */
+  MEMORY_MAX_TURNS: z.coerce.number().int().min(0).max(50).default(10),
+  /** Hard character ceiling, so one enormous message cannot blow the budget. */
+  MEMORY_MAX_CHARS: z.coerce.number().int().min(500).max(100_000).default(6000),
+  /** Idle expiry. Also acts as automatic data minimisation under the DPDP Act. */
+  MEMORY_TTL_SECONDS: z.coerce.number().int().min(300).default(86_400),
 
   // --- Retrieval ------------------------------------------------------------
   RAG_DENSE_TOP_K: z.coerce.number().int().min(1).max(500).default(50),

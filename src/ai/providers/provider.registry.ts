@@ -2,11 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { getLogger } from '../../common/logger';
 import { InjectEnv } from '../../config/config.module';
 import { AppEnv } from '../../config/env';
-import { AnthropicProvider } from './anthropic.provider';
-import { GoogleEmbeddingProvider, GoogleProvider } from './google.provider';
+import { GoogleEmbeddingProvider } from './google.provider';
+import { ChatProviderName, LangChainProvider } from './langchain.provider';
 import { EmbeddingProvider, LlmProvider, LlmRequest, LlmResult, LlmTask } from './llm-provider.interface';
 import { MockEmbeddingProvider, MockLlmProvider } from './mock.provider';
-import { OpenAiEmbeddingProvider, OpenAiProvider } from './openai.provider';
+import { OpenAiEmbeddingProvider } from './openai.provider';
 
 /**
  * Resolves which concrete provider handles each task, and degrades safely.
@@ -56,13 +56,19 @@ export class ProviderRegistry {
         return Boolean(this.env.OPENAI_API_KEY);
       case 'google':
         return Boolean(this.env.GOOGLE_API_KEY);
+      case 'deepseek':
+        return Boolean(this.env.DEEPSEEK_API_KEY);
+      case 'groq':
+        return Boolean(this.env.GROQ_API_KEY);
       default:
         return true;
     }
   }
 
   private resolveLlm(provider: string, task: LlmTask): LlmProvider {
-    if (provider !== 'mock' && !this.hasKey(provider)) {
+    if (provider === 'mock') return this.mock;
+
+    if (!this.hasKey(provider)) {
       this.logger.warn(
         { provider, task },
         `LLM_${task.toUpperCase()}_PROVIDER is "${provider}" but its API key is empty - falling back to mock`,
@@ -70,25 +76,33 @@ export class ProviderRegistry {
       return this.mock;
     }
 
-    switch (provider) {
-      case 'anthropic':
-        return new AnthropicProvider(this.env);
-      case 'openai':
-        return new OpenAiProvider(this.env);
-      case 'google':
-        return new GoogleProvider(this.env);
-      default:
-        return this.mock;
+    // Every real provider goes through LangChain, which is what makes adding a
+    // vendor a switch case rather than a new SDK integration.
+    try {
+      return new LangChainProvider(provider as ChatProviderName, task, this.env);
+    } catch (err) {
+      // A bad model id or malformed base URL throws at construction. Falling
+      // back keeps the bot answering (with a visible notice) instead of taking
+      // the webhook offline over a typo in a config value.
+      this.logger.error({ err, provider, task }, 'Could not construct provider - falling back to mock');
+      return this.mock;
     }
   }
 
   private resolveEmbeddings(provider: string): EmbeddingProvider {
-    // Anthropic has no embeddings endpoint. Selecting it here is a
-    // configuration mistake worth naming explicitly rather than quietly
-    // treating as "mock".
-    if (provider === 'anthropic') {
+    // Several providers have no embeddings endpoint at all. Selecting one here
+    // is a configuration mistake worth naming explicitly rather than quietly
+    // treating as "mock" - especially DeepSeek, which is an attractive default
+    // for chat precisely because it is cheap, and then silently cannot embed.
+    const noEmbeddings: Record<string, string> = {
+      anthropic: 'Anthropic has no embeddings API',
+      deepseek: 'DeepSeek has no embeddings API',
+      groq: 'Groq has no embeddings API',
+    };
+
+    if (noEmbeddings[provider]) {
       this.logger.warn(
-        'EMBEDDING_PROVIDER=anthropic is not valid (Anthropic has no embeddings API). ' +
+        `EMBEDDING_PROVIDER=${provider} is not valid (${noEmbeddings[provider]}). ` +
           'Use openai or google for embeddings; falling back to mock.',
       );
       return new MockEmbeddingProvider(this.env);
