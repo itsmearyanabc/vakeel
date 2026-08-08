@@ -28,15 +28,15 @@ function chunk(overrides: Partial<RetrievedChunk> = {}): RetrievedChunk {
 }
 
 function makeService(
-  citationResults: { citation: string; exists: boolean }[] = [],
-  statuteResults: { ref: string; exists: boolean }[] = [],
+  citationResults: { citation: string; found: boolean }[] = [],
+  statuteResults: { ref: string; found: boolean }[] = [],
 ): GuardrailsService {
   const corpus = {
     verifyCitations: jest.fn().mockImplementation((citations: string[]) =>
       Promise.resolve(
         citations.map((citation) => ({
           citation,
-          exists: citationResults.find((r) => r.citation === citation)?.exists ?? false,
+          found: citationResults.find((r) => r.citation === citation)?.found ?? false,
           judgment_id: null,
           case_title: null,
         })),
@@ -46,7 +46,7 @@ function makeService(
       Promise.resolve(
         refs.map((ref) => ({
           ref,
-          exists: statuteResults.find((r) => r.ref === ref)?.exists ?? false,
+          found: statuteResults.find((r) => r.ref === ref)?.found ?? false,
           act_code: null,
           section_number: null,
           section_title: null,
@@ -70,7 +70,7 @@ describe('GuardrailsService', () => {
   });
 
   it('keeps a citation that was in the retrieved passages', async () => {
-    const service = makeService([{ citation: 'AIR 2018 SC 1234', exists: true }]);
+    const service = makeService([{ citation: 'AIR 2018 SC 1234', found: true }]);
     const answer = 'As held in *Sample v. Illustration* (AIR 2018 SC 1234), bail may be granted.';
 
     const result = await service.verify(answer, [chunk()]);
@@ -84,7 +84,7 @@ describe('GuardrailsService', () => {
   it('REMOVES a fabricated citation', async () => {
     // The headline case. The model invents a citation that does not exist
     // anywhere in the corpus; it must not survive into the reply.
-    const service = makeService([{ citation: 'AIR 2019 SC 9999', exists: false }]);
+    const service = makeService([{ citation: 'AIR 2019 SC 9999', found: false }]);
     const answer = 'The position is settled by *Invented Case* (AIR 2019 SC 9999).';
 
     const result = await service.verify(answer, [chunk()]);
@@ -98,7 +98,7 @@ describe('GuardrailsService', () => {
   it('tells the reader that something was removed', async () => {
     // Silently altering the answer would leave an unsupported assertion looking
     // like a sourced one.
-    const service = makeService([{ citation: 'AIR 2019 SC 9999', exists: false }]);
+    const service = makeService([{ citation: 'AIR 2019 SC 9999', found: false }]);
 
     const result = await service.verify('See AIR 2019 SC 9999.', [chunk()]);
 
@@ -108,7 +108,7 @@ describe('GuardrailsService', () => {
   it('flags but keeps a real citation that was not retrieved', async () => {
     // Genuine case, drawn from model memory rather than the provided context.
     // Keeping it is right; recording it for audit is also right.
-    const service = makeService([{ citation: '(2020) 7 SCC 1', exists: true }]);
+    const service = makeService([{ citation: '(2020) 7 SCC 1', found: true }]);
     const answer = 'See also (2020) 7 SCC 1.';
 
     const result = await service.verify(answer, [chunk()]);
@@ -121,7 +121,7 @@ describe('GuardrailsService', () => {
 
   it('matches citations regardless of punctuation and case', async () => {
     // Models reformat citations; "AIR 2018 S.C. 1234" is the same authority.
-    const service = makeService([{ citation: 'AIR 2018 S.C. 1234', exists: true }]);
+    const service = makeService([{ citation: 'AIR 2018 S.C. 1234', found: true }]);
 
     const result = await service.verify('Relying on AIR 2018 S.C. 1234.', [chunk()]);
 
@@ -130,7 +130,7 @@ describe('GuardrailsService', () => {
   });
 
   it('removes an invented statutory section', async () => {
-    const service = makeService([], [{ ref: 'IPC 999', exists: false }]);
+    const service = makeService([], [{ ref: 'IPC 999', found: false }]);
 
     const result = await service.verify('This falls under section 999 IPC.', []);
 
@@ -139,7 +139,7 @@ describe('GuardrailsService', () => {
   });
 
   it('keeps a real statutory section', async () => {
-    const service = makeService([], [{ ref: 'IPC 302', exists: true }]);
+    const service = makeService([], [{ ref: 'IPC 302', found: true }]);
 
     const result = await service.verify('Punishable under section 302 IPC.', []);
 
@@ -148,7 +148,7 @@ describe('GuardrailsService', () => {
   });
 
   it('does not leave empty parentheses behind', async () => {
-    const service = makeService([{ citation: 'AIR 2019 SC 9999', exists: false }]);
+    const service = makeService([{ citation: 'AIR 2019 SC 9999', found: false }]);
 
     const result = await service.verify('*Invented Case* (AIR 2019 SC 9999) applies.', []);
 

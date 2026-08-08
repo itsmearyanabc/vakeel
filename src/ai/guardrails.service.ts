@@ -79,7 +79,7 @@ export class GuardrailsService {
     const verified: string[] = [];
 
     for (const check of citationChecks) {
-      if (!check.exists) {
+      if (!check.found) {
         removed.push(check.citation);
       } else if (!grounded.has(this.normalise(check.citation))) {
         flagged.push(check.citation);
@@ -91,7 +91,7 @@ export class GuardrailsService {
 
     const removedStatuteRefs: string[] = [];
     for (const check of statuteChecks) {
-      if (!check.exists) {
+      if (!check.found) {
         removed.push(check.ref);
         removedStatuteRefs.push(check.ref);
       }

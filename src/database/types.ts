@@ -120,16 +120,24 @@ export interface PrecedentRow {
   total_matches: number;
 }
 
+/**
+ * Guardrail lookup results.
+ *
+ * The column is `found`, not `exists`: `exists` is a reserved word in Postgres
+ * and parses as the EXISTS operator, so a function returning a column by that
+ * name is a syntax error. Quoting it would work but would force every future
+ * query to quote it too.
+ */
 export interface CitationCheck {
   citation: string;
-  exists: boolean;
+  found: boolean;
   judgment_id: string | null;
   case_title: string | null;
 }
 
 export interface StatuteRefCheck {
   ref: string;
-  exists: boolean;
+  found: boolean;
   act_code: string | null;
   section_number: string | null;
   section_title: string | null;

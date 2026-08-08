@@ -205,7 +205,7 @@ $$;
 --
 -- Anti-hallucination check (spec section 9.2). Given the citations the model
 -- produced, return which ones actually exist in the corpus. Anything that
--- comes back `exists = false` is stripped from the answer before it is sent.
+-- comes back `found = false` is stripped from the answer before it is sent.
 --
 -- Matching is deliberately loose on whitespace and case, because models
 -- reformat citations ("AIR 2018 SC 1234" vs "AIR 2018 S.C. 1234"), but it never
@@ -214,7 +214,7 @@ $$;
 CREATE OR REPLACE FUNCTION verify_citations(p_citations TEXT[])
 RETURNS TABLE (
     citation    TEXT,
-    exists      BOOLEAN,
+    found       BOOLEAN,
     judgment_id UUID,
     case_title  TEXT
 )
@@ -222,7 +222,7 @@ LANGUAGE sql
 STABLE
 AS $$
 SELECT c.citation,
-       j.id IS NOT NULL AS exists,
+       j.id IS NOT NULL AS found,
        j.id,
        j.case_title
   FROM unnest(p_citations) AS c(citation)
@@ -252,7 +252,7 @@ $$;
 CREATE OR REPLACE FUNCTION verify_statute_refs(p_refs TEXT[])
 RETURNS TABLE (
     ref            TEXT,
-    exists         BOOLEAN,
+    found          BOOLEAN,
     act_code       VARCHAR(20),
     section_number VARCHAR(20),
     section_title  VARCHAR(400)
@@ -261,7 +261,7 @@ LANGUAGE sql
 STABLE
 AS $$
 SELECT r.ref,
-       s.id IS NOT NULL AS exists,
+       s.id IS NOT NULL AS found,
        s.act_code,
        s.section_number,
        s.section_title

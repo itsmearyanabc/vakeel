@@ -20,7 +20,7 @@
 | Area | State | Notes |
 |---|---|---|
 | Backend code | 🟢 Complete | 99 files, compiles clean, 111 tests passing |
-| Database schema | 🟡 Written, never run | 8 migrations ready — **you have not created the Supabase project yet** |
+| Database schema | 🟢 **Applied** | Supabase `biwncplbeatjuaixcekf` · PG 17.6 · 12 tables · both HNSW indexes live · 31 statutes seeded |
 | WhatsApp connection | 🔴 Not connected | Needs Meta credentials — [walkthrough below](#-connecting-whatsapp-step-by-step) |
 | Admin panel | 🟢 Built | Served at `/admin`, no separate deploy |
 | Feature 1 — CNR case status | 🟡 Works, mock data | Real data needs an eCourts provider subscription |
@@ -79,10 +79,15 @@ under BNS" → returns the section with summary, key elements and practical use.
 | Statute search | `search_statutes()`, migration 0004 | 🟢 Full-text + trigram fuzzy on section number |
 | Explanation prompt | `src/ai/prompts.ts` | 🟢 |
 | Hallucination guard | `verify_statute_refs()` + `guardrails.service.ts` | 🟢 A section reference not in the DB is stripped before send |
-| **Corpus** | `supabase/migrations/0006_seed_statutes.sql` | 🔴 **Only ~10 sample sections seeded** |
+| **Corpus** | `supabase/migrations/0006_seed_statutes.sql` | 🟡 **31 sections seeded** (verified live) |
 
 **⚠️ The gap that matters.** The retrieval and guardrails are done; the *content*
-is not. Ten sections is a demo, not a product. You need to ingest full bare acts.
+is not. 31 sections is a demo, not a product — unless the government API supplies
+this live, in which case see [Government API](#-government-api-integration-pending).
+
+**Verified live against Supabase:** `search_statutes('cheating')` returns
+**IPC 420** and **BNS 318(4)** — so plain-language lookup and the IPC↔BNS
+mapping both work.
 
 **IPC↔BNS mapping is already modelled** (`corresponding_act` /
 `corresponding_section` columns) because "what is 302 IPC now?" is the single
@@ -482,7 +487,82 @@ npm run ingest -- --file data/corpus/judgments.jsonl
 
 ---
 
+## 🏛 Government API integration (PENDING)
+
+**Status:** 🔴 Blocked — awaiting API documentation from you.
+
+You have been granted official government API access with a key, covering all
+three priority features. This **changes the data architecture**, so nothing
+should be ingested until it is wired in.
+
+### What changes
+
+The corpus tables were built on the assumption that there was no data source, so
+we would have to hold Indian case law and bare acts ourselves and search them
+with pgvector. If the government API serves that data live, that assumption is
+wrong.
+
+| Layer | Before | After |
+|---|---|---|
+| **Supabase** | Everything — app data *and* legal corpus | App data only: users, messages, quotas, settings, history, audit |
+| **Legal data** | Ingested into `judgments` / `statutes`, embedded locally | Fetched live from the government API |
+| `judgment_chunks` + embeddings | The retrieval engine | Possibly unnecessary, possibly a **cache** |
+
+### The decision this forces: live-only, or cache?
+
+| Approach | Good | Bad |
+|---|---|---|
+| **Live only** — call the API per query | Always current; no ingestion; no stale law | Latency on every message; breaks when API is down; rate limits; no semantic search unless *they* provide it |
+| **Cache** — store responses in existing tables | Fast repeats; survives outages; semantic search stays possible | Staleness rules needed; more moving parts |
+| **Hybrid** *(likely right)* | CNR live (changes daily), statutes+precedents cached (change rarely) | Two code paths |
+
+My recommendation is **hybrid**: case status must be live because hearing dates
+move; bare acts change once a decade and precedent text never changes once
+reported, so both cache well. But this is genuinely your call, and it depends on
+the API's rate limits.
+
+### 🔴 What I need from you to build it
+
+I cannot write the adapter without these — endpoint shapes are not guessable, and
+wrong guesses produce code that compiles and fails at runtime.
+
+1. **API documentation** — link or PDF. This is the main one.
+2. **Base URL(s)** — one API for all three features, or three separate ones?
+3. **Auth scheme** — header name and format. `X-API-Key: xxx`? `Authorization: Bearer xxx`? Query parameter?
+4. **One sample response per feature** — redact the key, keep the JSON shape. A real response beats any spec.
+5. **Rate limits** — requests/minute or /day. Directly determines the caching answer above.
+6. **Search capability for precedents** — does it accept a natural-language query, or only structured filters (court, date, section)? If structured only, we keep local embeddings for semantic search and use the API for authoritative text.
+
+**Do not paste the API key into chat** — put it in the admin panel once the
+adapter exists, or in `.env` locally.
+
+### What is already shaped to receive it
+
+- `src/ecourts/ecourts.service.ts` — adapter pattern with `mock` / `http` modes,
+  circuit breaker, and Redis caching. Its `mapProviderResponse()` is the single
+  method to rewrite for the real CNR endpoint.
+- Admin panel already exposes provider mode, base URL and API key as runtime
+  settings, so switching from mock to live needs no redeploy.
+
+---
+
 ## 📝 Change log
+
+### 2026-08-07 (later) — Supabase live, reserved-keyword bug
+
+| # | Change | Why |
+|---|---|---|
+| 1 | **Ran all 8 migrations** against Supabase `biwncplbeatjuaixcekf` | Schema had never touched a real Postgres |
+| 2 | **Fixed: `exists` is a reserved word** — renamed to `found` in `verify_citations()` / `verify_statute_refs()`, plus `CitationCheck` / `StatuteRefCheck` and `guardrails.service.ts` | Migration 0004 failed with `syntax error at or near "exists"`. Postgres parses it as the EXISTS operator. Renamed rather than quoted — a quoted reserved word forces every future query to quote it too |
+| 3 | Created `.env` with generated `JWT_SECRET`, `ENCRYPTION_KEY`, `WHATSAPP_VERIFY_TOKEN` | Gitignored |
+
+**Verified live:** 12 tables · both `halfvec` HNSW indexes created · 31 statutes ·
+`search_precedents()`, `verify_citations()`, `verify_statute_refs()`,
+`search_statutes()` all execute · 111/111 tests pass.
+
+> ✅ **The pgvector `halfvec` gamble paid off.** The 3072-dimension HNSW indexes
+> built without error on Supabase's pgvector, confirming the cast-expression
+> approach documented above actually works in production.
 
 ### 2026-08-07 — Admin panel, runtime settings, precedent feature
 
@@ -594,10 +674,12 @@ curl -X POST -H "Authorization: Bearer $JWT_SECRET" localhost:3000/admin/setting
 
 ## ➡️ Next actions, in order
 
-1. **Create the Supabase project**, then `npm run db:migrate` — nothing works until the schema exists
-2. **Deploy to Railway** (web + worker + Redis) to get a public HTTPS URL
-3. **Connect WhatsApp** — [walkthrough above](#-connecting-whatsapp-step-by-step); verify with **Test connection**
-4. **Add one LLM key + one embedding key** in the panel, flip providers off `mock`
-5. **Ingest a judgment corpus** — feature 3 is fully built and returns nothing without it
-6. **Ingest full bare acts** — feature 2 needs more than 10 sections
-7. Then decide: eCourts provider (real case status) vs user-facing web dashboard
+1. ~~Create the Supabase project + run migrations~~ ✅ **Done 2026-08-07**
+2. 🔴 **Send the government API documentation** — blocks all three features and
+   decides whether corpus ingestion happens at all. Don't ingest anything until
+   this is settled, or you may load data the API already serves.
+3. **Deploy to Railway** (web + worker + Redis) for a public HTTPS URL
+4. **Connect WhatsApp** — [walkthrough above](#-connecting-whatsapp-step-by-step); verify with **Test connection**
+5. **Add one LLM key** in the panel, flip synthesis off `mock`
+6. **Rotate the Supabase database password** — it was pasted into a chat transcript
+7. Embedding key + corpus ingestion — **only if** the API turns out not to cover semantic precedent search
