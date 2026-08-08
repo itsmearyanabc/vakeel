@@ -68,6 +68,7 @@ async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {
     logger: new PinoLoggerService(logger),
     bufferLogs: false,
+    bodyParser: false,
   });
 
   // Rate limiting. The webhook is exempt: Meta legitimately bursts on retries
