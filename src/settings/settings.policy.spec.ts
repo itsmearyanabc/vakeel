@@ -37,8 +37,12 @@ describe('credential settings policy', () => {
     }
   });
 
-  it('leaves operational tuning editable', () => {
-    // The panel would be pointless if these needed a redeploy.
+  it('shows operational tuning values in full', () => {
+    // Nothing is editable any more - configuration is environment-only. What
+    // `isSecretSetting` still decides is whether the panel prints the value or
+    // masks it to a four-character hint. Operational tuning is exactly the
+    // category an operator needs to *read* to confirm what the running service
+    // picked up from the environment, so it must not be masked.
     for (const key of [
       'PRECEDENT_SOURCE',
       'RAG_FINAL_TOP_K',

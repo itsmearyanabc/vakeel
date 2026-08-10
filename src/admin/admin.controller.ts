@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { maskPhone } from '../common/logger';
 import { DatabaseService } from '../database/database.service';
 import { AdminRepository } from '../database/repositories/admin.repository';
@@ -224,25 +235,23 @@ export class AdminController {
   }
 
   /**
-   * Save a batch of settings.
+   * Refuses every write. Configuration is environment-only.
    *
-   * A blank value for a secret is treated as "leave unchanged", because the
-   * form never renders existing secrets and would otherwise wipe them on every
-   * save. Use the DELETE endpoint to genuinely clear one.
+   * Kept rather than deleted so an existing script gets a 409 and an
+   * explanation instead of a 404 that reads like a broken deployment. See
+   * SettingsService.set() for why nothing is writable.
    */
   @Post('settings')
+  @HttpCode(HttpStatus.CONFLICT)
   async saveSettings(@Body() body: Record<string, string>) {
     const { applied, rejected } = await this.settings.setMany(body ?? {}, 'admin-panel');
     return {
-      updated: true,
+      updated: false,
       applied,
       rejected,
-      // Named explicitly so the panel can explain the refusal rather than
-      // silently dropping the field.
       rejectedReason:
-        rejected.length > 0
-          ? 'Credentials can only be changed through environment variables on the hosting platform.'
-          : null,
+        'Settings are read-only. Every value is configured through environment variables on the ' +
+        'hosting platform - change it there and redeploy.',
     };
   }
 

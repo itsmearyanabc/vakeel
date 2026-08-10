@@ -1108,109 +1108,82 @@ function viewSettings() {
         fields + extra + '</div>';
     }).join('');
 
+    var stale = d.values.filter(function (v) { return v.source === 'panel'; });
+
     document.getElementById('main').innerHTML =
       '<div class="head"><h2>Settings</h2></div>' +
-      '<div class="note">Operational settings save here and take effect within seconds on ' +
-      'both the web and worker processes — <strong>no redeploy needed</strong>.</div>' +
-      '<div class="note alert"><strong>Credentials are read-only here.</strong> API keys and tokens ' +
-      'can only be changed through environment variables on your hosting platform. ' +
-      'A value saved in this panel used to <em>override</em> the environment, which meant updating ' +
-      'a token in Render changed nothing and the bot kept using the dead one. ' +
-      'Two sources of truth for a secret is one too many — the hosting dashboard wins.</div>' +
-      '<form id="setForm" onsubmit="saveSettings(event)">' + groups +
-      '<div class="sticky-save"><button class="btn" type="submit">Save changes</button>' +
-      '<span class="hint" style="margin:0">Only fields you edit are written.</span></div></form>';
+      '<div class="note"><strong>This page is read-only.</strong> Every setting is configured ' +
+      'through environment variables on your hosting platform — change one in Render and redeploy. ' +
+      'This is the record of what the running service is actually using.</div>' +
+      '<div class="note alert"><strong>Why nothing is editable.</strong> A value saved here used to ' +
+      '<em>override</em> the environment, so updating a token in Render changed nothing and the bot ' +
+      'kept using the dead one. The operational settings had a quieter version of the same fault: the ' +
+      'AI, retrieval and quota services read the environment at startup and never read this table, so ' +
+      'those fields saved and displayed a value nothing would ever act on. One source of truth — the ' +
+      'hosting dashboard.</div>' +
+      (stale.length
+        ? '<div class="note alert"><strong>' + stale.length + ' setting' +
+          (stale.length === 1 ? ' is' : 's are') + ' still stored in the database</strong> from before ' +
+          'this policy, and still override the environment. Click <em>Reset</em> on each to finish ' +
+          'the migration: ' +
+          stale.map(function (v) { return '<code class="mono">' + esc(v.key) + '</code>'; }).join(', ') +
+          '</div>'
+        : '') +
+      groups;
   });
 }
 
+/**
+ * One read-only row per setting.
+ *
+ * Nothing here is editable. Rendering an input would be a lie twice over: the
+ * server refuses every write, and the services that consume configuration read
+ * the environment at boot rather than this table, so even a stored value would
+ * not have been read. What an operator actually needs from this page is which
+ * settings are set, what they are set to, and where the value came from.
+ *
+ * The one exception is Reset, and only for a value still coming from the
+ * database. Those rows predate the env-only policy and still win over the
+ * environment, so clearing them is how you finish the migration.
+ */
 function renderField(def, state) {
   state = state || {};
-  var id = 'set_' + def.key;
-  var control;
+  var secret = def.type === 'secret';
+  var set = state.isSet;
+  var stale = state.source === 'panel';
 
-  // Credentials are environment-only. Rendering an input for them would be a
-  // lie: the server refuses the write. Show where the value comes from instead,
-  // which is the thing an operator is actually trying to find out.
-  if (def.type === 'secret') {
-    var set = state.isSet;
-    return '<div class="field cred">' +
-      '<div class="cred-row">' +
-        '<div class="cred-name">' + esc(def.label) +
-          '<code class="mono cred-key">' + esc(def.key) + '</code></div>' +
-        '<div class="cred-state">' +
-          (set
-            ? '<span class="pill ok">set</span> <span class="mono">' + esc(state.hint || '') + '</span>'
-            : '<span class="pill bad">not set</span>') +
-          (state.source === 'panel'
-            ? ' <span class="pill warn">legacy DB value — click Reset</span>' +
-              '<button class="btn secondary sm" type="button" style="margin-left:8px" ' +
-              'onclick="clearSetting(\'' + def.key + '\')">Reset</button>'
-            : '') +
-        '</div>' +
-      '</div>' +
-      '<div class="help">' + esc(def.help) + '</div>' +
-      (!set && def.requiredFor
-        ? '<div class="help" style="color:var(--red)">Required for ' + esc(def.requiredFor) + '.</div>'
-        : '') +
-      '</div>';
-  }
-
-  if (def.type === 'select') {
-    control = '<select id="' + id + '" data-key="' + def.key + '">' +
-      (def.options || []).map(function (o) {
-        return '<option value="' + esc(o.value) + '"' +
-               (state.value === o.value ? ' selected' : '') + '>' + esc(o.label) + '</option>';
-      }).join('') + '</select>';
-  } else if (def.type === 'number') {
-    control = '<input id="' + id + '" data-key="' + def.key + '" type="number" ' +
-      (def.min !== undefined ? 'min="' + def.min + '" ' : '') +
-      (def.max !== undefined ? 'max="' + def.max + '" ' : '') +
-      'value="' + esc(state.value || '') + '">';
+  var shown;
+  if (!set) {
+    shown = '<span class="pill bad">not set</span>';
+  } else if (secret) {
+    shown = '<span class="pill ok">set</span> <span class="mono">' + esc(state.hint || '') + '</span>';
   } else {
-    control = '<input id="' + id + '" data-key="' + def.key + '" type="text" ' +
-      'placeholder="' + esc(def.placeholder || '') + '" value="' + esc(state.value || '') + '">';
+    shown = '<span class="mono">' + esc(state.value) + '</span>' +
+            ' <span class="set-state on">● ' + (stale ? 'db' : 'env') + '</span>';
   }
 
-  var stateLabel = state.isSet
-    ? '<span class="set-state on">● ' + esc(state.source === 'panel' ? 'panel' : 'env') + '</span>'
-    : '<span class="set-state off">○ unset</span>';
-
-  var clearBtn = state.overridden
-    ? '<button class="btn secondary sm" type="button" onclick="clearSetting(\'' + def.key + '\')">Reset</button>'
-    : '';
-
-  var warn = (!state.isSet && def.requiredFor)
-    ? '<div class="help" style="color:var(--warn)">Required for ' + esc(def.requiredFor) + '.</div>' : '';
-
-  return '<div class="field"><label for="' + id + '">' + esc(def.label) + '</label>' +
-    '<div class="row">' + control + stateLabel + clearBtn + '</div>' +
-    '<div class="help">' + esc(def.help) + '</div>' + warn + '</div>';
-}
-
-function saveSettings(e) {
-  e.preventDefault();
-  var payload = {};
-  document.querySelectorAll('#setForm [data-key]').forEach(function (el) {
-    var v = el.value.trim();
-    // Blank secrets are omitted entirely — the server treats a blank secret as
-    // "keep the existing value", but sending nothing is clearer.
-    if (v !== '') payload[el.getAttribute('data-key')] = v;
-  });
-
-  api('/settings', { method:'POST', body:payload })
-    .then(function (r) {
-      if (r.rejected && r.rejected.length) {
-        toast(r.rejectedReason || 'Some settings were refused.', true);
-      } else {
-        toast('Saved ' + r.applied.length + ' setting' + (r.applied.length === 1 ? '' : 's') + '.');
-      }
-      go('settings');
-    })
-    .catch(function (err) { toast(err.message, true); });
+  return '<div class="field cred">' +
+    '<div class="cred-row">' +
+      '<div class="cred-name">' + esc(def.label) +
+        '<code class="mono cred-key">' + esc(def.key) + '</code></div>' +
+      '<div class="cred-state">' + shown +
+        (stale
+          ? ' <span class="pill warn">stored in the database — overrides the environment</span>' +
+            '<button class="btn secondary sm" type="button" style="margin-left:8px" ' +
+            'onclick="clearSetting(\'' + def.key + '\')">Reset</button>'
+          : '') +
+      '</div>' +
+    '</div>' +
+    '<div class="help">' + esc(def.help) + '</div>' +
+    (!set && def.requiredFor
+      ? '<div class="help" style="color:var(--red)">Required for ' + esc(def.requiredFor) + '.</div>'
+      : '') +
+    '</div>';
 }
 
 function clearSetting(key) {
-  if (!confirm('Reset ' + key + ' to its environment value?')) return;
+  if (!confirm('Reset ' + key + ' to its environment value?\n\n' +
+               'This deletes the stored database value. The environment variable takes over.')) return;
   api('/settings/' + encodeURIComponent(key), { method:'DELETE' })
     .then(function () { toast(key + ' reset to the environment value.'); go('settings'); })
     .catch(function (err) { toast(err.message, true); });

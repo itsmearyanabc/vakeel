@@ -50,14 +50,21 @@ export interface SettingView {
  *
  * Credentials are environment-only by policy - see {@link SettingsService.set}.
  */
-export class CredentialWriteRejectedError extends Error {
+export class SettingWriteRejectedError extends Error {
   constructor(readonly key: string) {
     super(
-      `${key} is a credential and can only be set through an environment variable, not the admin panel.`,
+      `${key} can only be set through an environment variable on the hosting platform, not the admin panel.`,
     );
-    this.name = 'CredentialWriteRejectedError';
+    this.name = 'SettingWriteRejectedError';
   }
 }
+
+/**
+ * @deprecated Kept so existing `catch` blocks and imports keep compiling.
+ * Credentials are no longer a special case - nothing is writable from the
+ * panel. Use {@link SettingWriteRejectedError}.
+ */
+export const CredentialWriteRejectedError = SettingWriteRejectedError;
 
 /**
  * Runtime configuration with database override.
@@ -263,58 +270,47 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
   // --- Writes ---------------------------------------------------------------
 
   /**
-   * Persist a setting and tell every process to re-read.
+   * Always refuses. The environment is the only place configuration is set.
    *
-   * ## Credentials are refused here, on purpose
+   * ## Why there is no writable path at all
    *
-   * API keys and tokens can only be set through environment variables. The
-   * panel used to accept them, and that caused a real production outage: a
-   * value saved here silently *overrides* the environment, so updating the
-   * WhatsApp token in Render changed nothing and the bot kept using a dead
-   * credential with no indication why.
+   * This started as a credentials-only rule, after a value saved in the panel
+   * silently *overrode* the environment: updating the WhatsApp token in Render
+   * changed nothing, the bot kept using a dead credential, and nothing said
+   * why. Two sources of truth for one value is the whole problem, and it was
+   * never really about the value being secret.
    *
-   * Two sources of truth for a secret is one too many. The hosting dashboard
-   * wins, always - it is also the only place that survives losing database
-   * access, and the only place an operator can fix things from when the panel
-   * itself will not load.
+   * Operational settings had the same defect in a quieter form. The panel
+   * offered editable fields for the AI providers, model names, retrieval tuning
+   * and quotas - but `ProviderRegistry`, `LangChainProvider`, `RagService` and
+   * `QuotaService` all read `AppEnv` directly, at construction. So those fields
+   * saved, displayed, audited, and were never read by anything. A control that
+   * does nothing is worse than no control: it invites you to tune a knob and
+   * then conclude the tuning had no effect.
    *
-   * Non-secret operational settings (retrieval tuning, quotas, precedent
-   * source) stay editable here, because changing those without a redeploy is
-   * the entire point of the panel.
+   * Rather than thread SettingsService through every consumer, configuration is
+   * now environment-only, end to end. It costs a redeploy to change a setting,
+   * and buys a single source of truth that is visible in the hosting dashboard,
+   * survives losing the database, and cannot disagree with what the code reads.
+   *
+   * {@link clear} is still permitted - see the note there.
    */
-  async set(key: string, value: string, changedBy = 'admin'): Promise<void> {
+  async set(key: string, _value: string, _changedBy = 'admin'): Promise<never> {
     if (!isKnownSetting(key)) {
       throw new Error(`Unknown setting: ${key}`);
     }
 
-    if (isSecretSetting(key)) {
-      throw new CredentialWriteRejectedError(key);
-    }
-
-    const stored = value;
-    const previous = this.cache.get(key);
-
-    await this.db.sql`
-      INSERT INTO app_settings (key, value, is_secret, updated_by)
-      VALUES (${key}, ${stored}, FALSE, ${changedBy})
-      ON CONFLICT (key) DO UPDATE
-        SET value      = EXCLUDED.value,
-            is_secret  = EXCLUDED.is_secret,
-            updated_by = EXCLUDED.updated_by,
-            updated_at = NOW()
-    `;
-
-    await this.audit(key, 'SET', previous, value, false, changedBy);
-    await this.publishChange();
-
-    this.logger.info({ key, changedBy }, 'Setting updated');
+    throw new SettingWriteRejectedError(key);
   }
 
   /**
-   * Remove the override so the environment value applies again.
+   * Remove a stored override so the environment value applies again.
    *
-   * Still allowed for secrets: a credential row may exist from before the
-   * env-only policy, and clearing it is exactly how you get rid of one.
+   * The one mutation that survives, and only because it exists to *undo* the
+   * old behaviour. Rows written before the env-only policy still win over the
+   * environment in {@link get}, so without this there would be no way to
+   * dislodge a stale value short of opening a SQL console. It can only ever
+   * move a setting towards the environment, never away from it.
    */
   async clear(key: string, changedBy = 'admin'): Promise<void> {
     if (!isKnownSetting(key)) {
@@ -330,35 +326,28 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Apply several settings in one go.
+   * Refuses every key and reports which, rather than throwing on the first.
    *
-   * Credentials are skipped rather than throwing, so one stray secret in a
-   * form post does not discard the whole batch. The caller is told which keys
-   * were refused so the panel can say so.
+   * Nothing is writable any more (see {@link set}), so `applied` is always
+   * empty. The shape is kept because it is what the admin endpoint and any
+   * existing script expect, and because a caller that posts ten keys deserves
+   * to be told all ten were refused - not just the one that happened to be
+   * iterated first.
    */
   async setMany(
     values: Record<string, string>,
     changedBy = 'admin',
   ): Promise<{ applied: string[]; rejected: string[] }> {
-    const applied: string[] = [];
-    const rejected: string[] = [];
-
-    for (const [key, value] of Object.entries(values)) {
-      if (!isKnownSetting(key)) continue;
-      if (isSecretSetting(key)) {
-        rejected.push(key);
-        continue;
-      }
-      if (value === '') continue;
-      await this.set(key, value, changedBy);
-      applied.push(key);
-    }
+    const rejected = Object.keys(values).filter((key) => isKnownSetting(key));
 
     if (rejected.length > 0) {
-      this.logger.warn({ rejected, changedBy }, 'Refused panel writes to credential settings');
+      this.logger.warn(
+        { rejected, changedBy },
+        'Refused panel writes - configuration is environment-only',
+      );
     }
 
-    return { applied, rejected };
+    return { applied: [], rejected };
   }
 
   private async audit(
@@ -415,7 +404,10 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
         hint: secret && live !== '' ? `••••${live.slice(-4)}` : null,
         overridden,
         source: live === '' ? 'unset' : overridden ? 'panel' : 'environment',
-        envOnly: secret,
+        // Everything is environment-only now, not just credentials. A `panel`
+        // source therefore means a leftover row from before that policy, which
+        // is still winning over the environment until it is cleared.
+        envOnly: true,
         updatedBy: meta?.updatedBy ?? null,
         updatedAt: meta?.updatedAt ? new Date(meta.updatedAt).toISOString() : null,
       };
