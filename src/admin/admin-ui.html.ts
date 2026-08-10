@@ -970,7 +970,7 @@ function viewSearches() {
       '<div class="head"><h2>Queries</h2><div class="grow"></div>' +
       '<button class="btn sm ' + (CACHE.flaggedOnly ? '' : 'secondary') + '" onclick="toggleFlagged()">' +
       (CACHE.flaggedOnly ? 'Showing flagged only' : 'Show flagged only') + '</button>' +
-      '<button class="btn secondary sm" onclick="exportCsv(CACHE.searchRows, 'queries.csv')">Export CSV</button></div>' +
+      '<button class="btn secondary sm" onclick="exportCsv(CACHE.searchRows, \'queries.csv\')">Export CSV</button></div>' +
       '<div class="note"><strong>Flagged</strong> means the citation validator found a case reference in the ' +
       'answer that does not exist in the corpus, and stripped it before the advocate saw it. ' +
       'A rising count here means the model is straining against the retrieved context.</div>' +
@@ -1004,7 +1004,7 @@ function viewMessages() {
     CACHE.messageRows = rows;
     document.getElementById('main').innerHTML =
       '<div class="head"><h2>Message log</h2><div class="grow"></div>' +
-      '<button class="btn secondary sm" onclick="exportCsv(CACHE.messageRows, 'messages.csv')">Export CSV</button></div>' +
+      '<button class="btn secondary sm" onclick="exportCsv(CACHE.messageRows, \'messages.csv\')">Export CSV</button></div>' +
       '<div class="note">Every inbound and outbound WhatsApp message. This is the first place to look ' +
       'when someone reports the bot did not reply.</div>' +
       '<div class="card">' +
