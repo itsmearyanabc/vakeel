@@ -713,13 +713,15 @@ export class ConversationService {
       text += Replies.MOCK_MODE_NOTICE;
     }
 
-    await this.api.sendText(job.from, text);
+    const delivery = await this.api.sendText(job.from, text);
 
     // Store the exchange after a successful send. Recording it before would
     // leave a reply in history that the advocate never actually received.
     // The raw question is stored, not the expanded/translated one, so the
     // model sees what the user actually wrote.
-    await this.memory.append(user.id, originalText, answer.text.trim());
+    if (delivery.ok) {
+      await this.memory.append(user.id, originalText, answer.text.trim());
+    }
 
     await this.analytics.recordSearch({
       userId: user.id,
@@ -737,18 +739,31 @@ export class ConversationService {
       guardrailReason: answer.guardrailReason,
     });
 
+    // The send is what the advocate experiences, so it decides the log level.
+    // An answer that was generated, billed and then refused by WhatsApp used to
+    // log identically to one that arrived, which made "the bot ignored me"
+    // reports impossible to confirm from the logs.
     this.logger.info(
       {
         userId: user.id,
         phone: maskPhone(user.phone_number),
         intent: intent.intent,
         passages: answer.passages.length,
+        statutes: answer.statutes.length,
         citations: answer.citations.length,
         latencyMs: answer.latencyMs,
         guardrail: answer.guardrailTriggered,
+        delivered: delivery.ok,
       },
-      'Query answered',
+      delivery.ok ? 'Query answered' : 'Query answered but the reply could not be delivered',
     );
+
+    if (!delivery.ok) {
+      // The model already ran, so the spend is sunk and still worth recording
+      // above. The quota unit is not: it buys an answer, and none arrived.
+      await this.quota.refund(user.id, user.role);
+      return;
+    }
 
     // Nudge unverified users towards verification, but only when they are
     // actually close to the limit - doing it on every reply is nagging.

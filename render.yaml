@@ -15,6 +15,33 @@
 # never stored in the repo". Set them in the dashboard after first apply, or
 # during the Blueprint creation flow.
 # ---------------------------------------------------------------------------
+#
+# ⚠️ THIS FILE DESCRIBES THE INTENDED SHAPE, NOT NECESSARILY WHAT IS DEPLOYED
+#
+# The live service is currently a SINGLE web service running `npm run start:all`
+# (scripts/start-all.js), which supervises both processes in one container. That
+# is the cheaper shape and it is a supported one - but it is not what the
+# blueprint below creates, so do not assume applying this file reproduces
+# production. Two consequences of the single-container shape are worth knowing
+# before choosing it:
+#
+#   1. HIBERNATION APPLIES TO THE WORKER TOO. On a plan that sleeps when idle,
+#      the whole container sleeps - including the BullMQ consumer. Inbound
+#      webhooks are still accepted and queued (the web process wakes to serve
+#      them), but jobs already in the queue are not drained until something
+#      wakes the container. The symptom is a reply that arrives minutes late,
+#      or not until the next message. Fix: a paid always-on plan, or keep the
+#      worker as its own service, which never sleeps.
+#
+#   2. COLD STARTS COUNT AGAINST THE WEBHOOK. Meta expects a fast ack and
+#      throttles - then disables - slow subscriptions. A container waking from
+#      hibernation can take several seconds on the first request.
+#
+# If you switch to the single-service shape permanently, replace the two
+# services below with one web service whose dockerCommand is
+# `npm run start:all`, and delete the worker block. Keep the env vars identical
+# either way - start-all.js passes the whole environment to both children.
+# ---------------------------------------------------------------------------
 
 services:
   - type: web

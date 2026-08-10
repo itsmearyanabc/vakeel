@@ -9,7 +9,35 @@ export interface SendResult {
   ok: boolean;
   waMessageId?: string;
   error?: string;
+  /** Meta's numeric error code, when the failure came from the Graph API. */
+  code?: number;
+  /** What to actually do about it, for codes we recognise. */
+  hint?: string;
 }
+
+/**
+ * Meta error codes worth translating.
+ *
+ * Their messages describe the API's state, not the operator's mistake. "Recipient
+ * phone number not in allowed list" is accurate and still leaves you guessing
+ * that the app is in test mode - so these failures read as bot bugs and get
+ * debugged in the wrong place. The mapping is deliberately small: only codes
+ * that have a specific, checkable action attached.
+ *
+ * https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes
+ */
+const META_ERROR_HINTS: Record<number, string> = {
+  131030:
+    'This number is not on the app\'s allowed recipient list. A WhatsApp app in test mode can only message numbers added under API Setup -> "To". Add it there, or complete Business Verification and take the app Live to message anyone.',
+  131047:
+    'More than 24 hours have passed since this number last messaged the bot, so free-form replies are blocked. Only an approved message template can reopen the conversation.',
+  131026:
+    'The number cannot receive WhatsApp messages - it is not on WhatsApp, or it is a landline.',
+  190: 'The access token has expired or been revoked. Generate a permanent System User token in Business Settings and update WHATSAPP_ACCESS_TOKEN.',
+  100: 'A parameter was rejected. Usually WHATSAPP_PHONE_NUMBER_ID belongs to a different WhatsApp Business Account than the access token.',
+  133010: 'The phone number is not registered with the Cloud API. Register it under API Setup before sending.',
+  368: 'The number is temporarily blocked by Meta for policy reasons. Check Quality Rating in the WhatsApp Manager.',
+};
 
 /**
  * Outbound client for the WhatsApp Cloud API.
@@ -64,12 +92,17 @@ export class WhatsAppApiService {
 
       if (!response.ok) {
         const detail = payload.error?.error_data?.details ?? payload.error?.message ?? 'unknown error';
+        const code = payload.error?.code;
+        const hint = code === undefined ? undefined : META_ERROR_HINTS[code];
+
         this.logger.error(
-          { status: response.status, to: maskPhone(message.to), detail, code: payload.error?.code },
+          { status: response.status, to: maskPhone(message.to), detail, code, hint },
           'WhatsApp send failed',
         );
-        await this.logOutbound(message, 'FAILED', detail);
-        return { ok: false, error: detail };
+        // The hint goes into the message log too, so the Messages view in the
+        // panel explains the failure without anyone reading the server logs.
+        await this.logOutbound(message, 'FAILED', hint ? `${detail} - ${hint}` : detail);
+        return { ok: false, error: detail, code, hint };
       }
 
       const waMessageId = payload.messages?.[0]?.id;

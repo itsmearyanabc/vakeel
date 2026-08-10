@@ -18,6 +18,18 @@ import { parseDuration, signJwt } from './jwt';
 
 /** Failed attempts from one IP before it is locked out. */
 const MAX_ATTEMPTS = 8;
+/**
+ * Failed attempts against the account itself, across every IP.
+ *
+ * The per-IP counter alone is the wrong shape for both threats it faces. An
+ * attacker with a pool of addresses gets 8 guesses per address and is never
+ * slowed; a legitimate admin behind a corporate NAT shares one address with
+ * everyone else in the building. This counter is what actually rate-limits
+ * guessing, so it is deliberately more generous than the IP one - it can be
+ * tripped by strangers, and must not become a way to lock the real admin out
+ * cheaply.
+ */
+const MAX_ACCOUNT_ATTEMPTS = 25;
 /** How long the lockout lasts. */
 const LOCKOUT_SECONDS = 900;
 
@@ -83,10 +95,13 @@ export class AdminAuthController {
     }
 
     const ip = req.ip || 'unknown';
-    const attemptKey = `admin:login:fail:${ip}`;
+    const ipKey = `admin:login:fail:${ip}`;
+    const accountKey = 'admin:login:fail:account';
 
-    const failures = Number((await this.redis.client.get(attemptKey)) ?? 0);
-    if (failures >= MAX_ATTEMPTS) {
+    if (
+      (await this.failureCount(ipKey)) >= MAX_ATTEMPTS ||
+      (await this.failureCount(accountKey)) >= MAX_ACCOUNT_ATTEMPTS
+    ) {
       this.logger.warn({ ip }, 'Admin login locked out after repeated failures');
       // Nest has no TooManyRequestsException, so 429 is raised directly.
       throw new HttpException(
@@ -104,8 +119,8 @@ export class AdminAuthController {
     const passwordOk = this.crypto.safeEqual(password, this.env.ADMIN_PASSWORD);
 
     if (!emailOk || !passwordOk) {
-      const count = await this.redis.client.incr(attemptKey);
-      if (count === 1) await this.redis.client.expire(attemptKey, LOCKOUT_SECONDS);
+      const count = await this.recordFailure(ipKey);
+      await this.recordFailure(accountKey);
 
       this.logger.warn({ ip, attempt: count }, 'Failed admin login');
       throw new UnauthorizedException({
@@ -114,7 +129,7 @@ export class AdminAuthController {
       });
     }
 
-    await this.redis.del(attemptKey);
+    await this.clearFailures(ipKey, accountKey);
 
     const expiresIn = parseDuration(this.env.JWT_EXPIRES_IN);
     const token = signJwt({ sub: email, role: 'SUPER_ADMIN' }, this.env.JWT_SECRET, expiresIn);
@@ -122,5 +137,56 @@ export class AdminAuthController {
     this.logger.info({ ip, email }, 'Admin signed in');
 
     return { token, expiresIn, email };
+  }
+
+  /**
+   * Read a failure counter, treating an unreachable Redis as zero.
+   *
+   * ## Why this fails open
+   *
+   * The credentials live in the environment precisely so that a broken
+   * datastore can never lock the operator out - that is the reasoning in the
+   * class comment above. Letting the *brute-force counter* throw put the
+   * dependency straight back: with Redis down this endpoint returned 500 before
+   * it ever compared a password, so the panel was unreachable exactly when
+   * someone most needed it to diagnose the outage.
+   *
+   * The cost is that brute-force protection is absent while Redis is down. That
+   * is the better failure: the password is still required and still compared in
+   * constant time, the window is as long as an outage, and the alternative
+   * trades a rate limit for a guaranteed lockout.
+   */
+  private async failureCount(key: string): Promise<number> {
+    try {
+      return Number((await this.redis.client.get(key)) ?? 0);
+    } catch (err) {
+      this.logger.error({ err, key }, 'Could not read login attempt counter; allowing the attempt');
+      return 0;
+    }
+  }
+
+  /** Record a failed attempt. Returns the new count, or 0 if it could not be stored. */
+  private async recordFailure(key: string): Promise<number> {
+    try {
+      const count = await this.redis.client.incr(key);
+      // Only the first failure sets the TTL, so the window is fixed from the
+      // first bad attempt rather than sliding forward with each new one -
+      // otherwise a slow trickle of guesses extends the lockout indefinitely.
+      if (count === 1) await this.redis.client.expire(key, LOCKOUT_SECONDS);
+      return count;
+    } catch (err) {
+      this.logger.error({ err, key }, 'Could not record failed login attempt');
+      return 0;
+    }
+  }
+
+  private async clearFailures(...keys: string[]): Promise<void> {
+    for (const key of keys) {
+      try {
+        await this.redis.del(key);
+      } catch (err) {
+        this.logger.warn({ err, key }, 'Could not clear login attempt counter');
+      }
+    }
   }
 }

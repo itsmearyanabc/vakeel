@@ -99,6 +99,36 @@ export class QuotaService {
     }
   }
 
+  /**
+   * Give a claimed unit back.
+   *
+   * Quota is claimed before the answer is generated, because that is the only
+   * point at which it can actually stop the spend. But a claim is a promise to
+   * deliver an answer, and WhatsApp can refuse the send after the model has
+   * already run - most commonly error 131030, a number not on a test app's
+   * allowed list. Charging a guest one of five daily queries for a reply they
+   * never received is the wrong side of that trade.
+   *
+   * Best-effort on both stores and never throws: the caller is already on a
+   * failure path, and a failed refund must not mask the delivery error that
+   * caused it. Unlimited roles have nothing to refund.
+   */
+  async refund(userId: string, role: UserRole): Promise<void> {
+    if (this.limitForRole(role) < 0) return;
+
+    try {
+      await this.redis.refundQuota(userId);
+    } catch (err) {
+      this.logger.warn({ err, userId }, 'Failed to refund quota in Redis');
+    }
+
+    try {
+      await this.analytics.refundQuota(userId);
+    } catch (err) {
+      this.logger.warn({ err, userId }, 'Failed to refund quota in the database');
+    }
+  }
+
   async usageToday(userId: string): Promise<number> {
     return this.analytics.usageToday(userId);
   }

@@ -80,6 +80,13 @@ const envSchema = z.object({
     .refine((v) => v === '' || v.length >= 10, 'ADMIN_PASSWORD must be at least 10 characters')
     .default(''),
 
+  // Bearer token for scripted admin API access (curl, CI). Separate from
+  // JWT_SECRET on purpose - see `adminServiceToken` below for why.
+  ADMIN_SERVICE_TOKEN: z
+    .string()
+    .refine((v) => v === '' || v.length >= 24, 'ADMIN_SERVICE_TOKEN must be at least 24 characters')
+    .default(''),
+
   // --- LLM routing ----------------------------------------------------------
   LLM_SYNTHESIS_PROVIDER: providerEnum.default('mock'),
   LLM_ROUTER_PROVIDER: providerEnum.default('mock'),
@@ -193,6 +200,30 @@ export type AppEnv = RawEnv & {
   readonly whatsappConfigured: boolean;
   /** True when the admin panel has a real email/password pair configured. */
   readonly adminLoginConfigured: boolean;
+  /**
+   * The bearer token accepted by AdminGuard for non-browser callers, or `''`
+   * for none.
+   *
+   * ## Why this is not simply JWT_SECRET
+   *
+   * It used to be. JWT_SECRET is the HMAC key that signs admin sessions, so
+   * accepting it as a bearer token meant the same string both *proved* identity
+   * and *minted* it: anyone holding it could forge a SUPER_ADMIN session with
+   * any expiry they liked. Revoking a leaked copy therefore meant rotating the
+   * signing key, which invalidates every live session at the same time. Two
+   * jobs, one string, and no way to revoke either independently.
+   *
+   * The resolution order below keeps every deployment reachable:
+   *
+   *  1. `ADMIN_SERVICE_TOKEN` when set - a credential that can be rotated on
+   *     its own without signing anything out.
+   *  2. Otherwise `JWT_SECRET`, but *only* while email login is unconfigured.
+   *     That is the state a fresh deployment starts in, and refusing it would
+   *     leave no way to reach the panel at all.
+   *  3. Once ADMIN_EMAIL and ADMIN_PASSWORD are set and no service token is,
+   *     there is no shared bearer credential. Sessions only.
+   */
+  readonly adminServiceToken: string;
 };
 
 /**
@@ -224,6 +255,8 @@ export function parseEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     env.WHATSAPP_ACCESS_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID && env.WHATSAPP_APP_SECRET,
   );
 
+  const adminLoginConfigured = Boolean(env.ADMIN_EMAIL && env.ADMIN_PASSWORD);
+
   return {
     ...env,
     isProduction: env.NODE_ENV === 'production',
@@ -233,7 +266,8 @@ export function parseEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     adminPhoneNumbers,
     whatsappApiBase: `${env.WHATSAPP_GRAPH_BASE_URL}/${env.WHATSAPP_API_VERSION}/${env.WHATSAPP_PHONE_NUMBER_ID}`,
     whatsappConfigured,
-    adminLoginConfigured: Boolean(env.ADMIN_EMAIL && env.ADMIN_PASSWORD),
+    adminLoginConfigured,
+    adminServiceToken: env.ADMIN_SERVICE_TOKEN || (adminLoginConfigured ? '' : env.JWT_SECRET),
   };
 }
 

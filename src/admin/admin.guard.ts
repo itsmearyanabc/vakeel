@@ -25,20 +25,20 @@ export type AuthenticatedRequest = FastifyRequest & { admin?: AdminPrincipal };
  *     (`JWT_EXPIRES_IN`), so a token copied out of a browser is not valid
  *     forever.
  *
- *  2. **The raw `JWT_SECRET`**, as a service token. This predates the login
- *     form and is kept for curl and automation - the README's examples use it,
- *     and CI has no way to complete a login form.
+ *  2. **A service token**, for curl and automation, which has no way to
+ *     complete a login form. Which string that is - and whether one exists at
+ *     all - is decided by `env.adminServiceToken`; read the comment there,
+ *     because the answer changed and the reasoning is the important part.
  *
  * ## The tradeoff in keeping (2)
  *
- * A non-expiring shared secret is weaker than a session. It is retained because
- * removing it would break existing automation and because it is the only way in
- * when `ADMIN_EMAIL`/`ADMIN_PASSWORD` are unset - which is the state every
- * deployment starts in.
- *
- * If you want to close it off once the login form is configured, delete the
- * `serviceToken` branch below; the panel will keep working, and only scripted
- * callers need updating.
+ * A non-expiring shared secret is weaker than a session, and this one is not
+ * scoped: it is full SUPER_ADMIN. It is retained because it is the only way in
+ * before `ADMIN_EMAIL`/`ADMIN_PASSWORD` are set - the state every deployment
+ * starts in - and because automation needs a credential that does not expire
+ * mid-run. It is now at least a credential of its own, so it can be rotated
+ * without signing every admin out, and a deployment that wants sessions only
+ * gets that by simply not setting `ADMIN_SERVICE_TOKEN`.
  */
 @Injectable()
 export class AdminGuard implements CanActivate {
@@ -64,8 +64,12 @@ export class AdminGuard implements CanActivate {
       return true;
     }
 
+    // The empty-string guard matters: safeEqual('', '') is true, so without it
+    // a deployment that deliberately has no service token would accept an
+    // empty bearer as full SUPER_ADMIN.
+    const serviceToken = this.env.adminServiceToken;
     // Constant-time: a plain === here leaks the secret a byte at a time.
-    if (this.crypto.safeEqual(token, this.env.JWT_SECRET)) {
+    if (serviceToken !== '' && this.crypto.safeEqual(token, serviceToken)) {
       request.admin = { email: 'service-token', role: 'SUPER_ADMIN', via: 'service' };
       return true;
     }

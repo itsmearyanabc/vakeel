@@ -336,14 +336,22 @@ Measure on your own queries before tuning.
 ## 7. Admin API
 
 Bar council verification needs something to approve it. Until the portal exists,
-these endpoints do the job. Auth is a bearer token equal to `JWT_SECRET`.
+these endpoints do the job. Auth is a bearer token equal to `ADMIN_SERVICE_TOKEN`.
 
 ```bash
-curl -H "Authorization: Bearer $JWT_SECRET" https://<domain>/admin/verifications
-curl -X POST -H "Authorization: Bearer $JWT_SECRET" \
+curl -H "Authorization: Bearer $ADMIN_SERVICE_TOKEN" https://<domain>/admin/verifications
+curl -X POST -H "Authorization: Bearer $ADMIN_SERVICE_TOKEN" \
      https://<domain>/admin/verifications/<userId>/approve
-curl -H "Authorization: Bearer $JWT_SECRET" https://<domain>/admin/stats
+curl -H "Authorization: Bearer $ADMIN_SERVICE_TOKEN" https://<domain>/admin/stats
 ```
+
+> **This used to be `JWT_SECRET`, and still is on a deployment that has not set
+> `ADMIN_EMAIL`/`ADMIN_PASSWORD` yet.** Once those are set, `JWT_SECRET` is no
+> longer accepted as a bearer token — it signs admin sessions, so anything
+> holding it can mint a SUPER_ADMIN session with any expiry, and revoking a
+> leaked copy would mean rotating the signing key and logging every admin out.
+> Set `ADMIN_SERVICE_TOKEN` (≥ 24 chars) to keep scripted access working, or
+> leave it blank for browser sessions only.
 
 Approving sends the advocate a WhatsApp message and lifts their daily quota.
 

@@ -55,6 +55,23 @@ end
 return {1, used}
 `;
 
+/**
+ * Give back one unit of quota.
+ *
+ * Floors at zero and never creates the key. A refund for a day whose counter
+ * has already expired must not resurrect it at -1, because the next claim would
+ * then read 0 and hand out a free extra query every night.
+ */
+const REFUND_QUOTA_SCRIPT = `
+local used = tonumber(redis.call('get', KEYS[1]))
+
+if used == nil or used <= 0 then
+  return 0
+end
+
+return redis.call('decr', KEYS[1])
+`;
+
 export interface AcquiredLock {
   key: string;
   token: string;
@@ -179,14 +196,31 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
    * the hot path off the database.
    */
   async claimQuota(userId: string, limit: number): Promise<{ allowed: boolean; used: number }> {
-    const key = `quota:${userId}:${new Date().toISOString().slice(0, 10)}`;
     // Two days, so a counter created just before midnight UTC survives long
     // enough to be inspected rather than vanishing mid-conversation.
-    const [allowed, used] = (await this.client.eval(CLAIM_QUOTA_SCRIPT, 1, key, String(limit), '172800')) as [
-      number,
-      number,
-    ];
+    const [allowed, used] = (await this.client.eval(
+      CLAIM_QUOTA_SCRIPT,
+      1,
+      this.quotaKey(userId),
+      String(limit),
+      '172800',
+    )) as [number, number];
     return { allowed: allowed === 1, used };
+  }
+
+  /**
+   * Return one claimed unit, for work that was paid for but never delivered.
+   *
+   * Returns the counter's new value. See {@link REFUND_QUOTA_SCRIPT} for why it
+   * refuses to go below zero or to create a missing key.
+   */
+  async refundQuota(userId: string): Promise<number> {
+    return (await this.client.eval(REFUND_QUOTA_SCRIPT, 1, this.quotaKey(userId))) as number;
+  }
+
+  /** Same key for both operations, so a refund can never miss the claim. */
+  private quotaKey(userId: string): string {
+    return `quota:${userId}:${new Date().toISOString().slice(0, 10)}`;
   }
 
   // --- Generic cache --------------------------------------------------------

@@ -9,7 +9,7 @@
 > [Change log](#-change-log) and update the affected table. A stale ledger is
 > worse than none, because it gets trusted.
 
-**Last updated:** 2026-08-07
+**Last updated:** 2026-08-10
 **Repo:** `github.com/itsmearyanabc/vakeel` · branch `main`
 **Stack:** NestJS 11 (Fastify) · Supabase Postgres + pgvector · Redis + BullMQ · WhatsApp Cloud API · Railway
 
@@ -19,9 +19,9 @@
 
 | Area | State | Notes |
 |---|---|---|
-| Backend code | 🟢 Complete | 99 files, compiles clean, 111 tests passing |
+| Backend code | 🟢 Complete | Compiles clean, 225 tests passing |
 | Database schema | 🟢 **Applied** | Supabase `biwncplbeatjuaixcekf` · PG 17.6 · 12 tables · both HNSW indexes live · 31 statutes seeded |
-| WhatsApp connection | 🟡 Receiving, cannot reply | Webhook verified and delivering. Sends fail with Meta **error 190** — expired token. Needs a permanent System User token |
+| WhatsApp connection | 🟡 Live, test-mode recipients only | Webhook verified, replies delivering to allowed numbers. Unlisted numbers fail with Meta **131030** — the app is still in test mode. Fix is in the Meta dashboard, not the code: add each number under API Setup → "To", or complete Business Verification and take the app Live |
 | Admin panel | 🟢 Built | Served at `/admin`, no separate deploy |
 | Feature 1 — CNR case status | 🟡 Works, mock data | Real data needs an eCourts provider subscription |
 | Feature 2 — Law sections | 🟡 Works, thin corpus | 10 seeded sections; needs bulk bare-act ingestion |
@@ -173,14 +173,22 @@ exhaustive. Always verify before citing._
 
 Signing in returns a **session JWT** (HS256, signed with `JWT_SECRET`, expiring
 per `JWT_EXPIRES_IN`, default 12h), held in `sessionStorage` and cleared when the
-tab closes. Eight failed attempts from one IP triggers a 15-minute lockout,
-tracked in Redis.
+tab closes. Eight failed attempts from one IP triggers a 15-minute lockout, and
+25 against the account from *any* IP does the same — tracked in Redis, and
+**failing open** if Redis is unreachable, because the credentials are
+environment-based precisely so a broken datastore cannot lock you out.
 
 **If either variable is unset**, the panel falls back to the older behaviour —
-pasting `JWT_SECRET` as a bearer token — and the login page says so. That path is
-also kept permanently as a *service token* for curl and CI, which cannot complete
-a login form. To close it off once email login works, delete the `serviceToken`
-branch in `admin.guard.ts`.
+pasting `JWT_SECRET` as a bearer token — and the login page says so.
+
+**The service token is now its own credential.** `ADMIN_SERVICE_TOKEN` (≥ 24
+chars) is what curl and CI use. Once `ADMIN_EMAIL`/`ADMIN_PASSWORD` are set,
+`JWT_SECRET` stops being accepted as a bearer token: it *signs* sessions, so
+holding it means being able to mint a SUPER_ADMIN session with any expiry, and
+revoking a leaked copy would have meant rotating the signing key and logging
+every admin out at the same time. Leave `ADMIN_SERVICE_TOKEN` blank for browser
+sessions only. Resolution order lives in `adminServiceToken` in `env.ts`;
+`admin.guard.spec.ts` pins all three branches.
 
 **Colour scheme:** olive green (navigation, confirmation), white (surfaces), red
 (alerts and destructive actions only, so it keeps its meaning). Light by default;
@@ -316,7 +324,7 @@ The dashboard token dies in 24 hours and the bot will stop with no obvious cause
 **Preferred — the admin panel** (no redeploy):
 
 1. Open `https://<your-service>.up.railway.app/admin`
-2. Sign in with your `JWT_SECRET`
+2. Sign in with your `ADMIN_EMAIL` / `ADMIN_PASSWORD`
 3. **Settings → WhatsApp connection**
 4. Paste all five values → **Save changes**
 5. Click **Test connection**
@@ -639,6 +647,50 @@ adapter exists, or in `.env` locally.
 
 ## 📝 Change log
 
+### 2026-08-10 — The panel was never rejecting your password
+
+**🐛 The admin panel could not be signed into, and the reason was not auth.**
+
+Two `onclick` handlers in the Queries and Messages views wrote `'queries.csv'`
+inside an already single-quoted JS string, where the neighbouring Users view
+correctly wrote `\'users.csv\'`. The panel is **one inline `<script>`**, so this
+was a syntax error that stopped the *entire document's* JavaScript from running.
+
+The visible symptom pointed everywhere except the actual cause:
+
+| What you saw | Why |
+|---|---|
+| No email or password fields | Both start `display:none`; only `initLoginForm()` reveals them, and it never ran |
+| **Sign in** did nothing, page reloaded to `/admin?` | `doLogin` did not exist, so `onsubmit` threw and the form did a native GET |
+| No error message | The error handler was in the same dead script |
+
+It looked like credentials were being rejected. **No request was ever made.**
+`POST /admin/auth/mode` was returning `{"emailLogin":true}` the whole time.
+
+`nest build` cannot catch this — the markup is a `String.raw` literal, so to the
+compiler it is one long string. This is the *second* time that literal has eaten
+the document (a stray backtick did it on 2026-08-08). `admin-ui.html.spec.ts`
+now extracts the script and compiles it with `node:vm`, which fails on both.
+
+**Fixes shipped alongside, from a review of the same area:**
+
+| # | Change | Why |
+|---|---|---|
+| 1 | 🐛 **Replies recorded as delivered when they weren't** | `sendText`'s result was discarded, so a WhatsApp rejection still appended to chat memory, logged "Query answered" and consumed a quota unit. Live logs showed one advocate getting two hard failures with no trace that they received nothing. Now: memory is skipped, the log says so and carries `delivered`, and the quota unit is **refunded** (`QuotaService.refund`, flooring at zero in both Redis and Postgres) |
+| 2 | **Meta error codes get actionable hints** | `131030` reads as "Recipient phone number not in allowed list" — accurate, and it leaves you guessing that the app is in test mode. Seven codes now map to what to actually check, in the logs *and* the Messages view |
+| 3 | 🔐 **`ADMIN_SERVICE_TOKEN` split out from `JWT_SECRET`** | The signing key doubled as a bearer credential: holding it meant being able to *mint* SUPER_ADMIN sessions, and revoking a leak meant rotating the key and logging everyone out. `JWT_SECRET` is still accepted while email login is unconfigured, so fresh deployments are still reachable |
+| 4 | 🔐 **Login lockout fails open on Redis** | The attempt counter threw *before* any password comparison, so a Redis outage returned 500 and made the panel unreachable — defeating the entire reason credentials live in the environment |
+| 5 | 🔐 **Per-account lockout counter** (25, all IPs) | Per-IP alone slows nobody with an address pool, and punishes everyone behind one corporate NAT |
+| 6 | **Empty bearer can no longer authenticate** | `safeEqual('', '')` is `true`. With no service token configured, `Authorization: Bearer ` would have been full SUPER_ADMIN. Found while writing the guard tests, never shipped |
+| 7 | `/favicon.ico` returns 204 | Was logging a warn-level 404 on every panel load — the same noise `RootController` was created to stop, arriving by a different door |
+| 8 | `statutes` count added to the query log | `"passages":0` on a `SECTION_LOOKUP` is *always* zero (that path passes `[]`), so it could not distinguish a statute hit from a fall-through to `answerGeneral` |
+| 9 | `render.yaml` records the divergence | The blueprint describes two services; production runs one hibernating container via `start:all`. **The BullMQ worker sleeps with it** — queued jobs are not drained until something wakes the container |
+
+Tests: 111 → **225**. New: `admin-ui.html.spec.ts`, `admin.guard.spec.ts`,
+`quota.service.spec.ts`.
+
+---
+
 ### 2026-08-08 — Credentials are environment-only; advanced admin
 
 **Policy change: API keys and tokens can no longer be set from the panel.**
@@ -869,7 +921,7 @@ variables. That is the fail-fast guard behaving correctly, not a defect.
 | Query-side synonym expansion | Elasticsearch thesaurus | Postgres thesaurus dictionaries need filesystem access Supabase doesn't give you | Synonym list lives in code, not config |
 | Admin panel inside web service | Separate Next.js app | One deploy, no CORS, no third-party JS in front of PII | Not a rich SPA; fine for tables and forms |
 | Precedent list built without an LLM | Generated summaries | Citations are real by construction; works with zero AI keys | Synopses are extractive, not abstractive |
-| Shared bearer token for admin | Per-user JWT + RBAC | No admin UI existed to issue sessions for | Single shared credential; roles exist in schema, unused |
+| Email/password login + a separate service token | Per-user JWT + RBAC | One operator, one account; a full user table and role UI is not yet worth building | `ADMIN_SERVICE_TOKEN` is still one unscoped SUPER_ADMIN credential, and roles exist in the schema unused |
 | `halfvec` cast index | 1536-dim embeddings | Keeps 3072-dim quality within HNSW's limit | Query expression must match the index exactly |
 
 ---
@@ -892,8 +944,9 @@ variables. That is the fail-fast guard behaving correctly, not a defect.
 
 | Risk | Impact | Mitigation now | Still open |
 |---|---|---|---|
-| Meta token expiry | Bot dies silently | Permanent System User token documented | No expiry alert |
-| 24-hour messaging window | Proactive messages fail | Explained in panel + this doc | No template management UI |
+| Meta token expiry | Bot dies silently | Permanent System User token documented; code 190 now logs what to do | No expiry alert |
+| 24-hour messaging window | Proactive messages fail | Explained in panel + this doc; code 131047 now logs what to do | No template management UI |
+| Worker sleeps with the container | Queued replies stall until something wakes it | Documented in `render.yaml`; only applies to the single-service shape on a hibernating plan | Real fix is an always-on plan or a separate worker service |
 | Corpus gaps read as "no authority" | Advocate misled | Every reply carries a not-exhaustive caveat | Only fixable with more data |
 | Model hallucinates a citation | Wrong law cited | Citations verified against DB, stripped if absent | Prose reasoning still unverified |
 | `ENCRYPTION_KEY` loss | Secrets + bar IDs unreadable | Documented as non-rotatable | No key-rotation tooling |
@@ -929,8 +982,8 @@ curl localhost:3000/health/ready
 **Admin API without the UI:**
 
 ```bash
-curl -H "Authorization: Bearer $JWT_SECRET" localhost:3000/admin/dashboard
-curl -X POST -H "Authorization: Bearer $JWT_SECRET" localhost:3000/admin/settings/whatsapp/test
+curl -H "Authorization: Bearer $ADMIN_SERVICE_TOKEN" localhost:3000/admin/dashboard
+curl -X POST -H "Authorization: Bearer $ADMIN_SERVICE_TOKEN" localhost:3000/admin/settings/whatsapp/test
 ```
 
 ---

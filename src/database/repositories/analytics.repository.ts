@@ -45,6 +45,23 @@ export class AnalyticsRepository {
     return row ?? { allowed: false, used: 0, quota: limit };
   }
 
+  /**
+   * Durable half of a quota refund.
+   *
+   * `GREATEST(..., 0)` mirrors the Redis script: the ledger must never go
+   * negative, or tomorrow's report shows an advocate with less usage than they
+   * actually had. No row means nothing was ever claimed, so there is nothing to
+   * give back.
+   */
+  async refundQuota(userId: string): Promise<void> {
+    await this.db.sql`
+      UPDATE daily_usage
+         SET query_count = GREATEST(query_count - 1, 0),
+             updated_at  = NOW()
+       WHERE user_id = ${userId} AND usage_date = CURRENT_DATE
+    `;
+  }
+
   async usageToday(userId: string): Promise<number> {
     const [row] = await this.db.sql<{ query_count: number }[]>`
       SELECT query_count FROM daily_usage
