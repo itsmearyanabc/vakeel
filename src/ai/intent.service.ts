@@ -48,6 +48,16 @@ export class IntentService {
     const regexCnr = extractCnr(text);
     const { section: regexSection, act: regexAct } = extractSectionReference(text);
 
+    // Some messages do not need a model to understand. Answering them still
+    // cost a full router round trip - roughly a second of the advocate's time,
+    // and a billed call - before the switch downstream threw the classification
+    // away and sent a fixed menu. See fastPath() for what qualifies.
+    const fast = this.fastPath(text, regexCnr);
+    if (fast) {
+      this.logger.debug({ intent: fast.intent }, 'Intent resolved without the router model');
+      return fast;
+    }
+
     let classified: ClassifiedIntent;
 
     try {
@@ -76,6 +86,56 @@ export class IntentService {
     if (regexAct && !classified.actCode) classified.actCode = regexAct;
 
     return classified;
+  }
+
+  /**
+   * Messages a model cannot classify better than a regex can.
+   *
+   * This is deliberately narrow, and it is *not* the heuristic fallback below.
+   * The fallback is a best effort at every intent when the model is unavailable;
+   * this is a short list of cases where the answer is not in doubt, so paying a
+   * router call for it buys nothing:
+   *
+   *   - **menu / help** goes straight to `sendMainMenu`. The classification was
+   *     discarded either way, so the call was pure latency.
+   *   - **a bare greeting** is small talk by construction. "hi" cannot be a
+   *     section lookup. Anchored and length-capped so "thanks, now what does
+   *     section 420 cover" still reaches the model.
+   *   - **a message that is only a CNR** is a case-status lookup, and the regex
+   *     already extracted it more reliably than the model would have.
+   *
+   * Everything else - and in particular section-lookup vs precedent-search, which
+   * turns on phrasing rather than pattern - still goes to the model. Guessing
+   * there would trade a second of latency for a wrong answer.
+   *
+   * Language detection degrades to a script check on this path. That is
+   * acceptable because none of these branches generate prose from the query: the
+   * menu is templated, and small talk passes the raw text to the LLM anyway.
+   */
+  private fastPath(text: string, cnr: string | null): ClassifiedIntent | null {
+    const trimmed = text.trim();
+    const lower = trimmed.toLowerCase();
+    const language = /[ऀ-ॿ]/.test(trimmed) ? 'hi' : 'en';
+
+    const base = { language, cnrNumber: cnr, sectionNumber: null, actCode: null, searchQuery: trimmed };
+
+    if (/^(menu|help|start|options|मदद|मेन्यू)$/.test(lower)) {
+      return { ...base, intent: 'MENU_NAVIGATION', confidence: 0.99 };
+    }
+
+    // Length cap is what keeps this from swallowing real questions that happen
+    // to open with a greeting.
+    if (trimmed.length <= 20 && /^(hi|hello|hey|namaste|hola|thanks|thank you|ok|okay|नमस्ते|धन्यवाद)[\s!.]*$/.test(lower)) {
+      return { ...base, intent: 'SMALL_TALK', confidence: 0.99 };
+    }
+
+    // Only when the CNR is the entire message. "status of ABCD01..." may carry a
+    // question the model should see.
+    if (cnr && trimmed.replace(/[\s-]/g, '').length === cnr.length) {
+      return { ...base, intent: 'CASE_STATUS', confidence: 0.99 };
+    }
+
+    return null;
   }
 
   private fromModel(parsed: Record<string, unknown>, original: string): ClassifiedIntent {

@@ -48,6 +48,35 @@ const envSchema = z.object({
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(8),
   WORKER_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
 
+  /**
+   * How long the worker blocks on an empty queue before re-issuing the wait.
+   *
+   * BullMQ's default is 5 seconds, which on a per-command Redis plan is the
+   * single largest line on the bill: an *idle* worker re-issues `bzpopmin`
+   * 17,280 times a day and never touches a job. On Upstash's free tier
+   * (500k commands/month) that alone is ~605k/month with zero users.
+   *
+   * Raising it costs nothing in pickup latency. Adding a job writes the queue's
+   * marker key, and `bzpopmin` is blocked *on that key* - so the worker wakes the
+   * instant a message arrives, not when the timeout lapses. Delayed and retried
+   * jobs take a different branch in BullMQ's `getBlockTimeout`, capped at 10s
+   * regardless of this value. This number is therefore only ever the idle
+   * heartbeat.
+   */
+  WORKER_DRAIN_DELAY_SECONDS: z.coerce.number().int().min(1).max(300).default(60),
+
+  /**
+   * How often the worker scans for jobs whose lock expired mid-flight.
+   *
+   * This one *is* a real trade. A job is stalled when the process holding it
+   * died without releasing the lock (SIGKILL, OOM, a hibernating container), and
+   * it is not retried until this scan notices. BullMQ defaults to 30s; that is
+   * 2,880 more commands a day to shorten a crash-recovery window that should
+   * almost never open. Two minutes keeps recovery well inside "the advocate is
+   * still waiting" while cutting the polling cost fourfold.
+   */
+  WORKER_STALLED_INTERVAL_MS: z.coerce.number().int().min(5_000).default(120_000),
+
   // --- WhatsApp Cloud API ---------------------------------------------------
   WHATSAPP_VERIFY_TOKEN: z.string().min(1, 'WHATSAPP_VERIFY_TOKEN is required'),
   WHATSAPP_APP_SECRET: z.string().default(''),

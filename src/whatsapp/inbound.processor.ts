@@ -47,6 +47,13 @@ export class InboundProcessor implements OnModuleInit, OnModuleDestroy {
         // A single message should never occupy a slot for more than a minute -
         // that is far longer than even a slow LLM call plus retrieval.
         lockDuration: 60000,
+        // Both of these exist to stop an *idle* worker from being the largest
+        // consumer of a per-command Redis plan. See the comments on each in
+        // env.ts - the short version is that raising drainDelay costs nothing
+        // (adding a job wakes the blocked bzpopmin immediately) while raising
+        // stalledInterval trades crash-recovery latency for command volume.
+        drainDelay: this.env.WORKER_DRAIN_DELAY_SECONDS,
+        stalledInterval: this.env.WORKER_STALLED_INTERVAL_MS,
       },
     );
 
@@ -59,7 +66,14 @@ export class InboundProcessor implements OnModuleInit, OnModuleDestroy {
 
     this.worker.on('error', (err) => this.logger.error({ err }, 'Worker error'));
 
-    this.logger.info({ concurrency: this.env.WORKER_CONCURRENCY }, 'Inbound worker started');
+    this.logger.info(
+      {
+        concurrency: this.env.WORKER_CONCURRENCY,
+        drainDelaySeconds: this.env.WORKER_DRAIN_DELAY_SECONDS,
+        stalledIntervalMs: this.env.WORKER_STALLED_INTERVAL_MS,
+      },
+      'Inbound worker started',
+    );
   }
 
   async onModuleDestroy(): Promise<void> {
