@@ -82,6 +82,60 @@ export class UserRepository {
     return row ?? null;
   }
 
+  /** Profile fields captured during onboarding. */
+  async setProfile(
+    userId: string,
+    fullName: string,
+    city: string | null,
+    state: string | null,
+  ): Promise<void> {
+    await this.db.sql`
+      UPDATE users
+         SET full_name         = ${fullName},
+             city              = ${city},
+             bar_council_state = ${state}
+       WHERE id = ${userId}
+    `;
+  }
+
+  /**
+   * Move a phone number onto the account its Bar Council ID already names, and
+   * discard the throwaway row that number created.
+   *
+   * ## Why this exists
+   *
+   * An inbound message is resolved by phone number before we know who is
+   * behind it, so an advocate messaging from a second handset gets a fresh row
+   * with fresh credits. That is precisely the loophole the daily limit exists
+   * to close. Once onboarding reveals a Bar Council ID that already belongs to
+   * an account, this collapses the two: the number moves to the real account
+   * and everything else - credits, verification, history - stays where it was.
+   *
+   * ## Why it is a transaction, and why the order matters
+   *
+   * `phone_number` is UNIQUE. The duplicate has to be deleted before the number
+   * can be attached to the canonical row, or the UPDATE violates the
+   * constraint against a row we are about to remove anyway. Both statements
+   * therefore have to succeed or neither may: a crash between them would leave
+   * the advocate's number attached to nothing, and their next message would
+   * create yet another empty account.
+   *
+   * The duplicate is minutes old and holds nothing but a half-finished
+   * onboarding state, so `ON DELETE CASCADE` taking its conversation row with
+   * it is the desired outcome, not collateral damage.
+   */
+  async adoptPhone(canonicalUserId: string, duplicateUserId: string, phoneNumber: string): Promise<void> {
+    await this.db.sql.begin(async (sql) => {
+      await sql`DELETE FROM users WHERE id = ${duplicateUserId}`;
+      await sql`
+        UPDATE users
+           SET phone_number   = ${phoneNumber},
+               last_active_at = NOW()
+         WHERE id = ${canonicalUserId}
+      `;
+    });
+  }
+
   async setIdCardPath(userId: string, storagePath: string): Promise<void> {
     await this.db.sql`UPDATE users SET id_card_storage_path = ${storagePath} WHERE id = ${userId}`;
   }

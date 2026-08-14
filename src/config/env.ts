@@ -95,6 +95,21 @@ const envSchema = z.object({
     .regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters (32 bytes) - generate with: openssl rand -hex 32'),
   ADMIN_PHONE_NUMBERS: z.string().default(''),
 
+  /**
+   * How long a WhatsApp conversation stays "in session".
+   *
+   * After this much silence the next message is treated as a fresh start: the
+   * greeting is re-sent, the language is asked again, and whatever half-finished
+   * state the advocate was in is discarded. Until this existed the state simply
+   * persisted, so a reply typed the next morning was read as an answer to a
+   * question asked the previous evening.
+   *
+   * Set deliberately short (2 minutes) so the flow can be exercised end to end
+   * without waiting. Raise it to something humane - 900 or 1800 - before real
+   * advocates use this, or they will be re-onboarded mid-thought.
+   */
+  SESSION_TTL_SECONDS: z.coerce.number().int().min(30).max(86_400).default(120),
+
   // Admin panel sign-in. Both must be set for the login form to work; if either
   // is blank the panel falls back to accepting JWT_SECRET as a bearer token,
   // which is the pre-login behaviour and is kept so automation does not break.

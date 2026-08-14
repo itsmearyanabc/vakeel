@@ -12,6 +12,27 @@ export interface BarCouncilSubmission {
   reason?: 'INVALID_FORMAT' | 'ALREADY_REGISTERED';
 }
 
+/** What a completed onboarding form yields. */
+export interface ProfileSubmission {
+  fullName: string;
+  barCouncilId: string;
+  city: string;
+  state: string;
+}
+
+export interface ProfileResult {
+  accepted: boolean;
+  reason?: 'INVALID_BAR_ID';
+  /**
+   * The account the advocate actually owns. Differs from the row the message
+   * arrived on when the Bar Council ID matched an existing account - see
+   * {@link UsersService.completeProfile}.
+   */
+  user?: UserRow;
+  /** True when this number was folded into an account that already existed. */
+  merged?: boolean;
+}
+
 /**
  * Bar council enrolment numbers look like `D/1234/2015` or `MAH/12345/2010`:
  * a state code, a serial number, and a year of enrolment. Separators vary
@@ -91,6 +112,63 @@ export class UsersService {
     this.logger.info({ userId }, 'Bar council details submitted for verification');
 
     return { accepted: true };
+  }
+
+  /**
+   * Complete onboarding, treating the Bar Council ID as the identity.
+   *
+   * ## The case this exists for
+   *
+   * An inbound message is resolved by phone number, before anyone knows who
+   * sent it - so an advocate messaging from a second handset arrives as a brand
+   * new account with a brand new daily allowance. That is the loophole the
+   * credit limit exists to close.
+   *
+   * When the submitted Bar Council ID already belongs to an account, this
+   * returns *that* account and moves the new number onto it. Credits,
+   * verification status and history stay where they were, and the throwaway row
+   * is discarded. From the advocate's side switching handsets simply works;
+   * from the product's side a second number buys nothing.
+   *
+   * The name, city and state are written to whichever account wins, because an
+   * advocate correcting a typo by re-onboarding should see the correction take.
+   */
+  async completeProfile(userId: string, input: ProfileSubmission): Promise<ProfileResult> {
+    const cleanedId = input.barCouncilId.trim().toUpperCase();
+    if (!BAR_COUNCIL_PATTERN.test(cleanedId)) {
+      return { accepted: false, reason: 'INVALID_BAR_ID' };
+    }
+
+    const hash = this.crypto.blindIndex(cleanedId);
+    const existing = await this.users.findByBarCouncilHash(hash);
+
+    // Same advocate, different handset. Fold this number into the real account.
+    if (existing && existing.id !== userId) {
+      const current = await this.users.findById(userId);
+      if (current) {
+        await this.users.adoptPhone(existing.id, userId, current.phone_number);
+      }
+
+      await this.users.setProfile(existing.id, input.fullName, input.city, input.state);
+
+      this.logger.info(
+        { adoptedInto: existing.id, discarded: userId },
+        'Bar council ID matched an existing account; number moved and duplicate discarded',
+      );
+
+      const merged = await this.users.findById(existing.id);
+      return { accepted: true, user: merged ?? existing, merged: true };
+    }
+
+    await this.users.setProfile(userId, input.fullName, input.city, input.state);
+    if (!existing) {
+      await this.users.setBarCouncilDetails(userId, this.crypto.encrypt(cleanedId), hash, input.state);
+    }
+
+    const user = await this.users.findById(userId);
+    this.logger.info({ userId }, 'Onboarding profile completed');
+
+    return { accepted: true, user: user ?? undefined, merged: false };
   }
 
   /**

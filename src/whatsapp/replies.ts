@@ -36,16 +36,146 @@ export const ACTION = {
   CANCEL: 'menu:cancel',
 } as const;
 
-export const LANGUAGES: { code: string; label: string }[] = [
-  { code: 'en', label: 'English' },
-  { code: 'hi', label: 'हिन्दी (Hindi)' },
-  { code: 'mr', label: 'मराठी (Marathi)' },
-  { code: 'gu', label: 'ગુજરાતી (Gujarati)' },
-  { code: 'ta', label: 'தமிழ் (Tamil)' },
-  { code: 'te', label: 'తెలుగు (Telugu)' },
-  { code: 'bn', label: 'বাংলা (Bengali)' },
-  { code: 'kn', label: 'ಕನ್ನಡ (Kannada)' },
+/**
+ * The three languages offered at session start.
+ *
+ * Narrowed from eight. The list is read aloud on a phone as a numbered choice,
+ * and eight options across three scripts is a wall of text that costs more
+ * comprehension than the extra coverage buys. `aliases` is what lets an
+ * advocate type "hindi", "हिंदी" or "2" and be understood either way.
+ */
+export const LANGUAGES: { code: string; label: string; aliases: string[] }[] = [
+  { code: 'en', label: 'English', aliases: ['english', 'eng', 'angrezi'] },
+  { code: 'hi', label: 'हिंदी', aliases: ['hindi', 'हिंदी', 'हिन्दी'] },
+  { code: 'kn', label: 'ಕನ್ನಡ', aliases: ['kannada', 'ಕನ್ನಡ', 'kannad'] },
 ];
+
+/**
+ * Resolve whatever the advocate typed into a language code.
+ *
+ * Accepts the menu number, the English name or the native name, because all
+ * three are things people actually send and rejecting two of them would make
+ * the menu feel broken. Returns null when nothing matches, which the caller
+ * turns into a re-prompt rather than a guess.
+ */
+export function matchLanguage(input: string): { code: string; label: string } | null {
+  const cleaned = input.trim().toLowerCase().replace(/[.)\s]+$/, '');
+  if (!cleaned) return null;
+
+  const byNumber = Number(cleaned);
+  if (Number.isInteger(byNumber) && byNumber >= 1 && byNumber <= LANGUAGES.length) {
+    const picked = LANGUAGES[byNumber - 1];
+    return { code: picked.code, label: picked.label };
+  }
+
+  const picked = LANGUAGES.find(
+    (l) => l.code === cleaned || l.label.toLowerCase() === cleaned || l.aliases.includes(cleaned),
+  );
+  return picked ? { code: picked.code, label: picked.label } : null;
+}
+
+/** The numbered language prompt, identical everywhere it is shown. */
+export const LANGUAGE_PROMPT = [
+  '*Select your language:*',
+  LANGUAGES.map((l, i) => `${i + 1}. ${l.label}`).join('   '),
+].join('\n');
+
+/**
+ * The capability list, repeated in the greeting and in the help menu.
+ *
+ * Deliberately duplicated rather than shown once at signup. WhatsApp threads
+ * scroll away and an advocate returning after a week should not have to hunt
+ * upwards to remember what the bot does - the three things it can do are
+ * cheaper to restate than to look up.
+ */
+const CAPABILITIES = [
+  '• Case Status (send CNR)',
+  '• Law Sections (e.g., IPC 420)',
+  '• Case Law / Precedents',
+].join('\n');
+
+/** First contact: greet, list capabilities, and ask for the profile. */
+export const GREETING_NEW_USER = [
+  '*Jai Hind!*',
+  '',
+  'Welcome to *Vakeel Saathi*. I can help you with:',
+  CAPABILITIES,
+  '',
+  'Please send your *Name, Bar Council ID, City, State*',
+  '',
+  '_Example: Ramesh Kumar, D/1234/2015, Patna, Bihar_',
+].join('\n');
+
+/** A known advocate starting a new session. Straight to language. */
+export function greetingReturning(name: string | null): string {
+  const who = name ? ` ${name.split(',')[0].trim()}` : '';
+  return [
+    '*Jai Hind!*',
+    '',
+    `Welcome back${who} to *Vakeel Saathi*. I can help you with:`,
+    CAPABILITIES,
+    '',
+    LANGUAGE_PROMPT,
+  ].join('\n');
+}
+
+/**
+ * Confirm the language and show the numbered menu.
+ *
+ * Credits are shown here rather than only on request, because the decision an
+ * advocate makes next - which of the three options to pick - is the decision
+ * the balance is relevant to.
+ */
+export function menuAfterLanguage(
+  name: string | null,
+  languageLabel: string,
+  credits: string,
+): string {
+  const who = name ? name.split(',')[0].trim() : 'You';
+  return [
+    `${who}, you have selected *${languageLabel}*.`,
+    '',
+    'I can help you with:',
+    '1. Case Status (send CNR)',
+    '2. Law Sections (e.g., IPC 420)',
+    '3. Case Law / Precedents',
+    '',
+    `_${credits}_`,
+    '',
+    'Reply with *1*, *2* or *3*.',
+  ].join('\n');
+}
+
+/** The same menu, for every later return to it. */
+export function helpMenu(credits: string): string {
+  return [
+    '*I can help you with:*',
+    '1. Case Status (send CNR)',
+    '2. Law Sections (e.g., IPC 420)',
+    '3. Case Law / Precedents',
+    '',
+    `_${credits}_`,
+    '',
+    'Reply with *1*, *2* or *3*.',
+  ].join('\n');
+}
+
+/**
+ * Shown when input cannot be understood.
+ *
+ * Says what happened before showing the menu again. A bare menu in response to
+ * a real question reads as the bot ignoring it, and the advocate retypes the
+ * same thing rather than rephrasing.
+ */
+export const NOT_UNDERSTOOD = 'I could not understand that.';
+
+export const INVALID_CNR =
+  'The case number is invalid. Please confirm and try again.\n\n' +
+  '_A CNR is 16 characters: 4 letters, then 10 digits ending in a year — e.g. BRMG030000191989_';
+
+export const NO_CASE_DATA =
+  'No case data found for the provided CNR number. Please verify the CNR and try again.\n\n' +
+  CAVEAT;
 
 export const MAIN_MENU_SECTIONS = [
   {

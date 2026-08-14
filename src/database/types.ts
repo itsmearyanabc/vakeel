@@ -31,6 +31,8 @@ export interface UserRow {
   bar_council_id_enc: string | null;
   bar_council_id_hash: string | null;
   bar_council_state: string | null;
+  /** Practice city, from onboarding. */
+  city: string | null;
   verification_status: VerificationStatus;
   role: UserRole;
   preferred_language: string;
