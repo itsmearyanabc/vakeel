@@ -102,6 +102,88 @@ export function documentUrl(tid: number): string {
 }
 
 /**
+ * Kanoon's `doctypes:` slugs for the courts an advocate is likely to name.
+ *
+ * Keyed by the words people actually type. Several High Courts are known by a
+ * city rather than their state ("Bombay" for Maharashtra, "Madras" for Tamil
+ * Nadu), and advocates use both, so both are listed.
+ *
+ * Deliberately incomplete: a slug that is wrong is worse than one that is
+ * missing, because a wrong `doctypes:` returns *nothing* and reads as "there is
+ * no authority on this". Anything not listed here falls back to an unfiltered
+ * search, which is merely less precise.
+ */
+const COURT_SLUGS: Record<string, string> = {
+  'supreme court': 'supremecourt',
+  supremecourt: 'supremecourt',
+  sc: 'supremecourt',
+
+  delhi: 'delhi',
+  bombay: 'bombay',
+  maharashtra: 'bombay',
+  calcutta: 'kolkata',
+  kolkata: 'kolkata',
+  'west bengal': 'kolkata',
+  madras: 'chennai',
+  chennai: 'chennai',
+  'tamil nadu': 'chennai',
+  karnataka: 'karnataka',
+  bangalore: 'karnataka',
+  bengaluru: 'karnataka',
+  kerala: 'kerala',
+  gujarat: 'gujarat',
+  rajasthan: 'rajasthan',
+  allahabad: 'allahabad',
+  'uttar pradesh': 'allahabad',
+  patna: 'patna',
+  bihar: 'patna',
+  orissa: 'orissa',
+  odisha: 'orissa',
+  jharkhand: 'jharkhand',
+  gauhati: 'gauhati',
+  assam: 'gauhati',
+};
+
+/**
+ * Pull a court restriction out of a natural-language query.
+ *
+ * "case law from Karnataka High Court" used to be sent to Kanoon verbatim,
+ * where it is just relevance text - so the search happily returned Delhi and
+ * Bombay judgments and the advocate's one explicit constraint was the only part
+ * of the question ignored.
+ *
+ * Only fires when the query actually names a court: matching a bare state name
+ * would restrict "bail under the Karnataka Excise Act" to Karnataka judgments,
+ * which is a different question from the one asked.
+ */
+export function courtFilter(query: string): string | null {
+  const lower = query.toLowerCase();
+
+  // The court has to be *named as a court*, not merely mentioned.
+  if (!/\b(high\s+court|supreme\s+court|hc\b)/.test(lower)) return null;
+
+  for (const [needle, slug] of Object.entries(COURT_SLUGS)) {
+    // Word-boundary matched so "sc" does not fire inside "prescription".
+    if (new RegExp(`\\b${needle.replace(/\s+/g, '\\s+')}\\b`).test(lower)) {
+      return slug;
+    }
+  }
+  return null;
+}
+
+/**
+ * Add the court restriction to the query Kanoon receives.
+ *
+ * The court words are left in the text rather than stripped: they are also
+ * useful relevance signal, and removing them reliably from free-form English is
+ * more likely to mangle the question than to help it.
+ */
+export function applyCourtFilter(query: string): string {
+  const slug = courtFilter(query);
+  return slug ? `${query} doctypes:${slug}` : query;
+}
+
+/**
  * One search result -> one PrecedentRow.
  *
  * `relevanceRank` is the position Kanoon returned it in; the caller re-sorts by

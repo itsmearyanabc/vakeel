@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common';
+import { InjectEnv } from '../config/config.module';
+import { AppEnv } from '../config/env';
 import { IntentService } from '../ai/intent.service';
 import { extractCnr } from '../ai/legal-patterns';
 import { ChatMemoryService } from '../ai/memory/chat-memory.service';
-import { PrecedentsService, formatPrecedentPage } from '../ai/precedents.service';
+import { PrecedentsService, formatPrecedentPage, prioritiseHomeCourt } from '../ai/precedents.service';
 import { ProviderRegistry } from '../ai/providers/provider.registry';
 import { RagService } from '../ai/rag.service';
 import { TranscriptionService } from '../ai/transcription.service';
@@ -12,11 +14,12 @@ import { ConversationRepository } from '../database/repositories/conversation.re
 import { PrecedentRow, UserRow } from '../database/types';
 import { CnrNotFoundError, EcourtsService } from '../ecourts/ecourts.service';
 import { CircuitOpenError } from '../common/circuit-breaker';
-import { QuotaService } from '../quota/quota.service';
+import { CREDIT_COST, QuotaService } from '../quota/quota.service';
 import { InboundMessageJob } from '../redis/queue.constants';
 import { UsersService } from '../users/users.service';
 import { buttonMessage, listMessage } from './message-builder';
 import * as Replies from './replies';
+import { route, SessionContext, SessionState } from './session.router';
 import { ACTION } from './replies';
 import { WhatsAppApiService } from './whatsapp-api.service';
 
@@ -107,6 +110,21 @@ export function looksLikeCnrAttempt(text: string): boolean {
 export class ConversationService {
   private readonly logger = getLogger().child({ module: 'whatsapp:conversation' });
 
+  /**
+   * Onboarding is finished only when all four fields are on record.
+   *
+   * Checked rather than trusted from a flag, because a row can reach a partial
+   * state several ways - an older account created before onboarding existed, a
+   * merge, an interrupted session - and every one of them should be sent
+   * through onboarding again rather than into a menu that will later fail on a
+   * missing state.
+   */
+  private static profileComplete(user: UserRow): boolean {
+    return Boolean(
+      user.full_name && user.bar_council_id_hash && user.city && user.bar_council_state,
+    );
+  }
+
   constructor(
     private readonly api: WhatsAppApiService,
     private readonly users: UsersService,
@@ -120,6 +138,7 @@ export class ConversationService {
     private readonly analytics: AnalyticsRepository,
     private readonly transcription: TranscriptionService,
     private readonly registry: ProviderRegistry,
+    @InjectEnv() private readonly env: AppEnv,
   ) {}
 
   async handle(job: InboundMessageJob): Promise<void> {
@@ -133,18 +152,29 @@ export class ConversationService {
     // Blue ticks before the slow work, so the advocate can see it was received.
     void this.api.markAsRead(job.waMessageId);
 
-    const isFirstContact = user.created_at.getTime() > Date.now() - 5000;
-
     const text = await this.resolveText(job, user);
     if (text === null) return;
 
     // Universal escape hatches, checked before any state handling so a user can
     // always get out of a flow they entered by accident.
     const lower = text.trim().toLowerCase();
-    if (['menu', 'start', 'options', 'मेन्यू'].includes(lower)) {
-      await this.conversations.clear(user.id);
-      await this.sendMainMenu(user);
-      return;
+    if (['menu', 'options', 'मेन्यू'].includes(lower)) {
+      // Typing "menu" is the word form of "0", so it must land on the same
+      // screen. Clearing the state instead would restart the session and
+      // re-ask for a language the advocate has already chosen.
+      if (ConversationService.profileComplete(user)) {
+        const balance = await this.quota.peek(user.id, user.role);
+        await this.api.sendText(job.from, Replies.helpMenu(this.quota.creditLine(balance)));
+        await this.conversations.set(
+          user.id,
+          'MAIN_MENU',
+          {},
+          this.env.SESSION_TTL_SECONDS,
+        );
+        return;
+      }
+      // No profile yet: there is no menu to reach, so fall through and let the
+      // router send them through onboarding.
     }
     if (['stop', 'unsubscribe'].includes(lower)) {
       await this.users.setLanguage(user.id, user.preferred_language);
@@ -176,21 +206,136 @@ export class ConversationService {
       return;
     }
 
-    if (isFirstContact) {
-      await this.api.sendText(job.from, Replies.welcome(user.full_name ?? job.profileName));
-      await this.sendMainMenu(user);
-      // Fall through: a first message with a real question gets answered too,
-      // rather than making the user repeat themselves after the welcome.
-      if (text.trim().length < 12) return;
+    await this.runSession(user, text, job);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Session flow
+  //
+  // The decisions live in session.router.ts as a pure function; this half only
+  // performs what it returns. Keeping them apart is what makes the flow
+  // testable without a database, a queue or Meta - see session.router.spec.ts.
+  // ---------------------------------------------------------------------------
+
+  private async runSession(user: UserRow, text: string, job: InboundMessageJob): Promise<void> {
+    // A row past its expires_at reads as null, which is exactly what the router
+    // treats as "start a new session". The TTL is therefore the whole of the
+    // session-expiry mechanism; there is no separate sweep.
+    const stored = await this.conversations.get(user.id);
+    const context: SessionContext = stored
+      ? { ...(stored.context as Partial<SessionContext>), state: stored.state as SessionState }
+      : { state: null };
+
+    const balance = await this.quota.peek(user.id, user.role);
+
+    const routed = route(
+      text,
+      context,
+      {
+        fullName: user.full_name,
+        profileComplete: ConversationService.profileComplete(user),
+      },
+      this.quota.creditLine(balance),
+    );
+
+    // The router may replace the user we are acting on: submitting a bar
+    // council ID that already has an account merges this number into it, and
+    // everything afterwards - credits, state - belongs to that account.
+    let acting = user;
+    let nextContext: SessionContext = { ...context, ...(routed.contextPatch ?? {}) };
+
+    for (const action of routed.actions) {
+      switch (action.kind) {
+        case 'reply':
+          await this.api.sendText(job.from, action.text);
+          break;
+
+        case 'saveProfile': {
+          const result = await this.users.completeProfile(acting.id, action.profile);
+          if (result.accepted && result.user) acting = result.user;
+          break;
+        }
+
+        case 'lookupCase':
+          await this.answerCaseStatus(acting, action.cnr, text);
+          break;
+
+        case 'lookupSection':
+          await this.answerSearch(acting, action.query, action.charge, job, 'SECTION');
+          break;
+
+        case 'searchPrecedents':
+          await this.answerSearch(acting, action.query, action.charge, job, 'PRECEDENT');
+          nextContext = { ...nextContext, precedentOffset: 0 };
+          break;
+
+        case 'nextPrecedentPage':
+          await this.sendNextPrecedentPage(acting, job);
+          break;
+
+        default: {
+          // Exhaustiveness: adding an Action variant without handling it here
+          // is a compile error rather than a message the bot silently ignores.
+          const unreachable: never = action;
+          throw new Error(`Unhandled session action: ${JSON.stringify(unreachable)}`);
+        }
+      }
     }
 
-    const state = await this.conversations.get(user.id);
-    if (state && state.state !== STATE.IDLE) {
-      const consumed = await this.handleStatefulInput(user, state.state, text, job);
-      if (consumed) return;
+    if (routed.nextState === null) {
+      await this.conversations.clear(acting.id);
+    } else if (routed.nextState) {
+      await this.conversations.set(
+        acting.id,
+        routed.nextState,
+        nextContext as unknown as Record<string, unknown>,
+        this.env.SESSION_TTL_SECONDS,
+      );
+    }
+  }
+
+  /**
+   * Charge, then answer a research question.
+   *
+   * ## Why the charge happens here and not in the router
+   *
+   * The router decides *how much* this costs; only this method knows whether
+   * the advocate can afford it, because that needs Redis. Splitting it that way
+   * keeps the billing rule (is this the same question?) unit-testable while the
+   * balance check stays next to the work it guards.
+   *
+   * The claim is made before the model runs, because that is the only moment it
+   * can prevent the spend. If delivery then fails, {@link answerWithRag} and
+   * the precedent path refund it - a claim is a promise to deliver an answer.
+   */
+  private async answerSearch(
+    user: UserRow,
+    query: string,
+    charge: number,
+    job: InboundMessageJob,
+    kind: 'SECTION' | 'PRECEDENT',
+  ): Promise<void> {
+    if (charge > 0) {
+      const decision = await this.quota.claim(user.id, user.role, charge);
+      if (!decision.allowed) {
+        await this.api.sendText(job.from, Replies.quotaExceeded(decision.limit));
+        return;
+      }
     }
 
-    await this.handleFreeformQuery(user, text, job);
+    // Classification still runs: it extracts the section number and act code
+    // the retrieval layer needs, and detects the language. What it no longer
+    // does is decide *which feature* to run - the advocate already said that by
+    // choosing from the menu, and overriding them with a model's guess is how
+    // "2" for a section lookup used to end up as a precedent search.
+    const intent = await this.intents.classify(query);
+
+    if (kind === 'PRECEDENT') {
+      await this.answerPrecedents(user, { ...intent, intent: 'PRECEDENT_SEARCH' }, query, job);
+      return;
+    }
+
+    await this.answerWithRag(user, { ...intent, intent: 'SECTION_LOOKUP' }, query, job);
   }
 
   // ---------------------------------------------------------------------------
@@ -525,13 +670,14 @@ export class ConversationService {
     }
   }
 
+  /**
+   * Case status. Free - see CREDIT_COST.CASE_STATUS for why.
+   *
+   * This used to claim a unit of quota like any other answer. It no longer
+   * charges at all: there is no model call behind it, and it is the thing an
+   * advocate does standing outside a courtroom.
+   */
   private async answerCaseStatus(user: UserRow, cnr: string, originalQuery: string): Promise<void> {
-    const decision = await this.quota.claim(user.id, user.role);
-    if (!decision.allowed) {
-      await this.api.sendText(user.phone_number, Replies.quotaExceeded(decision.limit));
-      return;
-    }
-
     const started = Date.now();
 
     try {
@@ -585,13 +731,17 @@ export class ConversationService {
     originalText: string,
     job: InboundMessageJob,
   ): Promise<void> {
-    const decision = await this.quota.claim(user.id, user.role);
-    if (!decision.allowed) {
-      await this.api.sendText(job.from, Replies.quotaExceeded(decision.limit));
-      return;
-    }
+    // Billing happens once, upstream in answerSearch(), which knows whether
+    // this is a new question or the same one being pressed on. Claiming again
+    // here charged twice for one search.
+    const searched = await this.precedents.search(intent);
 
-    const result = await this.precedents.search(intent);
+    // The advocate's own High Court binds them; everything else is persuasive.
+    // A pure date sort buries the one authority they can actually cite.
+    const result = {
+      ...searched,
+      precedents: prioritiseHomeCourt(searched.precedents, user.bar_council_state),
+    };
     const pageSize = this.precedents.pageSize;
 
     const body = formatPrecedentPage(result.precedents, 0, pageSize, intent.searchQuery, {
@@ -693,11 +843,8 @@ export class ConversationService {
     originalText: string,
     job: InboundMessageJob,
   ): Promise<void> {
-    const decision = await this.quota.claim(user.id, user.role);
-    if (!decision.allowed) {
-      await this.api.sendText(job.from, Replies.quotaExceeded(decision.limit));
-      return;
-    }
+    // Billing happens once, upstream in answerSearch(). See the note there.
+    const decision = await this.quota.peek(user.id, user.role);
 
     // Prior turns for THIS advocate only - keyed by user id, so two people
     // messaging simultaneously can never pick up each other's context.
@@ -760,8 +907,8 @@ export class ConversationService {
 
     if (!delivery.ok) {
       // The model already ran, so the spend is sunk and still worth recording
-      // above. The quota unit is not: it buys an answer, and none arrived.
-      await this.quota.refund(user.id, user.role);
+      // above. The credits are not: they buy an answer, and none arrived.
+      await this.quota.refund(user.id, user.role, CREDIT_COST.SECTION_LOOKUP);
       return;
     }
 

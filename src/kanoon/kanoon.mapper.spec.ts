@@ -1,5 +1,7 @@
 import {
+  applyCourtFilter,
   cleanTitle,
+  courtFilter,
   documentUrl,
   inferCourtType,
   parseDate,
@@ -226,5 +228,48 @@ describe('toPrecedentRows', () => {
       15,
     );
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe('courtFilter', () => {
+  it('restricts to the court the advocate named', () => {
+    // The bug this fixes: "judgments from Karnataka High Court" was sent to
+    // Kanoon verbatim, where it is only relevance text, so the search returned
+    // Delhi and Bombay - the one explicit constraint was the only part ignored.
+    expect(courtFilter('case law or judgments from Karnataka High Court')).toBe('karnataka');
+    expect(applyCourtFilter('bail from Karnataka High Court')).toBe(
+      'bail from Karnataka High Court doctypes:karnataka',
+    );
+  });
+
+  it.each([
+    ['Delhi High Court', 'delhi'],
+    ['Bombay High Court', 'bombay'],
+    ['Patna High Court', 'patna'],
+    ['Supreme Court', 'supremecourt'],
+    ['Madras High Court', 'chennai'],
+    ['Calcutta High Court', 'kolkata'],
+  ])('maps %s', (phrase, slug) => {
+    // Several High Courts are known by a city rather than their state, and
+    // advocates use both names.
+    expect(courtFilter(`precedents from ${phrase} on bail`)).toBe(slug);
+  });
+
+  it('does not restrict when no court is named', () => {
+    // "Karnataka Excise Act" is a different question from "Karnataka High
+    // Court", and restricting it would silently drop Supreme Court authority.
+    expect(courtFilter('bail under the Karnataka Excise Act')).toBeNull();
+    expect(courtFilter('anticipatory bail in NDPS cases')).toBeNull();
+    expect(applyCourtFilter('anticipatory bail')).toBe('anticipatory bail');
+  });
+
+  it('leaves an unmapped court unfiltered rather than guessing a slug', () => {
+    // A wrong doctypes: returns nothing, which reads as "no authority exists".
+    // Unfiltered is merely less precise.
+    expect(courtFilter('Sikkim High Court on bail')).toBeNull();
+  });
+
+  it('does not fire on "sc" inside another word', () => {
+    expect(courtFilter('prescription period in High Court appeals')).toBeNull();
   });
 });

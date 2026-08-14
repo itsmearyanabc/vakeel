@@ -7,7 +7,7 @@ import { AppEnv } from '../config/env';
 import { PrecedentRow } from '../database/types';
 import { RedisService } from '../redis/redis.service';
 import { SettingsService } from '../settings/settings.service';
-import { toPrecedentRows } from './kanoon.mapper';
+import { applyCourtFilter, toPrecedentRows } from './kanoon.mapper';
 import { KanoonSearchDoc, KanoonSearchResponse } from './kanoon.types';
 import { parseFoundCount } from './kanoon.mapper';
 
@@ -153,7 +153,11 @@ export class KanoonService {
   }
 
   private async fetchPage(query: string, pageNum: number): Promise<KanoonSearchResponse> {
-    const url = `${this.baseUrl}/search/?formInput=${encodeURIComponent(query)}&pagenum=${pageNum}`;
+    // A named court becomes a doctypes: restriction. Sent verbatim it is only
+    // relevance text, so "judgments from Karnataka High Court" returned Delhi
+    // and Bombay - the advocate's one explicit constraint was the only part of
+    // the question ignored.
+    const url = `${this.baseUrl}/search/?formInput=${encodeURIComponent(applyCourtFilter(query))}&pagenum=${pageNum}`;
 
     // Kanoon's API is POST-only and uses `Token <key>`, not `Bearer`.
     const response = await fetch(url, {
