@@ -363,30 +363,70 @@ export const MOCK_MODE_NOTICE =
   '\n\n_⚠️ No AI provider is configured, so this is a placeholder answer._';
 
 /** Render an eCourts result as a WhatsApp message. */
+/**
+ * The case status card.
+ *
+ * Every field is always printed, "Not available" where the court record has
+ * nothing. A card whose shape changes with the data is hard to read down a
+ * phone screen, and a missing row reads as an omission by the bot rather than
+ * a gap in the record.
+ *
+ * ## The disposed-case rule
+ *
+ * A disposed case whose "next hearing" is in the past is showing a date that
+ * already happened for a matter that is over. Left in, an advocate scanning
+ * quickly reads it as an upcoming listing. It is blanked rather than removed,
+ * so the row still exists and the absence is visible.
+ */
 export function formatCaseStatus(status: CaseStatus): string {
-  const line = (label: string, value: string | null): string | null =>
-    value ? `*${label}:* ${value}` : null;
+  const value = (v: string | null): string => (v && v.trim() ? v.trim() : 'Not available');
+
+  const nextHearing =
+    status.status === 'DISPOSED' && isPast(status.nextHearingDate)
+      ? 'Not available'
+      : value(status.nextHearingDate);
 
   return [
     `*Case status — ${status.cnr}*`,
     '',
-    line('Case', status.caseNumber),
-    line('Type', status.caseType),
-    line('Court', status.court),
-    line('Judge', status.judge),
+    `• Case Type: ${value(status.caseType)}`,
+    `• Filing Number: ${value(status.caseNumber)}`,
+    `• Filing Date: ${value(status.filingDate)}`,
+    `• Registration Number: ${value(status.caseNumber)}`,
+    `• Registration Date: ${value(status.registrationDate)}`,
+    `• CNR Number: ${status.cnr}`,
+    `• First Hearing Date: ${value(status.lastHearingDate)}`,
+    `• Next Hearing Date: ${nextHearing}`,
+    `• Case Status: ${value(status.status)}`,
+    `• Stage of Case: ${value(status.stage)}`,
+    `• Court Number and Judge: ${value(status.judge)}`,
+    `• Petitioner and Advocate: ${pair(status.petitioner, status.petitionerAdvocate)}`,
+    `• Respondent and Advocate: ${pair(status.respondent, status.respondentAdvocate)}`,
     '',
-    line('Petitioner', status.petitioner),
-    line('Respondent', status.respondent),
-    '',
-    line('Stage', status.stage),
-    line('Last hearing', status.lastHearingDate),
-    line('Next hearing', status.nextHearingDate),
     status.mocked
-      ? '\n_⚠️ Sample data — no eCourts provider is configured, so this is not a real case record._'
-      : null,
+      ? '_⚠️ Sample data — no eCourts provider is configured, so this is not a real case record._\n'
+      : '',
+    CAVEAT,
+    '',
+    RETURN_TO_MENU,
   ]
-    .filter((l) => l !== null)
+    .filter((l) => l !== '')
     .join('\n');
+}
+
+/** "Party (Advocate)", degrading to whichever half the record actually has. */
+function pair(party: string | null, advocate: string | null): string {
+  if (!party && !advocate) return 'Not available';
+  if (!advocate) return party as string;
+  if (!party) return `Not available (${advocate})`;
+  return `${party} (${advocate})`;
+}
+
+function isPast(date: string | null): boolean {
+  if (!date) return false;
+  const parsed = new Date(date);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return parsed.getTime() < Date.now();
 }
 
 /** Compact statute card, used when the LLM is unavailable. */
