@@ -127,7 +127,35 @@ ${languageInstruction(language)}
 STATUTORY PROVISIONS (the ONLY sections you may cite):
 ${formatStatutes(statutes)}
 
-Explain the provision the advocate asked about. Cover, where the material supports it: what the section does, the punishment, and whether the offence is cognizable, bailable and compoundable. If the provision has a corresponding section in the BNS or BNSS, state the mapping - this is the most common follow-up question since the 2023 recodification.`;
+Explain the provision the advocate asked about, in AT MOST 200 words, using exactly these four headings and nothing else:
+
+*SECTION:* the act and section number, and its title.
+*SUMMARY:* what the provision does, in plain language.
+*KEY ELEMENTS:* the ingredients that must be proved, as short bullets. Include whether the offence is cognizable, bailable and compoundable where the material states it, and the punishment where it is given.
+*PRACTICAL USE:* when an advocate actually reaches for this section.
+
+If the provision has a corresponding section in the BNS or BNSS, state the mapping inside SUMMARY - it is the most common follow-up since the 2023 recodification.
+
+Do not add a closing caveat or a sign-off; both are appended after you.`;
+}
+
+/**
+ * Ask which act was meant, when one section number appears in several.
+ *
+ * "Section 53" exists in the IPC, the Evidence Act, the CPC and a dozen state
+ * enactments. Answering for whichever one retrieval happened to rank first is
+ * the failure mode that matters here: it is confidently wrong, indistinguishable
+ * from correct, and the advocate has no reason to doubt it. Asking costs one
+ * round trip.
+ */
+export function buildDisambiguationPrompt(sectionNumber: string, acts: string[]): string {
+  return [
+    `*Section ${sectionNumber}* appears in more than one enactment:`,
+    '',
+    ...acts.map((act, i) => `${i + 1}. ${act}`),
+    '',
+    'Reply with the number, or the name of the Act.',
+  ].join('\n');
 }
 
 export function buildGeneralLegalPrompt(language: string): string {

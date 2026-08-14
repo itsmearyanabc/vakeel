@@ -860,6 +860,12 @@ export class ConversationService {
       text += Replies.MOCK_MODE_NOTICE;
     }
 
+    // Appended here rather than asked of the model, which is why the prompt
+    // tells it not to add a sign-off. A caveat the model writes is a caveat it
+    // can also decide to omit, reword, or contradict - and this one is a
+    // product commitment, not a stylistic preference.
+    text += `\n\n${Replies.CAVEAT}\n\n${Replies.RETURN_TO_MENU}`;
+
     const delivery = await this.api.sendText(job.from, text);
 
     // Store the exchange after a successful send. Recording it before would
