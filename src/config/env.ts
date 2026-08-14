@@ -192,7 +192,9 @@ const envSchema = z.object({
   // Precedent listing (priority feature 3). Distinct from RAG_FINAL_TOP_K:
   // that governs how much context the LLM is given, this governs how many
   // distinct authorities the advocate is shown.
-  PRECEDENT_MAX_RESULTS: z.coerce.number().int().min(1).max(50).default(15),
+  // Ten, shown five at a time, so "more" is one page rather than two. Past
+  // about ten an advocate is no longer reading judgments, they are scrolling.
+  PRECEDENT_MAX_RESULTS: z.coerce.number().int().min(1).max(50).default(10),
   PRECEDENT_PAGE_SIZE: z.coerce.number().int().min(1).max(15).default(5),
 
   /**
