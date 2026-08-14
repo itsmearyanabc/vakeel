@@ -6,6 +6,9 @@ import { CorpusRepository } from '../database/repositories/corpus.repository';
 import { PrecedentRow } from '../database/types';
 import { KanoonNotConfiguredError, KanoonService } from '../kanoon/kanoon.service';
 import { SettingsService } from '../settings/settings.service';
+// The formatter below emits WhatsApp markup and is only ever rendered into a
+// WhatsApp message, so sharing the closing copy is the honest dependency.
+import { CAVEAT, RETURN_TO_MENU } from '../whatsapp/replies';
 import { EmbeddingService } from './embedding.service';
 import { ClassifiedIntent } from './intent.service';
 import { expandQuery } from './legal-patterns';
@@ -156,11 +159,132 @@ export class PrecedentsService {
 // without a DI container - see precedents.format.spec.ts.
 // ---------------------------------------------------------------------------
 
+/** Shown wherever a field genuinely has no value, rather than dropping the line. */
+export const NOT_AVAILABLE = 'Not available';
+
+// Re-exported so callers that already import from this module do not need to
+// reach into replies.ts as well.
+export { CAVEAT, RETURN_TO_MENU };
+
 /** Best available citation for display, preferring the neutral one. */
 export function bestCitation(p: PrecedentRow): string | null {
   if (p.neutral_citation) return p.neutral_citation;
   if (p.reporter_citations?.length) return p.reporter_citations[0];
   return null;
+}
+
+/**
+ * Indian Kanoon truncates long party names in the title, and the ellipsis
+ * travels all the way to the advocate's phone: "Tiger Global International Iii
+ * ... vs The Authority For Advance Rulings ...". It is noise in every case and
+ * actively misleading in some, since it can look like part of the party's name.
+ */
+export function stripEllipsis(value: string): string {
+  return value
+    .replace(/\s*(\.{2,}|…)\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Split a judgment title into the two sides.
+ *
+ * Indian case titles are "<petitioner> vs <respondent>", with the separator
+ * written half a dozen ways. Only the *first* separator splits - "State of
+ * Bihar vs Ram Kumar vs Anr" is one case with a messy respondent, not three
+ * parties, and splitting on every occurrence would silently drop the tail.
+ */
+export function splitParties(title: string): { petitioner: string | null; respondent: string | null } {
+  const cleaned = stripEllipsis(title);
+  const match = /^(.*?)\s+(?:vs?\.?|versus|v\/s)\s+(.*)$/i.exec(cleaned);
+  if (!match) return { petitioner: cleaned || null, respondent: null };
+
+  const petitioner = match[1].trim();
+  const respondent = match[2].trim();
+  return { petitioner: petitioner || null, respondent: respondent || null };
+}
+
+/**
+ * The High Court an advocate practises in, inferred from the state on their
+ * profile.
+ *
+ * Deliberately a lookup rather than string matching on the court name: several
+ * High Courts are not named after their state (Bihar is served by Patna, Punjab
+ * and Haryana share one, the North-Eastern states share Gauhati), so "does the
+ * court name contain the state name" is wrong for exactly the advocates most
+ * likely to notice.
+ */
+const HIGH_COURT_BY_STATE: Record<string, string> = {
+  'andhra pradesh': 'andhra pradesh high court',
+  'arunachal pradesh': 'gauhati high court',
+  assam: 'gauhati high court',
+  bihar: 'patna high court',
+  chandigarh: 'punjab & haryana high court',
+  chhattisgarh: 'chhattisgarh high court',
+  delhi: 'delhi high court',
+  goa: 'bombay high court',
+  gujarat: 'gujarat high court',
+  haryana: 'punjab & haryana high court',
+  'himachal pradesh': 'himachal pradesh high court',
+  'jammu and kashmir': 'jammu & kashmir high court',
+  jharkhand: 'jharkhand high court',
+  karnataka: 'karnataka high court',
+  kerala: 'kerala high court',
+  ladakh: 'jammu & kashmir high court',
+  'madhya pradesh': 'madhya pradesh high court',
+  maharashtra: 'bombay high court',
+  manipur: 'manipur high court',
+  meghalaya: 'meghalaya high court',
+  mizoram: 'gauhati high court',
+  nagaland: 'gauhati high court',
+  odisha: 'orissa high court',
+  orissa: 'orissa high court',
+  puducherry: 'madras high court',
+  punjab: 'punjab & haryana high court',
+  rajasthan: 'rajasthan high court',
+  sikkim: 'sikkim high court',
+  'tamil nadu': 'madras high court',
+  telangana: 'telangana high court',
+  tripura: 'tripura high court',
+  'uttar pradesh': 'allahabad high court',
+  uttarakhand: 'uttarakhand high court',
+  'west bengal': 'calcutta high court',
+};
+
+export function homeHighCourt(state: string | null | undefined): string | null {
+  if (!state) return null;
+  return HIGH_COURT_BY_STATE[state.trim().toLowerCase()] ?? null;
+}
+
+/**
+ * Float up to `max` judgments from the advocate's own High Court to the top.
+ *
+ * Their home court binds them; everything else is persuasive at best. Sorting
+ * purely by date buries the one authority they can actually cite as binding
+ * under three from other states.
+ *
+ * A *stable partition*, not a re-sort: within both groups the existing
+ * newest-first order is preserved, and the cap stops a court with many hits
+ * from crowding out the genuinely recent authority the advocate also needs.
+ */
+export function prioritiseHomeCourt(
+  rows: PrecedentRow[],
+  state: string | null | undefined,
+  max = 3,
+): PrecedentRow[] {
+  const home = homeHighCourt(state);
+  if (!home) return rows;
+
+  const promoted: PrecedentRow[] = [];
+  const rest: PrecedentRow[] = [];
+
+  for (const row of rows) {
+    const court = row.court_name?.toLowerCase() ?? '';
+    if (promoted.length < max && court.includes(home)) promoted.push(row);
+    else rest.push(row);
+  }
+
+  return [...promoted, ...rest];
 }
 
 function year(date: Date | null): string {
@@ -234,54 +358,50 @@ export function formatPrecedentPage(
     header.push('_Note: semantic search is off, so these are keyword matches only._');
   }
 
+  // Every card carries the same seven labels in the same order, and prints
+  // "Not available" rather than dropping a line. A card whose shape changes
+  // with the data is far harder to read down a phone screen than one with a
+  // predictable gap, and a missing label reads as an omission rather than as
+  // an absence in the source.
   const entries = page.map((p, i) => {
     const n = offset + i + 1;
-    const citation = bestCitation(p);
-    const date = fullDate(p.judgment_date);
+    const { petitioner, respondent } = splitParties(p.case_title);
 
-    const lines = [
-      `*${n}. ${p.case_title}*`,
-      `${p.court_name ?? 'Court not recorded'} · ${year(p.judgment_date)}`,
-    ];
+    const bench =
+      p.bench?.length
+        ? p.bench.join(', ')
+        : p.bench_strength && p.bench_strength > 1
+          ? `${p.bench_strength}-judge bench`
+          : NOT_AVAILABLE;
 
-    // Indian Kanoon exposes no citation of any kind, so the document link is
-    // the reference an advocate can actually act on. Better an honest link than
-    // a citation-shaped string that looks quotable in a filing and is not.
-    if (citation) lines.push(`📑 ${citation}`);
-    else if (p.source_url) lines.push(`🔗 ${p.source_url}`);
-
-    // Bench strength is what tells an advocate whether a later smaller bench
-    // could have departed from it, so it is worth the line.
-    if (p.bench_strength && p.bench_strength > 1) {
-      lines.push(`⚖️ ${p.bench_strength}-judge bench`);
-    }
-    if (p.disposition) lines.push(`Result: ${p.disposition.toLowerCase()}`);
-
-    lines.push('', synopsis(p));
-
-    if (p.act_sections?.length) {
-      lines.push('', `_Provisions: ${p.act_sections.slice(0, 5).join(', ')}_`);
-    }
-    if (date) lines.push(`_Decided ${date}_`);
-
-    return lines.join('\n');
+    return [
+      `*${n}. ${stripEllipsis(p.case_title)}*`,
+      `CASE NO.: ${p.neutral_citation ?? NOT_AVAILABLE}`,
+      `PETITIONER: ${petitioner ?? NOT_AVAILABLE}`,
+      `RESPONDENT: ${respondent ?? NOT_AVAILABLE}`,
+      `DATE OF JUDGMENT: ${fullDate(p.judgment_date) ?? NOT_AVAILABLE}`,
+      `BENCH: ${bench}`,
+      // Indian Kanoon exposes no citation of any kind. Saying "Not available"
+      // is the honest answer; inventing a citation-shaped string is the one
+      // failure this product exists to avoid, and the source link has been
+      // dropped from the card entirely.
+      `EQUIVALENT CITATIONS: ${bestCitation(p) ?? NOT_AVAILABLE}`,
+      `COURT: ${p.court_name ?? NOT_AVAILABLE}`,
+      '',
+      `LEGAL PRINCIPLE: ${stripEllipsis(synopsis(p, 200))}`,
+    ].join('\n');
   });
 
   const footer: string[] = [];
   if (shownTo < all.length) {
     footer.push('', `_${all.length - shownTo} more — reply *more* to continue._`);
   } else if (all.length > pageSize) {
-    footer.push('', '_End of results._');
+    // Naming the ceiling matters: without it, "End of results" reads as "there
+    // is no further authority on this", which is a very different claim.
+    footer.push('', `_That is all ${all.length} precedents for this search._`);
   }
 
-  // Naming the source prevents "the bot found nothing" being read as "there is
-  // no authority on this" - and tells the advocate what they are relying on.
-  footer.push(
-    '',
-    opts.source === 'kanoon'
-      ? '_Results from Indian Kanoon. Open the link to read the full judgment, and always verify before citing._'
-      : '_Results come from the loaded judgment corpus and may not be exhaustive. Always verify before citing._',
-  );
+  footer.push('', CAVEAT, '', RETURN_TO_MENU);
 
   return [...header, '', entries.join('\n\n────────\n\n'), ...footer].join('\n');
 }

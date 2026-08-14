@@ -109,7 +109,9 @@ describe('precedent formatting', () => {
 
     it('offers "more" only while results remain', () => {
       expect(formatPrecedentPage(many, 0, 5, 'q')).toContain('reply *more*');
-      expect(formatPrecedentPage(many, 10, 5, 'q')).toContain('End of results');
+      // "End of results" read as "no further authority exists"; the closing
+      // line now names the count instead.
+      expect(formatPrecedentPage(many, 10, 5, 'q')).toContain('That is all 12 precedents');
       expect(formatPrecedentPage(many, 10, 5, 'q')).not.toContain('reply *more*');
     });
 
@@ -125,9 +127,47 @@ describe('precedent formatting', () => {
       expect(out).toMatch(/keyword matches only/i);
     });
 
-    it('always carries the not-exhaustive caveat', () => {
-      // "No results" must never read as "no authority exists".
-      expect(formatPrecedentPage(many, 0, 5, 'q')).toMatch(/may not be exhaustive/i);
+    it('always carries the caveat and the way back to the menu', () => {
+      const out = formatPrecedentPage(many, 0, 5, 'q');
+      expect(out).toMatch(/research aid.*Not legal advice/i);
+      expect(out).toContain('Type *0*');
+    });
+
+    it('never leaks an Indian Kanoon URL', () => {
+      // The advocate asked for judgments, not for links to a third-party site.
+      const out = formatPrecedentPage([row({ source_url: 'https://indiankanoon.org/doc/70495810/' })], 0, 5, 'q');
+      expect(out).not.toMatch(/indiankanoon|https?:\/\//i);
+    });
+
+    it('strips the ellipses Kanoon leaves in truncated titles', () => {
+      const out = formatPrecedentPage(
+        [row({ case_title: 'Tiger Global International Iii ... vs The Authority For Advance Rulings ...' })],
+        0,
+        5,
+        'q',
+      );
+      expect(out).not.toContain('...');
+      expect(out).not.toContain('…');
+    });
+
+    it('splits the title into petitioner and respondent', () => {
+      const out = formatPrecedentPage([row({ case_title: 'State of Bihar vs Ram Kumar' })], 0, 5, 'q');
+      expect(out).toContain('PETITIONER: State of Bihar');
+      expect(out).toContain('RESPONDENT: Ram Kumar');
+    });
+
+    it('prints "Not available" rather than dropping a field', () => {
+      // A card whose shape changes with the data is harder to read down a phone
+      // screen, and a missing label reads as an omission rather than an absence.
+      const out = formatPrecedentPage(
+        [row({ neutral_citation: null, reporter_citations: [], judgment_date: null, bench: [], bench_strength: null })],
+        0,
+        5,
+        'q',
+      );
+      for (const label of ['CASE NO.', 'DATE OF JUDGMENT', 'BENCH', 'EQUIVALENT CITATIONS']) {
+        expect(out).toContain(`${label}: Not available`);
+      }
     });
 
     it('gives a useful empty state instead of a bare "nothing found"', () => {
@@ -136,20 +176,26 @@ describe('precedent formatting', () => {
       expect(out).toMatch(/rephrasing/i);
     });
 
-    it('includes the citation and bench strength for each entry', () => {
+    it('includes the citation, bench and court for each entry', () => {
       const out = formatPrecedentPage([row()], 0, 5, 'q');
-      expect(out).toContain('2024 INSC 452');
-      expect(out).toContain('2-judge bench');
-      expect(out).toContain('Supreme Court of India');
+      expect(out).toContain('EQUIVALENT CITATIONS: 2024 INSC 452');
+      expect(out).toContain('COURT: Supreme Court of India');
+      expect(out).toMatch(/BENCH: .+/);
     });
 
-    it('omits the bench line for a single-judge bench', () => {
-      expect(formatPrecedentPage([row({ bench_strength: 1 })], 0, 5, 'q')).not.toContain('judge bench');
+    it('names the judges when Kanoon supplied them', () => {
+      const out = formatPrecedentPage([row({ bench: ['R. Gavai', 'K.V. Viswanathan'] })], 0, 5, 'q');
+      expect(out).toContain('BENCH: R. Gavai, K.V. Viswanathan');
+    });
+
+    it('falls back to bench strength when no names are available', () => {
+      const out = formatPrecedentPage([row({ bench: [], bench_strength: 3 })], 0, 5, 'q');
+      expect(out).toContain('BENCH: 3-judge bench');
     });
 
     it('survives a judgment with no date', () => {
       const out = formatPrecedentPage([row({ judgment_date: null })], 0, 5, 'q');
-      expect(out).toContain('date unknown');
+      expect(out).toContain('DATE OF JUDGMENT: Not available');
     });
   });
 });

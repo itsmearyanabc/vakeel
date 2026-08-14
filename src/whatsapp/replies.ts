@@ -9,6 +9,20 @@ import { StatuteRow } from '../database/types';
  * translated by the LLM; only these fixed strings live here.
  */
 
+/**
+ * Closing lines that every substantive answer carries.
+ *
+ * Defined once because they are a product commitment, not decoration: an
+ * advocate must never be able to receive a case status, a section synopsis or a
+ * precedent list without also being told it is unverified, and without a way
+ * back to the menu. Three copies of this string in three formatters is three
+ * chances for one of them to drift.
+ */
+export const CAVEAT =
+  '_This is a research aid. Verify from original sources before court use. Not legal advice._';
+
+export const RETURN_TO_MENU = "Type *0* to return to the help menu.";
+
 /** Interactive payload ids. These are matched on exactly - do not reword. */
 export const ACTION = {
   MAIN_MENU: 'menu:main',
