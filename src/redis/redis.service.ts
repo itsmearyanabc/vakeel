@@ -37,9 +37,10 @@ end
 const CLAIM_QUOTA_SCRIPT = `
 local limit = tonumber(ARGV[1])
 local ttl   = tonumber(ARGV[2])
-local used  = redis.call('incr', KEYS[1])
+local cost  = tonumber(ARGV[3])
+local used  = redis.call('incrby', KEYS[1], cost)
 
-if used == 1 then
+if used == cost then
   redis.call('expire', KEYS[1], ttl)
 end
 
@@ -48,8 +49,11 @@ if limit < 0 then
 end
 
 if used > limit then
-  redis.call('decr', KEYS[1])
-  return {0, limit}
+  redis.call('decrby', KEYS[1], cost)
+  -- Report what is actually spent, not the limit: a 2-credit search refused
+  -- against a 5-credit day has 4 spent, and telling the advocate they are at
+  -- the cap when they have one credit left is simply wrong.
+  return {0, used - cost}
 end
 
 return {1, used}
@@ -64,12 +68,19 @@ return {1, used}
  */
 const REFUND_QUOTA_SCRIPT = `
 local used = tonumber(redis.call('get', KEYS[1]))
+local cost = tonumber(ARGV[1])
 
 if used == nil or used <= 0 then
   return 0
 end
 
-return redis.call('decr', KEYS[1])
+-- Never refund more than was spent. A refund larger than the counter would
+-- leave it negative, and the next claim would read a free allowance.
+if cost > used then
+  cost = used
+end
+
+return redis.call('decrby', KEYS[1], cost)
 `;
 
 export interface AcquiredLock {
@@ -195,7 +206,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
    * The durable ledger in Postgres is updated separately; this is what keeps
    * the hot path off the database.
    */
-  async claimQuota(userId: string, limit: number): Promise<{ allowed: boolean; used: number }> {
+  async claimQuota(userId: string, limit: number, cost = 1): Promise<{ allowed: boolean; used: number }> {
     // Two days, so a counter created just before midnight UTC survives long
     // enough to be inspected rather than vanishing mid-conversation.
     const [allowed, used] = (await this.client.eval(
@@ -204,18 +215,24 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       this.quotaKey(userId),
       String(limit),
       '172800',
+      String(cost),
     )) as [number, number];
     return { allowed: allowed === 1, used };
   }
 
   /**
-   * Return one claimed unit, for work that was paid for but never delivered.
+   * Return claimed credits, for work that was paid for but never delivered.
    *
    * Returns the counter's new value. See {@link REFUND_QUOTA_SCRIPT} for why it
    * refuses to go below zero or to create a missing key.
    */
-  async refundQuota(userId: string): Promise<number> {
-    return (await this.client.eval(REFUND_QUOTA_SCRIPT, 1, this.quotaKey(userId))) as number;
+  async refundQuota(userId: string, cost = 1): Promise<number> {
+    return (await this.client.eval(
+      REFUND_QUOTA_SCRIPT,
+      1,
+      this.quotaKey(userId),
+      String(cost),
+    )) as number;
   }
 
   /** Same key for both operations, so a refund can never miss the claim. */

@@ -37,13 +37,23 @@ function build(overrides: Record<string, string> = {}) {
 }
 
 describe('QuotaService.refund', () => {
-  it('gives the unit back in both stores', async () => {
+  it('gives the credits back in both stores', async () => {
     const { service, redis, analytics } = build();
 
-    await service.refund('user-1', 'GUEST_LAWYER');
+    await service.refund('user-1', 'GUEST_LAWYER', 2);
 
-    expect(redis.refundQuota).toHaveBeenCalledWith('user-1');
+    expect(redis.refundQuota).toHaveBeenCalledWith('user-1', 2);
     expect(analytics.refundQuota).toHaveBeenCalledWith('user-1');
+  });
+
+  it('does nothing for a free action', async () => {
+    // Case status costs nothing, so a failed delivery has nothing to return.
+    const { service, redis, analytics } = build();
+
+    await service.refund('user-1', 'GUEST_LAWYER', 0);
+
+    expect(redis.refundQuota).not.toHaveBeenCalled();
+    expect(analytics.refundQuota).not.toHaveBeenCalled();
   });
 
   it('does nothing for roles with no limit', async () => {
