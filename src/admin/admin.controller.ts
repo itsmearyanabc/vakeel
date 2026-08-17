@@ -185,12 +185,19 @@ export class AdminController {
 
     // Tell the advocate immediately - the whole point of verifying is the
     // unlimited quota, and they cannot see the change otherwise.
-    await this.whatsapp.sendText(
-      user.phone_number,
-      '*Your account is verified.*\n\nYou now have unlimited daily queries. Ask me anything about Indian law.',
-    );
+    //
+    // Web-only accounts have no number to message. They are not skipped
+    // silently: `notified` is returned so the panel can say the approval
+    // landed but the advocate was not told, rather than implying a message
+    // went out that never did.
+    if (user.phone_number) {
+      await this.whatsapp.sendText(
+        user.phone_number,
+        '*Your account is verified.*\n\nYou now have unlimited daily searches. Ask me anything about Indian law.',
+      );
+    }
 
-    return { updated: true, role: user.role };
+    return { updated: true, role: user.role, notified: Boolean(user.phone_number) };
   }
 
   @Post('verifications/:userId/reject')
@@ -198,12 +205,14 @@ export class AdminController {
     const user = await this.users.reject(userId, body?.notes ?? 'Details could not be verified');
     if (!user) return { updated: false };
 
-    await this.whatsapp.sendText(
-      user.phone_number,
-      `Your verification could not be completed.\n\n_${body?.notes ?? 'Details could not be verified'}_\n\nType *verify* to try again with corrected details.`,
-    );
+    if (user.phone_number) {
+      await this.whatsapp.sendText(
+        user.phone_number,
+        `Your verification could not be completed.\n\n_${body?.notes ?? 'Details could not be verified'}_\n\nType *verify* to try again with corrected details.`,
+      );
+    }
 
-    return { updated: true };
+    return { updated: true, notified: Boolean(user.phone_number) };
   }
 
   /** Promote a user, e.g. to LEGAL_AUDITOR for the review workflow. */

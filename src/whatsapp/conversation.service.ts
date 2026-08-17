@@ -11,10 +11,10 @@ import { TranscriptionService } from '../ai/transcription.service';
 import { getLogger, maskPhone } from '../common/logger';
 import { AnalyticsRepository } from '../database/repositories/analytics.repository';
 import { ConversationRepository } from '../database/repositories/conversation.repository';
-import { PrecedentRow, UserRow } from '../database/types';
+import { PrecedentRow, UserRow, WhatsAppUserRow } from '../database/types';
 import { CnrNotFoundError, EcourtsService } from '../ecourts/ecourts.service';
 import { CircuitOpenError } from '../common/circuit-breaker';
-import { CREDIT_COST, QuotaService } from '../quota/quota.service';
+import { CreditsService } from '../credits/credits.service';
 import { InboundMessageJob } from '../redis/queue.constants';
 import { UsersService } from '../users/users.service';
 import { buttonMessage, listMessage } from './message-builder';
@@ -91,6 +91,23 @@ export function looksLikeCnrAttempt(text: string): boolean {
 }
 
 /**
+ * The idempotency key a WhatsApp charge is recorded under.
+ *
+ * Derived from Meta's message id, which is stable across their retries - and
+ * Meta retries aggressively. A reference built from a timestamp or a random
+ * value would be unique per attempt, which is precisely the failure this key
+ * exists to prevent: the same question charged twice because the webhook was
+ * delivered twice.
+ *
+ * Shared by the charge and the refund so the two can be matched up. The
+ * `spend:` prefix is load-bearing - `credit_refund()` rewrites it to `refund:`
+ * to derive the reversing entry's own reference.
+ */
+export function spendReference(waMessageId: string): string {
+  return `spend:wa:${waMessageId}`;
+}
+
+/**
  * The conversation state machine.
  *
  * This is where an inbound job becomes a reply. Ordering is deliberate:
@@ -100,11 +117,11 @@ export function looksLikeCnrAttempt(text: string): boolean {
  *   3. handle stateful flows first - if we asked for a CNR, the next message
  *      is a CNR, not a new research question
  *   4. classify intent
- *   5. check quota, but only for work that costs money
+ *   5. charge credits, but only for work that costs money
  *   6. answer, and record what happened
  *
- * Quota is checked at step 5 rather than at the top on purpose: navigating a
- * menu, changing language or asking for help must never consume a query.
+ * Credits are charged at step 5 rather than at the top on purpose: navigating a
+ * menu, changing language or asking for help must never cost anything.
  */
 @Injectable()
 export class ConversationService {
@@ -134,7 +151,7 @@ export class ConversationService {
     private readonly precedents: PrecedentsService,
     private readonly memory: ChatMemoryService,
     private readonly ecourts: EcourtsService,
-    private readonly quota: QuotaService,
+    private readonly credits: CreditsService,
     private readonly analytics: AnalyticsRepository,
     private readonly transcription: TranscriptionService,
     private readonly registry: ProviderRegistry,
@@ -163,8 +180,8 @@ export class ConversationService {
       // screen. Clearing the state instead would restart the session and
       // re-ask for a language the advocate has already chosen.
       if (ConversationService.profileComplete(user)) {
-        const balance = await this.quota.peek(user.id, user.role);
-        await this.api.sendText(job.from, Replies.helpMenu(this.quota.creditLine(balance)));
+        const balance = await this.credits.balance(user.id, user.role);
+        await this.api.sendText(job.from, Replies.helpMenu(this.credits.creditLine(balance)));
         await this.conversations.set(
           user.id,
           'MAIN_MENU',
@@ -217,7 +234,7 @@ export class ConversationService {
   // testable without a database, a queue or Meta - see session.router.spec.ts.
   // ---------------------------------------------------------------------------
 
-  private async runSession(user: UserRow, text: string, job: InboundMessageJob): Promise<void> {
+  private async runSession(user: WhatsAppUserRow, text: string, job: InboundMessageJob): Promise<void> {
     // A row past its expires_at reads as null, which is exactly what the router
     // treats as "start a new session". The TTL is therefore the whole of the
     // session-expiry mechanism; there is no separate sweep.
@@ -226,7 +243,9 @@ export class ConversationService {
       ? { ...(stored.context as Partial<SessionContext>), state: stored.state as SessionState }
       : { state: null };
 
-    const balance = await this.quota.peek(user.id, user.role);
+    // Refreshing rather than peeking: this is the first thing that happens on
+    // an inbound message, so it is also where the daily allowance rolls over.
+    const balance = await this.credits.balance(user.id, user.role);
 
     const routed = route(
       text,
@@ -235,13 +254,13 @@ export class ConversationService {
         fullName: user.full_name,
         profileComplete: ConversationService.profileComplete(user),
       },
-      this.quota.creditLine(balance),
+      this.credits.creditLine(balance),
     );
 
     // The router may replace the user we are acting on: submitting a bar
     // council ID that already has an account merges this number into it, and
     // everything afterwards - credits, state - belongs to that account.
-    let acting = user;
+    let acting: WhatsAppUserRow = user;
     let nextContext: SessionContext = { ...context, ...(routed.contextPatch ?? {}) };
 
     for (const action of routed.actions) {
@@ -252,7 +271,14 @@ export class ConversationService {
 
         case 'saveProfile': {
           const result = await this.users.completeProfile(acting.id, action.profile);
-          if (result.accepted && result.user) acting = result.user;
+          // The number this message arrived on is carried across explicitly.
+          // completeProfile may return a *different* account - the one the Bar
+          // Council ID already named - and adoptPhone has just moved this
+          // handset onto it, so the row is reachable at this number by
+          // construction even though its type cannot say so.
+          if (result.accepted && result.user) {
+            acting = { ...result.user, phone_number: acting.phone_number };
+          }
           break;
         }
 
@@ -309,16 +335,29 @@ export class ConversationService {
    * the precedent path refund it - a claim is a promise to deliver an answer.
    */
   private async answerSearch(
-    user: UserRow,
+    user: WhatsAppUserRow,
     query: string,
     charge: number,
     job: InboundMessageJob,
     kind: 'SECTION' | 'PRECEDENT',
   ): Promise<void> {
     if (charge > 0) {
-      const decision = await this.quota.claim(user.id, user.role, charge);
+      const decision = await this.credits.spend({
+        userId: user.id,
+        role: user.role,
+        cost: charge,
+        action: kind === 'PRECEDENT' ? 'PRECEDENT_SEARCH' : 'SECTION_LOOKUP',
+        // Keyed on Meta's message id, which is stable across their retries.
+        // A webhook redelivered after our reply timed out therefore charges
+        // once, not once per delivery attempt.
+        reference: spendReference(job.waMessageId),
+      });
+
       if (!decision.allowed) {
-        await this.api.sendText(job.from, Replies.quotaExceeded(decision.limit));
+        await this.api.sendText(
+          job.from,
+          Replies.quotaExceeded(decision.balance.total, charge, decision.balance.dailyAllowance),
+        );
         return;
       }
     }
@@ -346,7 +385,7 @@ export class ConversationService {
    * Reduce any inbound message type to text, or null if it cannot be handled
    * (in which case the user has already been told why).
    */
-  private async resolveText(job: InboundMessageJob, user: UserRow): Promise<string | null> {
+  private async resolveText(job: InboundMessageJob, user: WhatsAppUserRow): Promise<string | null> {
     switch (job.type) {
       case 'text':
       case 'interactive':
@@ -402,7 +441,7 @@ export class ConversationService {
   // Menu actions
   // ---------------------------------------------------------------------------
 
-  private async handleAction(user: UserRow, actionId: string): Promise<void> {
+  private async handleAction(user: WhatsAppUserRow, actionId: string): Promise<void> {
     if (actionId.startsWith('lang:')) {
       const code = actionId.slice('lang:'.length);
       await this.users.setLanguage(user.id, code);
@@ -442,11 +481,17 @@ export class ConversationService {
         return;
 
       case ACTION.USAGE: {
-        const used = await this.quota.usageToday(user.id);
-        const limit = this.quota.limitForRole(user.role);
+        const [balance, searches] = await Promise.all([
+          this.credits.balance(user.id, user.role),
+          this.analytics.searchesToday(user.id),
+        ]);
         await this.api.sendText(
           user.phone_number,
-          Replies.usageSummary(used, limit, user.verification_status === 'VERIFIED'),
+          Replies.usageSummary(
+            this.credits.creditLine(balance),
+            searches,
+            user.verification_status === 'VERIFIED',
+          ),
         );
         return;
       }
@@ -466,7 +511,7 @@ export class ConversationService {
     }
   }
 
-  private async sendMainMenu(user: UserRow): Promise<void> {
+  private async sendMainMenu(user: WhatsAppUserRow): Promise<void> {
     await this.api.send(
       listMessage(
         user.phone_number,
@@ -478,7 +523,7 @@ export class ConversationService {
     );
   }
 
-  private async sendLanguageMenu(user: UserRow): Promise<void> {
+  private async sendLanguageMenu(user: WhatsAppUserRow): Promise<void> {
     await this.api.send(
       listMessage(
         user.phone_number,
@@ -496,7 +541,7 @@ export class ConversationService {
 
   /** Returns true when the message was consumed by the active flow. */
   private async handleStatefulInput(
-    user: UserRow,
+    user: WhatsAppUserRow,
     state: string,
     text: string,
     job: InboundMessageJob,
@@ -573,7 +618,7 @@ export class ConversationService {
     }
   }
 
-  private async beginVerification(user: UserRow): Promise<void> {
+  private async beginVerification(user: WhatsAppUserRow): Promise<void> {
     if (user.verification_status === 'VERIFIED') {
       await this.api.sendText(user.phone_number, 'Your account is already verified. You have unlimited queries.');
       return;
@@ -590,7 +635,7 @@ export class ConversationService {
     await this.api.sendText(user.phone_number, Replies.ASK_FOR_BAR_COUNCIL_ID);
   }
 
-  private async handleIdCardUpload(user: UserRow, job: InboundMessageJob): Promise<void> {
+  private async handleIdCardUpload(user: WhatsAppUserRow, job: InboundMessageJob): Promise<void> {
     // The image is acknowledged and the verification queued. Persisting the
     // file to Supabase Storage is left for the admin portal work - see the
     // README's "Not built yet" section; storing it here without the review UI
@@ -607,7 +652,7 @@ export class ConversationService {
   // Answering
   // ---------------------------------------------------------------------------
 
-  private async handleFreeformQuery(user: UserRow, text: string, job: InboundMessageJob): Promise<void> {
+  private async handleFreeformQuery(user: WhatsAppUserRow, text: string, job: InboundMessageJob): Promise<void> {
     const intent = await this.intents.classify(text);
 
     // Track the user's language automatically so replies match how they write,
@@ -677,7 +722,7 @@ export class ConversationService {
    * charges at all: there is no model call behind it, and it is the thing an
    * advocate does standing outside a courtroom.
    */
-  private async answerCaseStatus(user: UserRow, cnr: string, originalQuery: string): Promise<void> {
+  private async answerCaseStatus(user: WhatsAppUserRow, cnr: string, originalQuery: string): Promise<void> {
     const started = Date.now();
 
     try {
@@ -726,7 +771,7 @@ export class ConversationService {
    * call on a query we already answered).
    */
   private async answerPrecedents(
-    user: UserRow,
+    user: WhatsAppUserRow,
     intent: Awaited<ReturnType<IntentService['classify']>>,
     originalText: string,
     job: InboundMessageJob,
@@ -793,7 +838,7 @@ export class ConversationService {
   }
 
   /** Serve the next page of a stored precedent result set. */
-  private async sendNextPrecedentPage(user: UserRow, job: InboundMessageJob): Promise<void> {
+  private async sendNextPrecedentPage(user: WhatsAppUserRow, job: InboundMessageJob): Promise<void> {
     const state = await this.conversations.get(user.id);
     const context = (state?.context ?? {}) as {
       query?: string;
@@ -838,13 +883,15 @@ export class ConversationService {
   }
 
   private async answerWithRag(
-    user: UserRow,
+    user: WhatsAppUserRow,
     intent: Awaited<ReturnType<IntentService['classify']>>,
     originalText: string,
     job: InboundMessageJob,
   ): Promise<void> {
     // Billing happens once, upstream in answerSearch(). See the note there.
-    const decision = await this.quota.peek(user.id, user.role);
+    // Peeked rather than refreshed: the spend that just ran already rolled the
+    // allowance over, and a second refresh here would be a wasted round trip.
+    const balance = await this.credits.peek(user.id, user.role);
 
     // Prior turns for THIS advocate only - keyed by user id, so two people
     // messaging simultaneously can never pick up each other's context.
@@ -914,21 +961,28 @@ export class ConversationService {
     if (!delivery.ok) {
       // The model already ran, so the spend is sunk and still worth recording
       // above. The credits are not: they buy an answer, and none arrived.
-      await this.quota.refund(user.id, user.role, CREDIT_COST.SECTION_LOOKUP);
+      //
+      // The reference is the same one answerSearch() charged against, which is
+      // what lets the ledger return each credit to the bucket it came from
+      // rather than guessing. A refund for a message that was never charged -
+      // a free case status, an unlimited role - finds no matching rows and
+      // does nothing.
+      await this.credits.refund(
+        user.id,
+        user.role,
+        spendReference(job.waMessageId),
+        'WhatsApp refused delivery of the answer',
+      );
       return;
     }
 
     // Nudge unverified users towards verification, but only when they are
     // actually close to the limit - doing it on every reply is nagging.
-    if (
-      user.verification_status !== 'VERIFIED' &&
-      typeof decision.remaining === 'number' &&
-      decision.remaining <= 2
-    ) {
+    if (user.verification_status !== 'VERIFIED' && !balance.unlimited && balance.total <= 2) {
       await this.api.send(
         buttonMessage(
           job.from,
-          `You have *${decision.remaining}* free ${decision.remaining === 1 ? 'query' : 'queries'} left today. Verified advocates get unlimited queries.`,
+          `You have *${balance.total}* ${balance.total === 1 ? 'credit' : 'credits'} left today. Verified advocates get unlimited searches.`,
           [{ id: ACTION.VERIFY, title: 'Verify licence' }],
         ),
       );

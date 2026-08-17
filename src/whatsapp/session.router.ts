@@ -1,4 +1,4 @@
-import { CREDIT_COST, isSameSearchContext } from '../quota/quota.service';
+import { CREDIT_COST, isSameSearchContext } from '../credits/credits.service';
 import { isValidCnr, normaliseCnr, parseProfile, ParsedProfile } from './onboarding';
 import * as Replies from './replies';
 import { matchLanguage } from './replies';

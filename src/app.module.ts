@@ -6,7 +6,7 @@ import { ConfigModule } from './config/config.module';
 import { DatabaseModule } from './database/database.module';
 import { EcourtsModule } from './ecourts/ecourts.module';
 import { HealthModule } from './health/health.module';
-import { QuotaModule } from './quota/quota.module';
+import { CreditsModule } from './credits/credits.module';
 import { RedisModule } from './redis/redis.module';
 import { SecurityModule } from './security/security.module';
 import { SettingsModule } from './settings/settings.module';
@@ -28,7 +28,7 @@ const INFRASTRUCTURE = [ConfigModule, DatabaseModule, RedisModule, SecurityModul
  * bottleneck.
  */
 @Module({
-  imports: [...INFRASTRUCTURE, AiModule, UsersModule, QuotaModule, EcourtsModule, WhatsAppModule, AdminModule, HealthModule],
+  imports: [...INFRASTRUCTURE, AiModule, UsersModule, CreditsModule, EcourtsModule, WhatsAppModule, AdminModule, HealthModule],
 })
 export class AppModule {}
 
@@ -42,7 +42,7 @@ export class AppModule {}
     ScheduleModule.forRoot(),
     AiModule,
     UsersModule,
-    QuotaModule,
+    CreditsModule,
     EcourtsModule,
     WhatsAppWorkerModule,
   ],

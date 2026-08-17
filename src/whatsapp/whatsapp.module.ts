@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AiModule } from '../ai/ai.module';
 import { EcourtsModule } from '../ecourts/ecourts.module';
-import { QuotaModule } from '../quota/quota.module';
+import { CreditsModule } from '../credits/credits.module';
 import { UsersModule } from '../users/users.module';
 import { ConversationService } from './conversation.service';
 import { InboundProcessor } from './inbound.processor';
@@ -20,7 +20,7 @@ import { WhatsAppApiService } from './whatsapp-api.service';
  * message processing.
  */
 @Module({
-  imports: [AiModule, EcourtsModule, QuotaModule, UsersModule],
+  imports: [AiModule, EcourtsModule, CreditsModule, UsersModule],
   controllers: [WebhookController],
   providers: [WhatsAppApiService, ConversationService],
   exports: [WhatsAppApiService, ConversationService],
@@ -28,7 +28,7 @@ import { WhatsAppApiService } from './whatsapp-api.service';
 export class WhatsAppModule {}
 
 @Module({
-  imports: [AiModule, EcourtsModule, QuotaModule, UsersModule],
+  imports: [AiModule, EcourtsModule, CreditsModule, UsersModule],
   providers: [WhatsAppApiService, ConversationService, InboundProcessor],
 })
 export class WhatsAppWorkerModule {}

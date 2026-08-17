@@ -24,9 +24,16 @@ export type MessageDirection = 'INBOUND' | 'OUTBOUND';
 
 export type MessageStatus = 'RECEIVED' | 'QUEUED' | 'PROCESSING' | 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
 
+/** How an account first came to exist. See migration 0010. */
+export type AccountSource = 'WHATSAPP' | 'WEB_PASSWORD' | 'WEB_GOOGLE';
+
 export interface UserRow {
   id: string;
-  phone_number: string;
+  /**
+   * Nullable since migration 0010: a web signup has no phone number until the
+   * advocate links one. Still UNIQUE, and still the WhatsApp lookup key.
+   */
+  phone_number: string | null;
   full_name: string | null;
   bar_council_id_enc: string | null;
   bar_council_id_hash: string | null;
@@ -44,7 +51,37 @@ export interface UserRow {
   last_active_at: Date;
   created_at: Date;
   updated_at: Date;
+
+  // --- Web account (migration 0010) ------------------------------------------
+  email: string | null;
+  /** scrypt, encoded by src/auth/password.ts. Null for Google-only accounts. */
+  password_hash: string | null;
+  email_verified_at: Date | null;
+  phone_verified_at: Date | null;
+  avatar_url: string | null;
+  signup_source: AccountSource;
+  last_web_login_at: Date | null;
+
+  // --- Wallet (migration 0010) -----------------------------------------------
+  /** Today's free allowance remaining. Reset daily, never accumulated. */
+  free_credits: number;
+  /** The date `free_credits` belongs to; older than today means stale. */
+  free_credits_date: Date | null;
+  /** Purchased credits. Never expire. Spent only after the free bucket. */
+  paid_credits: number;
 }
+
+/**
+ * A user reached over WhatsApp.
+ *
+ * `phone_number` became nullable in migration 0010 so that web-only accounts
+ * could exist, which is correct for the column and inconvenient for the
+ * WhatsApp path - where the row was *found by* its phone number and therefore
+ * always has one. This narrowing states that fact in the type system rather
+ * than scattering non-null assertions through the conversation code, each of
+ * which would be an unchecked claim rather than a guaranteed one.
+ */
+export type WhatsAppUserRow = UserRow & { phone_number: string };
 
 export interface ConversationStateRow {
   user_id: string;
@@ -149,6 +186,165 @@ export interface QuotaResult {
   allowed: boolean;
   used: number;
   quota: number;
+}
+
+// -----------------------------------------------------------------------------
+// Credits (migration 0010)
+// -----------------------------------------------------------------------------
+
+export type CreditEntryKind =
+  | 'DAILY_GRANT'
+  | 'SIGNUP_BONUS'
+  | 'ADMIN_GRANT'
+  | 'PURCHASE'
+  | 'SPEND'
+  | 'REFUND'
+  | 'EXPIRY'
+  | 'ADJUSTMENT';
+
+export type CreditBucket = 'FREE' | 'PAID';
+
+export type PaymentOrderStatus = 'CREATED' | 'ATTEMPTED' | 'PAID' | 'FAILED' | 'REFUNDED';
+
+export interface CreditLedgerRow {
+  id: string;
+  user_id: string;
+  kind: CreditEntryKind;
+  bucket: CreditBucket;
+  /** Signed: negative for SPEND and EXPIRY. */
+  delta: number;
+  balance_after: number;
+  action: string | null;
+  reason: string | null;
+  /** Idempotency key. Unique across the table. */
+  reference: string | null;
+  order_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: Date;
+}
+
+/** The shape returned by the `credit_spend()` SQL function. */
+export interface CreditSpendResult {
+  allowed: boolean;
+  charged: number;
+  free_left: number;
+  paid_left: number;
+  from_free: number;
+  from_paid: number;
+  /** True when this reference had already been charged, so nothing moved. */
+  already_spent: boolean;
+}
+
+/** The shape returned by the `credit_grant()` SQL function. */
+export interface CreditGrantResult {
+  applied: boolean;
+  free_left: number;
+  paid_left: number;
+}
+
+/**
+ * A credit purchase. Every money field is integer PAISE, matching Razorpay's
+ * API in both directions - see migration 0010 for why this is not rupees.
+ */
+export interface CreditOrderRow {
+  id: string;
+  user_id: string;
+  receipt: string;
+  credits: number;
+  pack_code: string | null;
+  amount_paise: number;
+  base_paise: number;
+  tax_paise: number;
+  tax_rate_bps: number;
+  currency: string;
+  status: PaymentOrderStatus;
+  razorpay_order_id: string | null;
+  razorpay_payment_id: string | null;
+  razorpay_signature: string | null;
+  payment_method: string | null;
+  failure_reason: string | null;
+  credited_at: Date | null;
+  refunded_at: Date | null;
+  notes: Record<string, unknown>;
+  created_at: Date;
+  updated_at: Date;
+}
+
+// -----------------------------------------------------------------------------
+// Web accounts and chat (migration 0010)
+// -----------------------------------------------------------------------------
+
+export interface UserIdentityRow {
+  id: string;
+  user_id: string;
+  provider: string;
+  provider_account_id: string;
+  email: string | null;
+  display_name: string | null;
+  avatar_url: string | null;
+  last_login_at: Date | null;
+  created_at: Date;
+}
+
+export interface WebSessionRow {
+  id: string;
+  user_id: string;
+  token_hash: string;
+  user_agent: string | null;
+  ip_address: string | null;
+  expires_at: Date;
+  last_used_at: Date;
+  revoked_at: Date | null;
+  created_at: Date;
+}
+
+export type AuthTokenPurpose = 'EMAIL_VERIFY' | 'PASSWORD_RESET' | 'PHONE_LINK';
+
+export interface AuthTokenRow {
+  id: string;
+  user_id: string;
+  purpose: AuthTokenPurpose;
+  token_hash: string;
+  /** The email or phone number the token was issued against. */
+  subject: string | null;
+  expires_at: Date;
+  consumed_at: Date | null;
+  attempts: number;
+  created_at: Date;
+}
+
+export interface ChatThreadRow {
+  id: string;
+  user_id: string;
+  title: string;
+  archived_at: Date | null;
+  last_message_at: Date;
+  message_count: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export type ChatRole = 'user' | 'assistant';
+
+export interface ChatMessageRow {
+  id: string;
+  thread_id: string;
+  user_id: string;
+  role: ChatRole;
+  content: string;
+  intent: QueryIntent | null;
+  citations: string[];
+  /** Renderable payload - precedent cards, case status - for the web client. */
+  structured: Record<string, unknown> | null;
+  model_used: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  latency_ms: number;
+  credits_charged: number;
+  guardrail_flagged: boolean;
+  guardrail_reason: string | null;
+  error_detail: string | null;
+  created_at: Date;
 }
 
 export interface SearchHistoryInput {

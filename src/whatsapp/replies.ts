@@ -316,25 +316,46 @@ export const ECOURTS_UNAVAILABLE = [
   'This is usually temporary. Try again in a few minutes.',
 ].join('\n');
 
-export function quotaExceeded(limit: number): string {
+/**
+ * Out of credits.
+ *
+ * Phrased in credits rather than queries because they stopped being the same
+ * number when actions were priced separately: a daily allowance of five buys
+ * two precedent searches and any number of case-status lookups, so "you have
+ * used all 5 free queries" was wrong in both directions.
+ *
+ * `remaining` is stated explicitly for the case that produces the most support
+ * mail - an advocate with one credit left asking for a two-credit search, who
+ * is refused while the balance visibly says they have credit.
+ */
+export function quotaExceeded(remaining: number, cost: number, dailyAllowance: number): string {
+  const shortfall =
+    remaining > 0
+      ? `That search costs *${cost} credits* and you have *${remaining}* left.`
+      : `You have used all *${dailyAllowance} free credits* for today.`;
+
   return [
-    `You have used all *${limit} free queries* for today.`,
+    shortfall,
     '',
-    'Verified advocates get unlimited queries. Type *verify* to submit your bar council enrolment number — it takes under a minute.',
+    'Verified advocates get unlimited searches. Type *verify* to submit your bar council enrolment number — it takes under a minute.',
     '',
-    'Otherwise your quota resets tomorrow.',
+    'Otherwise your free credits reset tomorrow.',
   ].join('\n');
 }
 
-export function usageSummary(used: number, limit: number, verified: boolean): string {
+export function usageSummary(
+  creditLine: string,
+  searchesToday: number,
+  verified: boolean,
+): string {
   const status = verified ? '*Verified advocate*' : 'Unverified (guest)';
-  const quota = limit < 0 ? 'Unlimited' : `${used} of ${limit} used today`;
 
   return [
     '*Your account*',
     '',
     `Status: ${status}`,
-    `Queries: ${quota}`,
+    creditLine,
+    `Searches today: ${searchesToday}`,
     verified ? '' : '\nType *verify* to remove the daily limit.',
   ]
     .filter(Boolean)

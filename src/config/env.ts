@@ -217,9 +217,83 @@ const envSchema = z.object({
   KANOON_BREAKER_RESET_MS: z.coerce.number().int().min(1000).default(60_000),
 
   // --- Quotas ---------------------------------------------------------------
+  // The daily free allowance per role, in credits. Negative means unlimited.
+  // Named QUOTA_* for continuity with existing deployments; these are what the
+  // credit ledger tops the free bucket up to each day.
   QUOTA_GUEST_DAILY: z.coerce.number().int().default(5),
   QUOTA_VERIFIED_DAILY: z.coerce.number().int().default(-1),
   QUOTA_ADMIN_DAILY: z.coerce.number().int().default(-1),
+
+  // --- Credits --------------------------------------------------------------
+  /**
+   * One-off credits for a new web account, into the durable bucket.
+   *
+   * Durable rather than daily on purpose: a welcome gift that expires at
+   * midnight before the advocate has finished reading the welcome screen is
+   * worse than no gift. Set to 0 to disable.
+   */
+  CREDITS_SIGNUP_BONUS: z.coerce.number().int().min(0).max(10_000).default(10),
+
+  // --- End-user web sessions ------------------------------------------------
+  SESSION_COOKIE_NAME: z.string().min(1).default('vs_session'),
+  /**
+   * How long a web session lasts. Thirty days is the ordinary "stay signed in"
+   * expectation; the token is opaque and revocable, so a long life costs less
+   * here than it would with a JWT that cannot be withdrawn.
+   */
+  SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  /**
+   * Minimum password length.
+   *
+   * Length is the only rule enforced. Composition rules (an uppercase, a digit,
+   * a symbol) measurably push people towards `Password1!` and are no longer
+   * recommended by NIST; a longer minimum is worth more than a more elaborate
+   * one.
+   */
+  PASSWORD_MIN_LENGTH: z.coerce.number().int().min(8).max(128).default(10),
+
+  // --- Google sign-in -------------------------------------------------------
+  // Both must be set for the button to appear. The flow is the server-side
+  // authorization-code flow: the browser never sees the client secret, and the
+  // code is exchanged from our backend over TLS.
+  GOOGLE_OAUTH_CLIENT_ID: z.string().default(''),
+  GOOGLE_OAUTH_CLIENT_SECRET: z.string().default(''),
+  /**
+   * Must match a redirect URI registered on the Google Cloud credential
+   * exactly, including scheme and trailing path. Joined onto APP_PUBLIC_URL.
+   */
+  GOOGLE_OAUTH_REDIRECT_PATH: z.string().default('/auth/google/callback'),
+
+  // --- Transactional email --------------------------------------------------
+  /**
+   * How verification and password-reset mail is sent.
+   *
+   *   log    - written to the log instead of sent. The default, and the only
+   *            honest one with no credentials: the UI is told email is
+   *            unavailable and never claims to have sent anything.
+   *   resend - Resend's HTTP API. Chosen over SMTP because it needs no
+   *            dependency, only fetch.
+   */
+  EMAIL_PROVIDER: z.enum(['log', 'resend']).default('log'),
+  RESEND_API_KEY: z.string().default(''),
+  EMAIL_FROM: z.string().default('Vakeel Saathi <onboarding@resend.dev>'),
+
+  // --- Payments (Razorpay) --------------------------------------------------
+  // No gateway calls are made anywhere in this build. These exist so the
+  // configuration surface is settled and `razorpayConfigured` can gate the UI
+  // honestly - a "Buy credits" button that cannot take money should not be on
+  // screen.
+  RAZORPAY_KEY_ID: z.string().default(''),
+  RAZORPAY_KEY_SECRET: z.string().default(''),
+  RAZORPAY_WEBHOOK_SECRET: z.string().default(''),
+  /**
+   * GST on digital services, in basis points. 18% is 1800.
+   *
+   * Basis points rather than a float because tax is applied to money: 0.18 is
+   * not exactly representable in binary floating point, and the error surfaces
+   * as an invoice whose components do not add up to its total.
+   */
+  GST_RATE_BPS: z.coerce.number().int().min(0).max(10_000).default(1800),
 
   // --- eCourts --------------------------------------------------------------
   ECOURTS_MODE: z.enum(['mock', 'http']).default('mock'),
@@ -270,6 +344,34 @@ export type AppEnv = RawEnv & {
    *     there is no shared bearer credential. Sessions only.
    */
   readonly adminServiceToken: string;
+
+  /** True when Google sign-in has both halves of its credential. */
+  readonly googleOAuthConfigured: boolean;
+  /**
+   * The absolute redirect URI sent to Google.
+   *
+   * Built from APP_PUBLIC_URL so there is one place to change when the domain
+   * does. Google compares this string exactly against the registered value - a
+   * trailing slash or http-for-https is a `redirect_uri_mismatch`, which is the
+   * single most common way this integration fails.
+   */
+  readonly googleOAuthRedirectUri: string;
+  /**
+   * Whether session cookies carry the Secure attribute.
+   *
+   * Derived from the public URL rather than configured, because the two cannot
+   * disagree usefully: Secure on plain http means the browser silently discards
+   * the cookie and sign-in appears to succeed and then fail, which is a
+   * miserable thing to debug. Local http development therefore gets a
+   * non-Secure cookie automatically.
+   */
+  readonly cookieSecure: boolean;
+  /** Session lifetime in seconds, from SESSION_TTL_DAYS. */
+  readonly sessionTtlSeconds: number;
+  /** True when verification and reset mail can actually be delivered. */
+  readonly emailConfigured: boolean;
+  /** True when Razorpay has both keys. Gates the buy-credits UI. */
+  readonly razorpayConfigured: boolean;
 };
 
 /**
@@ -303,6 +405,15 @@ export function parseEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
 
   const adminLoginConfigured = Boolean(env.ADMIN_EMAIL && env.ADMIN_PASSWORD);
 
+  const googleOAuthConfigured = Boolean(env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET);
+
+  // Trailing slashes are stripped from the base and required on the path, so
+  // that APP_PUBLIC_URL with or without one produces the same redirect URI.
+  const publicBase = env.APP_PUBLIC_URL.replace(/\/+$/, '');
+  const redirectPath = env.GOOGLE_OAUTH_REDIRECT_PATH.startsWith('/')
+    ? env.GOOGLE_OAUTH_REDIRECT_PATH
+    : `/${env.GOOGLE_OAUTH_REDIRECT_PATH}`;
+
   return {
     ...env,
     isProduction: env.NODE_ENV === 'production',
@@ -314,6 +425,13 @@ export function parseEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     whatsappConfigured,
     adminLoginConfigured,
     adminServiceToken: env.ADMIN_SERVICE_TOKEN || (adminLoginConfigured ? '' : env.JWT_SECRET),
+
+    googleOAuthConfigured,
+    googleOAuthRedirectUri: `${publicBase}${redirectPath}`,
+    cookieSecure: publicBase.startsWith('https://'),
+    sessionTtlSeconds: env.SESSION_TTL_DAYS * 86_400,
+    emailConfigured: env.EMAIL_PROVIDER === 'resend' && Boolean(env.RESEND_API_KEY),
+    razorpayConfigured: Boolean(env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET),
   };
 }
 

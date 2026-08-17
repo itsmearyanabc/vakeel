@@ -4,6 +4,7 @@ import { AdminRepository } from './repositories/admin.repository';
 import { AnalyticsRepository } from './repositories/analytics.repository';
 import { ConversationRepository } from './repositories/conversation.repository';
 import { CorpusRepository } from './repositories/corpus.repository';
+import { CreditRepository } from './repositories/credit.repository';
 import { MessageRepository } from './repositories/message.repository';
 import { UserRepository } from './repositories/user.repository';
 
@@ -15,6 +16,7 @@ const providers = [
   CorpusRepository,
   AnalyticsRepository,
   AdminRepository,
+  CreditRepository,
 ];
 
 /**

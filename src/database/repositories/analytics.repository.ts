@@ -31,43 +31,26 @@ export class AnalyticsRepository {
   }
 
   /**
-   * Durable daily quota claim.
+   * How many questions this user has had answered today.
    *
-   * Delegates to the claim_daily_quota() SQL function so the read-check-write
-   * happens in one statement under Postgres' row lock. Doing it in application
-   * code would let two concurrent messages both see "4 of 5 used" and both
-   * proceed.
-   */
-  async claimQuota(userId: string, limit: number): Promise<QuotaResult> {
-    const [row] = await this.db.sql<QuotaResult[]>`
-      SELECT * FROM claim_daily_quota(${userId}, ${limit})
-    `;
-    return row ?? { allowed: false, used: 0, quota: limit };
-  }
-
-  /**
-   * Durable half of a quota refund.
+   * Counted from `search_history` rather than read from `daily_usage`. The two
+   * used to be the same number and stopped being so when actions were priced
+   * separately: `daily_usage` counted quota claims, so a free case-status
+   * lookup was invisible in it and a two-credit precedent search counted once.
+   * Neither matches what an advocate means by "how much have I used today".
    *
-   * `GREATEST(..., 0)` mirrors the Redis script: the ledger must never go
-   * negative, or tomorrow's report shows an advocate with less usage than they
-   * actually had. No row means nothing was ever claimed, so there is nothing to
-   * give back.
+   * `search_history` has a row per answered query already, which makes this the
+   * honest source and removes the need to maintain a second counter that can
+   * drift from it. Credits are a separate question and are answered by the
+   * ledger - see CreditsService.
    */
-  async refundQuota(userId: string): Promise<void> {
-    await this.db.sql`
-      UPDATE daily_usage
-         SET query_count = GREATEST(query_count - 1, 0),
-             updated_at  = NOW()
-       WHERE user_id = ${userId} AND usage_date = CURRENT_DATE
+  async searchesToday(userId: string): Promise<number> {
+    const [row] = await this.db.sql<{ count: string }[]>`
+      SELECT COUNT(*) AS count FROM search_history
+       WHERE user_id = ${userId}
+         AND created_at >= date_trunc('day', NOW())
     `;
-  }
-
-  async usageToday(userId: string): Promise<number> {
-    const [row] = await this.db.sql<{ query_count: number }[]>`
-      SELECT query_count FROM daily_usage
-       WHERE user_id = ${userId} AND usage_date = CURRENT_DATE
-    `;
-    return row?.query_count ?? 0;
+    return Number(row?.count ?? 0);
   }
 
   async recentSearches(userId: string, limit = 10) {

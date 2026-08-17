@@ -1,4 +1,4 @@
-import { CREDIT_COST, isSameSearchContext } from './quota.service';
+import { CREDIT_COST, isSameSearchContext } from './credits.service';
 
 /**
  * What an advocate is billed for.

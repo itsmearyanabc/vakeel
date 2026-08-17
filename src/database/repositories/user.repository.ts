@@ -136,6 +136,23 @@ export class UserRepository {
     });
   }
 
+  /**
+   * Delete a duplicate account outright.
+   *
+   * The counterpart to {@link adoptPhone} for the case where the duplicate has
+   * no phone number to move - a web signup that turned out to belong to an
+   * advocate who already had an account. Cascades take the half-finished
+   * onboarding state with it, which is the desired outcome: the row is minutes
+   * old and holds nothing worth keeping.
+   *
+   * Deliberately narrow. This is not a general "delete a user" method; account
+   * deletion at a user's request goes through the DPDP erasure path in
+   * migration 0005, which also clears the message log.
+   */
+  async discard(userId: string): Promise<void> {
+    await this.db.sql`DELETE FROM users WHERE id = ${userId}`;
+  }
+
   async setIdCardPath(userId: string, storagePath: string): Promise<void> {
     await this.db.sql`UPDATE users SET id_card_storage_path = ${storagePath} WHERE id = ${userId}`;
   }

@@ -4,7 +4,7 @@ import { maskPhone } from '../common/logger';
 import { InjectEnv } from '../config/config.module';
 import { AppEnv } from '../config/env';
 import { UserRepository } from '../database/repositories/user.repository';
-import { UserRow } from '../database/types';
+import { UserRow, WhatsAppUserRow } from '../database/types';
 import { CryptoService } from '../security/crypto.service';
 
 export interface BarCouncilSubmission {
@@ -58,7 +58,7 @@ export class UsersService {
    * onboarding, so the first message creates the account and the advocate can
    * ask a question immediately under guest quotas.
    */
-  async resolveFromPhone(phoneNumber: string, profileName?: string): Promise<UserRow> {
+  async resolveFromPhone(phoneNumber: string, profileName?: string): Promise<WhatsAppUserRow> {
     const normalised = phoneNumber.replace(/\D/g, '');
     const isAdmin = this.env.adminPhoneNumbers.includes(normalised);
 
@@ -76,7 +76,9 @@ export class UsersService {
       user.full_name = profileName;
     }
 
-    return user;
+    // findOrCreate looked this row up *by* the number, so it has one - the
+    // column is only nullable to allow web-only accounts. See WhatsAppUserRow.
+    return { ...user, phone_number: normalised };
   }
 
   /**
@@ -145,8 +147,14 @@ export class UsersService {
     // Same advocate, different handset. Fold this number into the real account.
     if (existing && existing.id !== userId) {
       const current = await this.users.findById(userId);
-      if (current) {
+      // A phone-less row here means onboarding was completed from the web
+      // rather than WhatsApp. There is no handset to move, so the duplicate is
+      // simply discarded and the two accounts are merged on the Bar Council ID
+      // alone - which is the identity anyway. See migration 0009.
+      if (current?.phone_number) {
         await this.users.adoptPhone(existing.id, userId, current.phone_number);
+      } else if (current) {
+        await this.users.discard(current.id);
       }
 
       await this.users.setProfile(existing.id, input.fullName, input.city, input.state);
