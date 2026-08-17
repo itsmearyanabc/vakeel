@@ -3,6 +3,7 @@ import { DatabaseService } from './database.service';
 import { AdminRepository } from './repositories/admin.repository';
 import { AnalyticsRepository } from './repositories/analytics.repository';
 import { AuthRepository } from './repositories/auth.repository';
+import { ChatRepository } from './repositories/chat.repository';
 import { ConversationRepository } from './repositories/conversation.repository';
 import { CorpusRepository } from './repositories/corpus.repository';
 import { CreditRepository } from './repositories/credit.repository';
@@ -19,6 +20,7 @@ const providers = [
   AdminRepository,
   CreditRepository,
   AuthRepository,
+  ChatRepository,
 ];
 
 /**

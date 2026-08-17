@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { JSONValue } from 'postgres';
 import { DatabaseService } from '../database.service';
 import { ChatMessageRow, ChatRole, ChatThreadRow, QueryIntent } from '../types';
 
@@ -98,6 +99,13 @@ export class ChatRepository {
   /**
    * Append a message and move the thread's summary forward, atomically.
    *
+   * `structured` goes through `sql.json()`, not `JSON.stringify(...)::jsonb`.
+   * The second looks equivalent and is not: postgres.js treats the resulting JS
+   * string as a jsonb *string value*, so the column ends up holding a quoted
+   * blob of JSON rather than an object, and it reads back as a string. Nothing
+   * errors - the client simply finds `structured.kind` undefined and every
+   * precedent list and case-status card silently falls back to plain text.
+   *
    * The counter and `last_message_at` are denormalised so the sidebar sorts
    * without touching this table; writing them in the same transaction as the
    * insert is what keeps them from drifting. A thread whose timestamp says it
@@ -131,7 +139,7 @@ export class ChatRepository {
           ${input.threadId}, ${input.userId}, ${input.role}, ${input.content},
           ${input.intent ?? null}::query_intent,
           ${input.citations ?? []}::text[],
-          ${input.structured ? JSON.stringify(input.structured) : null}::jsonb,
+          ${input.structured ? this.db.sql.json(input.structured as unknown as JSONValue) : null},
           ${input.modelUsed ?? null},
           ${input.inputTokens ?? 0}, ${input.outputTokens ?? 0}, ${input.latencyMs ?? 0},
           ${input.creditsCharged ?? 0},

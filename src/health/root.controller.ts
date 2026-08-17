@@ -12,8 +12,8 @@ import { Controller, Get, HttpCode, HttpStatus } from '@nestjs/common';
 @Controller()
 export class RootController {
   /**
-   * Browsers request this unprompted on every admin panel load, and the 404 was
-   * logged at warn level - the same noise problem `/` above was added to solve,
+   * Browsers request this unprompted on every page load, and the 404 was logged
+   * at warn level - the same noise that made a bare `/` route worth adding,
    * arriving through a different door. 204 is the honest answer: there is no
    * icon, and that is not an error worth a log line.
    */

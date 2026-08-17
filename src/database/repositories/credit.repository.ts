@@ -88,15 +88,21 @@ export class CreditRepository {
    * The refresh runs on a plain balance read, not only on a spend, so the
    * number the advocate sees at 00:01 is the new day's allowance rather than
    * yesterday's leftovers waiting to be corrected by their next action.
+   *
+   * ## Why this is one function call and not a CTE
+   *
+   * It was a CTE - `WITH refreshed AS (SELECT credit_refresh_free(...))` beside
+   * a SELECT on `users` - and it silently returned pre-refresh numbers. One
+   * statement runs against one snapshot, taken before it starts, so the SELECT
+   * could not see the UPDATE the function had just made. A new account reported
+   * zero free credits on its first request and the correct five on the second.
+   *
+   * `credit_balance()` does both steps in plpgsql, where each statement gets
+   * its own snapshot. See migration 0011.
    */
   async balance(userId: string, dailyAllowance: number): Promise<{ free: number; paid: number }> {
     const [row] = await this.db.sql<{ free_credits: number; paid_credits: number }[]>`
-      WITH refreshed AS (
-        SELECT credit_refresh_free(${userId}::uuid, ${dailyAllowance}::integer)
-      )
-      SELECT u.free_credits, u.paid_credits
-        FROM users u, refreshed
-       WHERE u.id = ${userId}::uuid
+      SELECT * FROM credit_balance(${userId}::uuid, ${dailyAllowance}::integer)
     `;
     return { free: row?.free_credits ?? 0, paid: row?.paid_credits ?? 0 };
   }

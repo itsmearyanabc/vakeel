@@ -33,7 +33,11 @@ export class WebUiController {
    * the app there is both the right thing for a visitor and a valid 200 for the
    * probe, so nothing needs a redirect.
    */
-  @Get(['/', 'app', 'app/*path'])
+  // `app/*` and not Nest 11's named `app/*path`: the named form is an Express
+  // convention, and Fastify's router rejects it outright with "Wildcard must be
+  // the last character in the route" - at boot, so the whole service fails to
+  // start rather than just this route.
+  @Get(['/', 'app', 'app/*'])
   @Header('content-type', 'text/html; charset=utf-8')
   @Header('cache-control', 'no-store')
   @Header('referrer-policy', 'same-origin')

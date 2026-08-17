@@ -110,14 +110,30 @@ async function boot() {
   if (path === '/app/verify-email')  return renderVerifyEmail();
 
   try {
-    const me = await api('/api/auth/me');
-    state.user = me.user;
-    state.credits = me.credits;
-    state.capabilities = me.capabilities;
+    await loadSession();
     await enterApp();
   } catch (_) {
     renderAuth();
   }
+}
+
+/**
+ * Pull the whole signed-in profile from one endpoint.
+ *
+ * Shared by the page-load path and the sign-in form on purpose. They used to
+ * differ: boot() fetched /api/auth/me, while the form handler set only
+ * state.user from the login response and went straight in. Everything /me also
+ * returns - the credit balance, the deployment's capabilities - was therefore
+ * undefined for anyone who had just signed in, so the sidebar showed an empty
+ * credit chip and opening the account screen threw on state.capabilities.
+ * A reload fixed it, which is the worst kind of bug: invisible to whoever
+ * tests by refreshing.
+ */
+async function loadSession() {
+  const me = await api('/api/auth/me');
+  state.user = me.user;
+  state.credits = me.credits;
+  state.capabilities = me.capabilities;
 }
 
 // ============================================================================
@@ -198,8 +214,10 @@ function renderAuth() {
       };
       if (signup) payload.fullName = $('#f-fullName').value.trim();
 
-      const result = await post(signup ? '/api/auth/signup' : '/api/auth/login', payload);
-      state.user = result.user;
+      await post(signup ? '/api/auth/signup' : '/api/auth/login', payload);
+      // The session cookie is set by the response above; everything the app
+      // needs comes from one place so the two entry paths cannot diverge again.
+      await loadSession();
       await enterApp();
     } catch (err) {
       showAuthError(err.message);
@@ -770,7 +788,7 @@ function renderMessage(message) {
   const structured = message.structured;
 
   if (structured && structured.kind === 'precedents') {
-    body.appendChild(renderPrecedents(structured));
+    body.appendChild(renderPrecedents(structured, message));
   } else if (structured && structured.kind === 'caseStatus') {
     body.appendChild(renderCaseStatus(structured));
   } else {
@@ -854,14 +872,31 @@ function renderSources(sources) {
   return details;
 }
 
-function renderPrecedents(data) {
+function renderPrecedents(data, message) {
   const wrap = el('div');
+
+  // Nothing found. The server has already refunded the credits and worded the
+  // message for the actual cause, so it is shown as-is rather than replaced
+  // with a generic line that would contradict it.
+  if (!data.items.length) {
+    const note = el('div', 'alert ' + (data.emptyReason === 'no-corpus' ? 'warn' : 'info'));
+    note.textContent = message.content;
+    wrap.appendChild(note);
+
+    if (data.emptyReason === 'no-corpus') {
+      const how = el('div', 'caveat');
+      how.textContent =
+        'Case-law search needs either an ingested judgment corpus or an Indian Kanoon API key. ' +
+        'Section lookups and case status work without either.';
+      wrap.appendChild(how);
+    }
+    return wrap;
+  }
 
   const heading = el('div');
   heading.style.cssText = 'margin-bottom:13px;font-size:13.5px;color:var(--muted)';
-  heading.textContent = data.items.length
-    ? data.items.length + ' of ' + data.totalMatches + ' matching judgments for "' + data.query + '"'
-    : 'No judgments matched "' + data.query + '".';
+  heading.textContent =
+    data.items.length + ' of ' + data.totalMatches + ' matching judgments for "' + data.query + '"';
   wrap.appendChild(heading);
 
   // Both of these change how much weight the results deserve, so they are shown

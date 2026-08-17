@@ -8,6 +8,7 @@ import { CircuitOpenError } from '../common/circuit-breaker';
 import { getLogger } from '../common/logger';
 import { CREDIT_COST, CreditBalance, CreditsService } from '../credits/credits.service';
 import { AnalyticsRepository } from '../database/repositories/analytics.repository';
+import { CorpusRepository } from '../database/repositories/corpus.repository';
 import { ChatRepository } from '../database/repositories/chat.repository';
 import { ChatMessageRow, PrecedentRow, UserRow } from '../database/types';
 import { CnrNotFoundError, EcourtsService } from '../ecourts/ecourts.service';
@@ -91,6 +92,7 @@ export class ChatService {
     private readonly ecourts: EcourtsService,
     private readonly credits: CreditsService,
     private readonly analytics: AnalyticsRepository,
+    private readonly corpus: CorpusRepository,
     private readonly registry: ProviderRegistry,
   ) {}
 
@@ -223,7 +225,14 @@ export class ChatService {
     }
 
     if (isPrecedentSearch) {
-      yield* this.answerPrecedents({ user, threadId, question, intent, charged: decision.charged });
+      yield* this.answerPrecedents({
+        user,
+        threadId,
+        question,
+        intent,
+        charged: decision.charged,
+        reference,
+      });
       return;
     }
 
@@ -327,8 +336,10 @@ export class ChatService {
     question: string;
     intent: Awaited<ReturnType<IntentService['classify']>>;
     charged: number;
+    reference: string;
   }): AsyncGenerator<ChatEvent> {
-    const { user, threadId, question, intent, charged } = input;
+    const { user, threadId, question, intent, reference } = input;
+    let charged = input.charged;
 
     yield { type: 'stage', stage: 'searching' };
 
@@ -342,13 +353,40 @@ export class ChatService {
       (p) => p.neutral_citation ?? p.reporter_citations?.[0] ?? p.case_title,
     );
 
+    // A search that found nothing is refunded.
+    //
+    // Credits buy authorities, and none arrived. The distinction between "your
+    // query matched nothing" and "this deployment has no judgments to match
+    // against" is invisible from the advocate's side, and one of those two is
+    // entirely our problem - so charging for either is the thing that produces
+    // refund requests. The downside is bounded: an empty result costs at most
+    // one Kanoon call, which is cheaper than the support mail.
+    let emptyReason: string | null = null;
+    if (rows.length === 0) {
+      await this.credits.refund(user.id, user.role, reference, 'Search returned no authorities');
+      charged = 0;
+
+      // Said plainly, because the two causes need different actions from
+      // whoever reads it. "No judgments found" for an unconfigured deployment
+      // reads as "your question was bad", which sends an advocate off
+      // rephrasing a query that was never going to work.
+      const corpus = await this.corpus.countCorpus().catch(() => ({ judgments: 0 }));
+      emptyReason =
+        Number(corpus.judgments ?? 0) === 0
+          ? 'no-corpus'
+          : 'no-match';
+    }
+
     const message = await this.chats.appendMessage({
       threadId,
       userId: user.id,
       role: 'assistant',
       content: rows.length
         ? `${rows.length} ${rows.length === 1 ? 'authority' : 'authorities'} on "${intent.searchQuery}"`
-        : `No judgments found for "${intent.searchQuery}".`,
+        : emptyReason === 'no-corpus'
+          ? 'No judgment database is available on this deployment yet, so there is nothing to search. ' +
+            'You have not been charged.'
+          : `No judgments matched "${intent.searchQuery}". You have not been charged.`,
       intent: 'PRECEDENT_SEARCH',
       // Every citation here came straight out of the corpus, so they are
       // verified by construction - there is nothing for the guardrail to strip
@@ -360,6 +398,7 @@ export class ChatService {
         source: searched.source,
         lexicalOnly: searched.lexicalOnly,
         totalMatches: searched.totalMatches,
+        emptyReason,
         items: rows.map(toPublicPrecedent),
       },
       latencyMs: searched.latencyMs,
