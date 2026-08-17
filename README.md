@@ -450,6 +450,49 @@ out over SSE. They are not a timer.
 
 ---
 
+### Deploying on Render's free tier
+
+The free tier shapes three real behaviours. None is a bug, and all three are
+easier to live with once you know which is which.
+
+**1. One service, not two.** Render's free tier has no background-worker type,
+so the blueprint's web + worker split is not available. The deployed shape is a
+single web service running `npm run start:all`, which supervises both processes
+in one container. The consequence: when the container sleeps, the BullMQ
+consumer sleeps with it. Inbound webhooks are still accepted and queued — the
+web half wakes to serve them — but queued jobs are not drained until something
+wakes the container, so a WhatsApp reply can arrive minutes late or on the next
+message. A paid always-on plan is the fix; nothing in the code can work around
+a sleeping process.
+
+**2. Cold starts.** A container waking from spin-down takes roughly 30–60
+seconds on the first request. Two visible effects:
+
+- The web app's first load, and its first question, simply take that long. The
+  interface shows its spinner and waits; nothing times out.
+- Meta expects a fast webhook acknowledgement and throttles subscriptions that
+  are slow. A cold start counts against that. This is the strongest single
+  argument for the cheapest paid plan once real advocates are using the bot.
+
+**3. Memory.** 512 MB, shared by both processes. Password hashing is the one
+thing here with a deliberate memory appetite: scrypt at `N=2^15, r=8` uses
+32 MiB per hash *while it runs*, which is what makes a stolen database
+expensive to attack. Two node processes plus a couple of concurrent sign-ins
+sits comfortably inside 512 MB, and the sign-in rate limiter (20 per IP, 10 per
+account, per 15 minutes) is what stops a flood turning that into an OOM. If you
+ever do see the container restarting under load during sign-ins, lower the cost
+in `src/auth/password.ts` — every hash records the parameters it was made with,
+so changing them is safe and old passwords keep verifying.
+
+**Supabase free tier** pauses a project after 7 days with no activity. The
+service will come back with connection errors that look alarming and are not;
+unpause it from the Supabase dashboard. Note also that the connection string on
+port 6543 is the transaction pooler — the app detects that and disables prepared
+statements automatically, but `npm run db:migrate` needs the direct connection on
+port 5432, so set `DIRECT_URL` before running migrations.
+
+---
+
 ## Deviations from the spec
 
 Each of these is a deliberate call, not an omission.

@@ -367,14 +367,21 @@ export class ChatService {
       charged = 0;
 
       // Said plainly, because the two causes need different actions from
-      // whoever reads it. "No judgments found" for an unconfigured deployment
-      // reads as "your question was bad", which sends an advocate off
+      // whoever reads it. "No judgments found" on a deployment with nothing to
+      // search reads as "your question was bad", and sends an advocate off
       // rephrasing a query that was never going to work.
-      const corpus = await this.corpus.countCorpus().catch(() => ({ judgments: 0 }));
-      emptyReason =
-        Number(corpus.judgments ?? 0) === 0
-          ? 'no-corpus'
-          : 'no-match';
+      //
+      // Which of the two it is depends on *who answered*, not just on whether
+      // the local corpus is empty. With Indian Kanoon configured the search ran
+      // against their index and genuinely found nothing - an empty local corpus
+      // is irrelevant, and reporting it would be a false alarm about
+      // infrastructure that is working correctly.
+      if (searched.source === 'kanoon') {
+        emptyReason = 'no-match';
+      } else {
+        const corpus = await this.corpus.countCorpus().catch(() => ({ judgments: 0 }));
+        emptyReason = Number(corpus.judgments ?? 0) === 0 ? 'no-corpus' : 'no-match';
+      }
     }
 
     const message = await this.chats.appendMessage({
