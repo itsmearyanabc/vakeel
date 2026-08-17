@@ -18,66 +18,85 @@ Built from `Vakeel_Saathi_Enterprise_Architecture.pdf`, adapted to
 |---|---|
 | Type check (`tsc --noEmit`) | ✅ clean |
 | Build (`npm run build`) | ✅ emits `dist/main.js`, `dist/worker.js` |
-| Tests (`npm test`) | ✅ 90 passing |
-| Both entrypoints boot from compiled output | ✅ `node dist/main.js` resolves every module and reaches config validation |
-| Migrations executed against a live Postgres | ⚠️ **not yet — see below** |
-| End-to-end run against real Supabase/Redis/Meta | ⚠️ not yet |
+| Tests (`npm test`) | ✅ 403 passing |
+| Migrations applied to live Supabase | ✅ through `0011` |
+| Web app verified end to end | ✅ signup, sign-in, session cookie, live answer, credits charged and refunded |
+| WhatsApp bot | ✅ running on the Meta test number |
+| Google sign-in | ⚠️ built, unconfigured — set `GOOGLE_OAUTH_CLIENT_ID`/`SECRET` |
+| Transactional email | ⚠️ built, unconfigured — `EMAIL_PROVIDER=log` writes links to the log |
+| Razorpay payments | ❌ schema and admin reporting only, no gateway calls |
+| Judgment corpus | ⚠️ empty — case-law search returns nothing until you ingest or set `KANOON_API_KEY` |
 
-**The SQL migrations have not been executed.** Docker would not start on the
-development machine, so there was no Postgres to apply them to. They are
-written carefully — including the `halfvec` workaround that 3072-dimension
-HNSW indexes require — but treat the first `npm run db:migrate` as the real
-test. It is the first thing to do, and it takes about a minute:
-
-```bash
-npm run db:migrate
-```
-
-If anything fails there, it will fail loudly with the offending statement.
+Anything marked ⚠️ is **off, and says so in the interface**. An unconfigured
+Google button does not render, password reset refuses with an explanation rather
+than pretending to send mail, mock LLM answers are labelled as placeholders, and
+a case-law search with no corpus refunds the credits and explains why. Nothing
+in the product claims to have done something it did not.
 
 ---
 
 ## How it works
 
+Two front doors onto one pipeline. They differ in *how the work is scheduled*,
+not in what it does.
+
 ```
-WhatsApp user
-      │  message
-      ▼
-Meta Cloud API ──webhook──► web service (NestJS + Fastify)
-                              │  1. verify HMAC signature
-                              │  2. drop duplicate deliveries
-                              │  3. enqueue
-                              │  4. return 200  (< 200ms)
-                              ▼
-                         Redis (BullMQ)
-                              │
-                              ▼
-                        worker service
-                              │
-      ┌───────────────────────┼───────────────────────┐
-      ▼                       ▼                       ▼
- intent router          hybrid retrieval          eCourts adapter
- (cheap model)                │                   (CNR lookup)
-                              │
-              ┌───────────────┴───────────────┐
-              ▼                               ▼
-     pgvector dense search          tsvector lexical search
-              └───────────────┬───────────────┘
-                              ▼
-                    RRF fusion (in SQL)
-                              ▼
-                  prompt + anti-hallucination rules
-                              ▼
-                     synthesis model
-                              ▼
-              ╔═══════════════════════════════╗
-              ║  CITATION GUARDRAIL           ║
-              ║  every citation and section   ║
-              ║  checked against the corpus   ║
-              ╚═══════════════════════════════╝
-                              ▼
-                        WhatsApp reply
+ WhatsApp user                              Browser  (/app)
+      │  message                                 │  POST /api/chat/ask
+      ▼                                          │
+ Meta Cloud API                                  │
+      │  webhook                                 │
+      ▼                                          ▼
+ ┌─────────────────────────────────────────────────────────────┐
+ │  web service  (NestJS + Fastify)                            │
+ │                                                             │
+ │  webhook: verify HMAC ─► drop duplicates ─► enqueue ─► 200  │
+ │           (must ack in < 200ms or Meta throttles us)        │
+ │                                                             │
+ │  /api/chat/ask: answer on this connection, stream progress  │
+ └─────────────────────────────────────────────────────────────┘
+           │ enqueue                             │ direct
+           ▼                                     │
+    Redis (BullMQ)                               │
+           │                                     │
+           ▼                                     │
+    worker service                               │
+           │                                     │
+           └──────────────┬──────────────────────┘
+                          ▼
+      ┌───────────────────┼───────────────────┐
+      ▼                   ▼                   ▼
+ intent router     hybrid retrieval     eCourts adapter
+ (cheap model)            │             (CNR lookup, free)
+                          │
+            ┌─────────────┴─────────────┐
+            ▼                           ▼
+   pgvector dense search      tsvector lexical search
+            └─────────────┬─────────────┘
+                          ▼
+                RRF fusion (in SQL)
+                          ▼
+            prompt + anti-hallucination rules
+                          ▼
+                  synthesis model
+                          ▼
+            ╔═════════════════════════════╗
+            ║  CITATION GUARDRAIL         ║
+            ║  every citation and section ║
+            ║  checked against the corpus ║
+            ╚═════════════════════════════╝
+                          ▼
+          ┌───────────────┴───────────────┐
+          ▼                               ▼
+    WhatsApp reply                 SSE: answer + cards
 ```
+
+**Why the queue on one side and not the other.** Meta expects a webhook
+acknowledged in well under a second and throttles — then disables — subscriptions
+that are slow, so all slow work has to happen after the 200. A browser waiting on
+its own fetch has no such deadline, and the advocate is watching, so the answer is
+produced on the open connection and progress is streamed back. A queue there would
+add a polling loop to solve a problem that does not exist.
 
 ### The guardrail is the point
 
@@ -360,6 +379,77 @@ Alternatively, put your own number in `ADMIN_PHONE_NUMBERS` to get
 
 ---
 
+## 8. The web app
+
+Served at `/app` by the same web process. No build step, no CDN, no framework —
+see the deviations table.
+
+### What an advocate can do
+
+| | |
+|---|---|
+| Sign up | Email and password, or Google if it is configured |
+| Ask | Section lookups, case-law search, case status by CNR — the same pipeline the WhatsApp bot uses |
+| See | Threads in a sidebar, precedents as cards, court records as a table, sources behind every answer |
+| Credits | Live balance, full history, and what each action cost |
+| Link WhatsApp | One account across both channels, sharing credits and history |
+| Account | Password change, signed-in devices with individual revoke |
+
+### Credits, in one paragraph
+
+Two buckets. **Free** credits are the daily allowance (`QUOTA_GUEST_DAILY`),
+reset each day and never accumulated. **Durable** credits — purchased, granted
+or the signup bonus — never expire. A spend draws down free first, so a purchase
+is never burned while an allowance expires beside it. Every movement is a row in
+`credit_ledger` with an idempotency key the database enforces, so a redelivered
+webhook or a double-clicked button collides on an index instead of charging
+twice. Refunds reverse the original entries rather than crediting a flat amount,
+because a spend can straddle both buckets and both ways of guessing cost someone
+real money.
+
+Case status is free. Section lookups and case-law searches cost 2. A search that
+returns no authorities is refunded automatically.
+
+### Linking a WhatsApp number
+
+The code travels *outward*: the advocate is shown a six-digit code in the browser
+and sends it to the bot from their handset.
+
+Texting them a code instead would fail for most people who need it — WhatsApp
+refuses free-form messages outside a 24-hour window — and proves less. A received
+code shows someone can read messages sent to a number; a sent code shows they can
+send *from* it, which is what "this is my WhatsApp account" means.
+
+When the number already has an account, the two merge: the WhatsApp account
+survives and absorbs the web one, with threads, ledger and orders re-pointed
+before the delete so a cascade cannot take an advocate's research history with
+it.
+
+### Sessions
+
+Opaque random tokens in `web_sessions`, stored only as SHA-256, delivered in an
+HttpOnly `SameSite=Lax` cookie. Not JWTs — the deciding property is revocation.
+A stolen JWT is valid until it expires and nothing can stop it; here "sign out
+everywhere" is a `DELETE`.
+
+`Secure` is derived from `APP_PUBLIC_URL` rather than configured, because the two
+cannot usefully disagree: `Secure` on a plain-http origin makes the browser
+silently discard the cookie, so sign-in appears to succeed and the next request
+is anonymous, with nothing in any log to explain it.
+
+### Why answers do not stream token by token
+
+The citation guardrail runs on the **complete** answer and strips citations that
+are not in the corpus. Streaming raw model output would put unverified citations
+on screen and then remove them — showing an advocate a case that does not exist,
+however briefly, is the exact failure this system is built to prevent.
+
+What does stream is progress, and it is real: `RagService` reports each stage as
+it begins (`retrieving` → `generating` → `verifying`) and those events go straight
+out over SSE. They are not a timer.
+
+---
+
 ## Deviations from the spec
 
 Each of these is a deliberate call, not an omission.
@@ -373,17 +463,21 @@ Each of these is a deliberate call, not an omission.
 | ES synonym filter | Query-side expansion in TypeScript | Postgres' equivalent is a thesaurus dictionary, which needs a file on the DB server's filesystem — impossible on managed Supabase. Same recall benefit, no infrastructure. |
 | Cross-encoder re-ranker (BGE) | RRF fusion only | RRF over a 50+50 candidate pool gets a large fraction of the quality at none of the latency or GPU cost. The obvious next upgrade once there is traffic to measure against. |
 | Prisma ORM | postgres.js + raw SQL | Every interesting query here is pgvector/tsvector/RRF, which would be `$queryRaw` anyway. Prisma has no native `vector` type, so the columns would be `Unsupported(...)` and unreadable by the client regardless. Drops a generate step from the Docker build too. |
-| Razorpay credit wallet | Role-based daily quotas | You asked to skip billing. Quotas cap LLM spend in the meantime. When you add Razorpay, add a `wallet_ledger` table *alongside* `daily_usage` — quotas stop abuse, credits price usage, and they answer different questions. |
+| Razorpay credit wallet | Two-bucket credit ledger; no gateway | The ledger is built and authoritative. Payments are not: no Razorpay call is made anywhere. The schema commits to what is expensive to change later — integer paise, unique receipts, deduplicated webhooks, tax split out for GST — so wiring the gateway is an integration rather than a migration. |
 | eCourts scraper + CAPTCHA solving | Adapter with `mock` / `http` modes | eCourts has no free public API and the portal is CAPTCHA-protected. Defeating a government portal's bot protection is a legal exposure the product does not need. Subscribe to a provider and map its fields in `mapProviderResponse()`. |
-| Next.js portals | Not built | Out of scope for this pass, by your choice. |
+| Next.js portals | Vanilla HTML/CSS/JS, served by Nest | The web app ships inside the existing service. A React build means a stage in the Dockerfile, a second thing that fails on deploy, and a CDN in front of an interface holding advocates' sessions and legal research. It is one screen with a list beside it; a framework would not make it shorter. |
 
 ---
 
 ## Not built yet
 
-- **Next.js user dashboard and admin governance portal** — the backend APIs and
-  the `user_role` enum are in place for them.
-- **Razorpay billing** — see the deviations table for where it should slot in.
+- **Razorpay payments.** The ledger, the order table, the webhook dedupe table
+  and the admin reporting all exist; nothing calls Razorpay. What remains is
+  order creation, checkout, and a signature-verified webhook that calls
+  `credit_grant()` with the payment id as its idempotency key. The
+  "paid but not credited" report in the admin panel is already there, because
+  that is the failure nobody sees until it has happened.
+- **A marketing site.** `/` serves the app; there is no public landing page.
 - **ID card upload to Supabase Storage.** The bot accepts the image and queues
   the verification, but does not persist the file. Storing identity documents
   before there is a review UI to look at them is the wrong order — the DPDP Act
@@ -402,7 +496,7 @@ npm test
 npm run test:cov
 ```
 
-90 tests, no database or network required. They concentrate on the parts where
+403 tests, no database or network required. They concentrate on the parts where
 a silent bug is expensive: the citation guardrail, webhook signature
 verification, PII encryption, WhatsApp field limits, and the legal-text
 patterns.
@@ -420,6 +514,9 @@ citation on the way out.
 ```
 src/
 ├── main.ts                 web entrypoint (Fastify, raw-body parser for HMAC)
+├── auth/                   end-user accounts: scrypt, sessions, Google, phone linking
+├── credits/                the two-bucket credit wallet over credit_ledger
+├── web/                    the advocate-facing app — API, SSE chat, inlined assets
 ├── worker.ts               worker entrypoint (no HTTP server)
 ├── app.module.ts           AppModule (web) and WorkerModule (worker)
 ├── config/                 zod-validated environment, fails fast at boot

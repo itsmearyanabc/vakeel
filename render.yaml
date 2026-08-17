@@ -90,9 +90,51 @@ services:
       - key: WHATSAPP_VERIFY_TOKEN
         sync: false
 
+      # The number advocates message, in international format. Not the same
+      # thing as WHATSAPP_PHONE_NUMBER_ID, which is an opaque Meta id. Shown on
+      # the web app's account-linking screen.
+      - key: WHATSAPP_DISPLAY_NUMBER
+        sync: false
+
       # Set this to the service's own public URL after the first deploy.
-      # It is what you register with Meta as the webhook callback.
+      #
+      # It does three jobs, which is why getting it wrong breaks unrelated
+      # things: it is the webhook callback registered with Meta, the base for
+      # the Google OAuth redirect URI, and the base for links in verification
+      # and password-reset email. It also decides whether session cookies carry
+      # the Secure attribute - an https value here and a plain-http origin means
+      # browsers silently discard the cookie and sign-in appears to do nothing.
       - key: APP_PUBLIC_URL
+        sync: false
+
+      # ---- The advocate-facing web app ----------------------------------
+      # Everything below is optional. Without them the web app still runs:
+      # advocates sign up with email and password, ask questions and spend
+      # credits. What each one adds is noted.
+
+      # Adds the "Continue with Google" button. The Authorised redirect URI in
+      # Google Cloud Console must equal APP_PUBLIC_URL + /auth/google/callback
+      # exactly - a trailing slash is redirect_uri_mismatch.
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+
+      # Adds email confirmation and password reset. Leave EMAIL_PROVIDER as
+      # `log` and neither is offered - the UI says so rather than sending
+      # someone to wait on an inbox for a message that was never sent.
+      - key: EMAIL_PROVIDER
+        value: log
+      - key: RESEND_API_KEY
+        sync: false
+
+      # Payments are not implemented. Setting these only reveals the buy-credits
+      # UI, so leave them empty until the gateway is actually wired up.
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
         sync: false
 
   - type: worker
@@ -110,6 +152,13 @@ services:
         value: info
       # The worker needs the SAME values as the web service. Easiest path is a
       # Render environment group shared by both; otherwise re-enter them here.
+      #
+      # This matters more than it used to. Both processes now grant and spend
+      # credits - the worker does it when answering WhatsApp messages - and the
+      # daily allowance comes from QUOTA_GUEST_DAILY. If the two services
+      # disagree on it, an advocate's free bucket is topped up to a different
+      # number depending on which process happened to touch their account
+      # first. Nothing errors; the balance simply moves on its own.
       - key: DATABASE_URL
         sync: false
       - key: DIRECT_URL
