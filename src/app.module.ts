@@ -12,6 +12,7 @@ import { RedisModule } from './redis/redis.module';
 import { SecurityModule } from './security/security.module';
 import { SettingsModule } from './settings/settings.module';
 import { UsersModule } from './users/users.module';
+import { WebModule } from './web/web.module';
 import { WhatsAppModule, WhatsAppWorkerModule } from './whatsapp/whatsapp.module';
 import { RetentionJob } from './jobs/retention.job';
 
@@ -37,6 +38,7 @@ const INFRASTRUCTURE = [ConfigModule, DatabaseModule, RedisModule, SecurityModul
     AuthModule,
     EcourtsModule,
     WhatsAppModule,
+    WebModule,
     AdminModule,
     HealthModule,
   ],

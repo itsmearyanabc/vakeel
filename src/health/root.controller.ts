@@ -1,33 +1,16 @@
 import { Controller, Get, HttpCode, HttpStatus } from '@nestjs/common';
 
 /**
- * The root route.
+ * Favicon only.
  *
- * Hosting platforms probe `/` by default (Render sends a HEAD on every deploy
- * and periodically after). Without this, each probe logs a 404, which buries
- * genuine errors in noise and makes the service look broken to anyone reading
- * the logs.
- *
- * `@Controller()` with an empty prefix is what puts this at `/` - putting a
- * bare `@Get()` inside the health controller would map it to `/health`.
- *
- * Deliberately says nothing about the deployment's internal state: this is an
- * unauthenticated public URL, so no version numbers, dependency status or
- * configuration hints. Readiness detail lives behind `/health/ready`.
+ * `/` used to return a small JSON status document here, so that platform
+ * probes did not log a 404 on every deploy. It now serves the web application
+ * itself - see WebUiController - which answers the probe just as well and is
+ * considerably more useful to a person who types the domain in. The JSON moved
+ * to `/status`.
  */
 @Controller()
 export class RootController {
-  @Get()
-  @HttpCode(HttpStatus.OK)
-  root() {
-    return {
-      service: 'vakeel-saathi',
-      status: 'ok',
-      admin: '/admin',
-      health: '/health/ready',
-    };
-  }
-
   /**
    * Browsers request this unprompted on every admin panel load, and the 404 was
    * logged at warn level - the same noise problem `/` above was added to solve,

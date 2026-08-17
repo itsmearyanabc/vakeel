@@ -17,6 +17,20 @@ import {
 import { LlmMessage } from './providers/llm-provider.interface';
 import { ProviderRegistry } from './providers/provider.registry';
 
+/**
+ * Stages the pipeline actually passes through, in order.
+ *
+ * Reported to callers that want to show progress. Each one is emitted at the
+ * moment the corresponding work begins, so a client rendering them is showing
+ * what is happening rather than a decorative animation - which matters because
+ * "Searching judgments" appearing while nothing is being searched is a lie the
+ * user has no way to detect.
+ */
+export type RagStage = 'retrieving' | 'generating' | 'verifying';
+
+/** Optional progress sink. Never awaited; a slow observer must not slow the answer. */
+export type RagProgress = (stage: RagStage) => void;
+
 export interface RagAnswer {
   text: string;
   citations: string[];
@@ -63,9 +77,14 @@ export class RagService {
   ) {}
 
   /** Statute explanation. No case law retrieval; the acts table is authority enough. */
-  async answerSectionLookup(intent: ClassifiedIntent, history: LlmMessage[] = []): Promise<RagAnswer> {
+  async answerSectionLookup(
+    intent: ClassifiedIntent,
+    history: LlmMessage[] = [],
+    onStage?: RagProgress,
+  ): Promise<RagAnswer> {
     const started = Date.now();
 
+    onStage?.('retrieving');
     const statutes = await this.corpus.searchStatutes(
       intent.searchQuery,
       intent.sectionNumber,
@@ -76,17 +95,22 @@ export class RagService {
     if (statutes.length === 0) {
       // Nothing matched. Fall through to a general answer rather than
       // inventing one - the general prompt forbids citing sections outright.
-      return this.answerGeneral(intent, started, history);
+      return this.answerGeneral(intent, started, history, onStage);
     }
 
     const system = buildSectionExplanationPrompt(statutes, intent.language);
-    return this.generate(system, intent, [], statutes, started, history);
+    return this.generate(system, intent, [], statutes, started, history, onStage);
   }
 
   /** Case law research over the judgment corpus. */
-  async answerPrecedentSearch(intent: ClassifiedIntent, history: LlmMessage[] = []): Promise<RagAnswer> {
+  async answerPrecedentSearch(
+    intent: ClassifiedIntent,
+    history: LlmMessage[] = [],
+    onStage?: RagProgress,
+  ): Promise<RagAnswer> {
     const started = Date.now();
 
+    onStage?.('retrieving');
     const expanded = expandQuery(intent.searchQuery);
     const embedding = await this.embeddings.embedQuery(expanded);
 
@@ -121,18 +145,23 @@ export class RagService {
     );
 
     if (relevant.length === 0 && statutes.length === 0) {
-      return this.answerGeneral(intent, started, history);
+      return this.answerGeneral(intent, started, history, onStage);
     }
 
     const system = buildPrecedentSearchPrompt(relevant, statutes, intent.language);
-    return this.generate(system, intent, relevant, statutes, started, history);
+    return this.generate(system, intent, relevant, statutes, started, history, onStage);
   }
 
   /** No corpus support available; the prompt bars citing anything. */
-  async answerGeneral(intent: ClassifiedIntent, startedAt?: number, history: LlmMessage[] = []): Promise<RagAnswer> {
+  async answerGeneral(
+    intent: ClassifiedIntent,
+    startedAt?: number,
+    history: LlmMessage[] = [],
+    onStage?: RagProgress,
+  ): Promise<RagAnswer> {
     const started = startedAt ?? Date.now();
     const system = buildGeneralLegalPrompt(intent.language);
-    return this.generate(system, intent, [], [], started, history);
+    return this.generate(system, intent, [], [], started, history, onStage);
   }
 
   /**
@@ -163,18 +192,22 @@ export class RagService {
   }
 
   /** Dispatch on intent. CASE_STATUS is handled upstream by the eCourts adapter. */
-  async answer(intent: ClassifiedIntent, history: LlmMessage[] = []): Promise<RagAnswer> {
+  async answer(
+    intent: ClassifiedIntent,
+    history: LlmMessage[] = [],
+    onStage?: RagProgress,
+  ): Promise<RagAnswer> {
     switch (intent.intent) {
       case 'SECTION_LOOKUP':
-        return this.answerSectionLookup(intent, history);
+        return this.answerSectionLookup(intent, history, onStage);
       case 'PRECEDENT_SEARCH':
-        return this.answerPrecedentSearch(intent, history);
+        return this.answerPrecedentSearch(intent, history, onStage);
       case 'DRAFTING_HELP':
       case 'GENERAL_LEGAL':
       default:
         // Drafting benefits from precedent context too, so route it through
         // retrieval rather than answering from nothing.
-        return this.answerPrecedentSearch(intent, history);
+        return this.answerPrecedentSearch(intent, history, onStage);
     }
   }
 
@@ -185,7 +218,9 @@ export class RagService {
     statutes: StatuteRow[],
     startedAt: number,
     history: LlmMessage[] = [],
+    onStage?: RagProgress,
   ): Promise<RagAnswer> {
+    onStage?.('generating');
     const result = await this.registry.complete({
       task: 'synthesis',
       system,
@@ -195,6 +230,7 @@ export class RagService {
     });
 
     // Every generated answer passes through verification before anyone sees it.
+    onStage?.('verifying');
     const checked = await this.guardrails.verify(result.text, passages);
 
     return {
