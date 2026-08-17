@@ -17,14 +17,23 @@ export interface IntentSlice {
 
 export interface AdminUserRow {
   id: string;
-  phone_number: string;
+  phone_number: string | null;
   full_name: string | null;
   role: string;
   verification_status: string;
   preferred_language: string;
+  /** Questions answered today, counted from search_history. */
   query_count: number;
   last_active_at: string;
   created_at: string;
+
+  // --- Web account (migration 0010) ------------------------------------------
+  email: string | null;
+  email_verified: boolean;
+  signup_source: string;
+  phone_verified: boolean;
+  free_credits: number;
+  paid_credits: number;
 }
 
 export interface AdminSearchRow {
@@ -143,24 +152,51 @@ export class AdminRepository {
   }
 
   /** User table, newest-active first. */
+  /**
+   * The users table.
+   *
+   * ## Why today's count no longer comes from `daily_usage`
+   *
+   * It used to `LEFT JOIN daily_usage`, which was correct until credits became
+   * a ledger and nothing wrote to that table any more. The join kept working
+   * and kept returning `COALESCE(..., 0)` - so the column silently read zero
+   * for every user, on a page whose whole purpose is telling an operator who is
+   * active. A wrong number that looks like a real one is worse than a missing
+   * column, because nobody thinks to doubt it.
+   *
+   * `search_history` has a row per answered query already, so it is both the
+   * honest source and one that cannot drift from what actually happened.
+   *
+   * Balances are read from the cached columns rather than through
+   * `credit_balance()`, deliberately: this renders fifty rows, and the function
+   * has the side effect of rolling the daily allowance over. Listing users
+   * would otherwise write fifty ledger entries.
+   */
   async listUsers(limit = 100, offset = 0, search?: string): Promise<AdminUserRow[]> {
     const pattern = search ? `%${search}%` : null;
     return this.db.sql<AdminUserRow[]>`
       SELECT u.id,
              u.phone_number,
              u.full_name,
+             u.email,
+             (u.email_verified_at IS NOT NULL) AS email_verified,
+             (u.phone_verified_at IS NOT NULL) AS phone_verified,
+             u.signup_source::text       AS signup_source,
+             u.free_credits,
+             u.paid_credits,
              u.role::text                AS role,
              u.verification_status::text AS verification_status,
              u.preferred_language,
-             COALESCE(d.query_count, 0)  AS query_count,
+             (SELECT COUNT(*) FROM search_history s
+               WHERE s.user_id = u.id
+                 AND s.created_at >= date_trunc('day', NOW()))::int AS query_count,
              u.last_active_at,
              u.created_at
         FROM users u
-        LEFT JOIN daily_usage d
-               ON d.user_id = u.id AND d.usage_date = CURRENT_DATE
        WHERE ${pattern}::text IS NULL
           OR u.phone_number ILIKE ${pattern}
           OR u.full_name    ILIKE ${pattern}
+          OR u.email        ILIKE ${pattern}
        ORDER BY u.last_active_at DESC
        LIMIT ${limit} OFFSET ${offset}
     `;

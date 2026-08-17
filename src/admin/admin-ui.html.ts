@@ -301,8 +301,10 @@ var VIEWS = [
   { id:'system',        label:'System',        icon:'⬢' },
   { id:'verifications', label:'Verifications', icon:'✓' },
   { id:'users',         label:'Users',         icon:'●' },
+  { id:'credits',       label:'Credits',       icon:'◆' },
   { id:'searches',      label:'Queries',       icon:'▤' },
   { id:'messages',      label:'Messages',      icon:'✉' },
+  { id:'chats',         label:'Web chats',     icon:'▭' },
   { id:'corpus',        label:'Corpus',        icon:'▦' },
   { id:'settings',      label:'Settings',      icon:'⚙' },
   { id:'audit',         label:'Audit log',     icon:'⌚' }
@@ -311,7 +313,7 @@ var VIEWS = [
 /** Rows per page for the tables. */
 var PAGE = 50;
 /** Per-view offsets, so paging survives switching views and back. */
-var OFFSET = { users:0, searches:0, messages:0 };
+var OFFSET = { users:0, searches:0, messages:0, credits:0, chats:0 };
 /** Dashboard auto-refresh handle, and whether it is enabled. */
 var REFRESH_TIMER = null;
 var AUTO_REFRESH = localStorage.getItem('vs_autorefresh') === '1';
@@ -509,8 +511,8 @@ function go(view) {
   main.innerHTML = '<div class="loading">Loading…</div>';
   var fn = ({
     dashboard: viewDashboard, system: viewSystem, verifications: viewVerifications,
-    users: viewUsers, searches: viewSearches, messages: viewMessages,
-    corpus: viewCorpus, settings: viewSettings, audit: viewAudit
+    users: viewUsers, credits: viewCredits, searches: viewSearches, messages: viewMessages,
+    chats: viewChats, corpus: viewCorpus, settings: viewSettings, audit: viewAudit
   })[view];
 
   Promise.resolve()
@@ -919,19 +921,39 @@ function viewUsers() {
     CACHE.usersRows = rows;
     document.getElementById('main').innerHTML =
       '<div class="head"><h2>Users</h2><div class="grow"></div>' +
-      '<input id="uq" placeholder="Search name or number…" style="max-width:250px" value="' + esc(q) + '">' +
+      '<input id="uq" placeholder="Search name, number or email…" style="max-width:250px" value="' + esc(q) + '">' +
       '<button class="btn sm" onclick="searchUsers()">Search</button>' +
       '<button class="btn secondary sm" onclick="exportCsv(CACHE.usersRows, \'users.csv\')">Export CSV</button></div>' +
       '<div class="card">' +
       (rows.length
-        ? '<div class="scroll"><table><thead><tr><th>Phone</th><th>Name</th><th>Role</th>' +
-          '<th>Status</th><th>Lang</th><th>Today</th><th>Last active</th><th></th></tr></thead><tbody>' +
+        ? '<div class="scroll"><table><thead><tr><th>Account</th><th>Name</th><th>Via</th><th>Role</th>' +
+          '<th>Status</th><th style="text-align:right">Credits</th><th>Today</th>' +
+          '<th>Last active</th><th></th></tr></thead><tbody>' +
           rows.map(function (u) {
-            return '<tr><td class="mono">' + esc(maskPhone(u.phone_number)) + '</td>' +
+            // Whichever identifier the advocate actually uses. A web-only
+            // account has no number, and a WhatsApp-only one has no email, so
+            // a single "Phone" column left half the table showing dashes.
+            var handle = u.email
+              ? esc(u.email)
+              : '<span class="mono">' + esc(maskPhone(u.phone_number)) + '</span>';
+            var channels =
+              (u.phone_verified || u.phone_number ? '<span class="pill neutral" title="WhatsApp">wa</span> ' : '') +
+              (u.email ? '<span class="pill ' + (u.email_verified ? 'ok' : 'neutral') +
+                '" title="' + (u.email_verified ? 'Email confirmed' : 'Email not confirmed') +
+                '">web</span>' : '');
+
+            return '<tr><td class="trunc" title="' + esc(u.email || u.phone_number || '') + '">' +
+                handle + '<button class="btn secondary sm" style="margin-left:6px;padding:1px 6px;font-size:10px" ' +
+                'onclick="copyId(\'' + u.id + '\')" title="Copy user id">id</button></td>' +
               '<td>' + esc(u.full_name || '—') + '</td>' +
+              '<td style="white-space:nowrap">' + channels + '</td>' +
               '<td><span class="pill neutral">' + esc(u.role.replace(/_/g, ' ').toLowerCase()) + '</span></td>' +
               '<td>' + statusPill(u.verification_status) + '</td>' +
-              '<td class="mono">' + esc(u.preferred_language) + '</td>' +
+              '<td style="text-align:right" class="mono" title="' + u.free_credits + ' free + ' +
+                u.paid_credits + ' durable">' +
+                (u.role === 'GUEST_LAWYER'
+                  ? (u.free_credits + u.paid_credits)
+                  : '<span style="color:var(--muted)">∞</span>') + '</td>' +
               '<td>' + num(u.query_count) + '</td>' +
               '<td>' + when(u.last_active_at) + '</td>' +
               '<td><select class="mono" style="font-size:11px;padding:3px" ' +
@@ -955,10 +977,208 @@ function searchUsers() {
   OFFSET.users = 0;
   go('users');
 }
+/**
+ * Copy a user id to the clipboard.
+ *
+ * The id is what the credit grant form asks for, and it is a UUID nobody is
+ * going to retype correctly from a screen.
+ */
+function copyId(id) {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(id)
+      .then(function () { toast('User id copied.'); })
+      .catch(function () { prompt('Copy this user id:', id); });
+  } else {
+    // Older browsers, and any page not served over https, have no clipboard API.
+    prompt('Copy this user id:', id);
+  }
+}
+
 function setRole(id, role) {
   api('/users/' + id + '/role', { method:'POST', body:{ role:role } })
     .then(function () { toast('Role updated to ' + role.replace(/_/g, ' ').toLowerCase() + '.'); })
     .catch(function (e) { toast(e.message, true); });
+}
+
+/* -------------------------------------------------------------------------
+   Credits
+   ------------------------------------------------------------------------- */
+function viewCredits() {
+  var off = OFFSET.credits || 0;
+  return Promise.all([
+    api('/credits?limit=' + PAGE + '&offset=' + off),
+    api('/orders?limit=10')
+  ]).then(function (results) {
+    var data = results[0];
+    var orders = results[1];
+    CACHE.creditRows = data.entries;
+
+    var t = data.totals;
+    document.getElementById('main').innerHTML =
+      '<div class="head"><h2>Credits</h2><div class="grow"></div>' +
+      '<button class="btn sm" onclick="openGrant()">Grant credits</button>' +
+      '<button class="btn secondary sm" onclick="exportCsv(CACHE.creditRows, \'credits.csv\')">Export CSV</button></div>' +
+
+      '<div class="note">Every credit movement, newest first. This is the authoritative record — ' +
+      'the balances shown on the Users page are a cache of it. Free credits reset daily; ' +
+      'purchased and granted credits never expire, and a spend draws down free first.</div>' +
+
+      '<div class="grid kpis" style="margin-bottom:14px">' +
+        [
+          { label:'Granted',   value:num(t.granted),   foot:'last ' + data.window + ' days' },
+          { label:'Spent',     value:num(t.spent),     foot:'last ' + data.window + ' days' },
+          { label:'Purchased', value:num(t.purchased),
+            foot: orders.gateway.configured ? 'Razorpay configured' : 'no gateway configured' },
+          { label:'Refunded',  value:num(t.refunded),  foot:'returned to advocates',
+            alert: t.refunded > 0 }
+        ].map(function (k) {
+          return '<div class="card kpi' + (k.alert ? ' alert' : '') + '">' +
+                 '<div class="label">' + esc(k.label) + '</div>' +
+                 '<div class="value">' + k.value + '</div>' +
+                 '<div class="foot">' + esc(k.foot) + '</div></div>';
+        }).join('') +
+      '</div>' +
+
+      (orders.uncredited.length
+        ? '<div class="card" style="border-color:var(--red)"><h3 style="color:var(--red)">' +
+          'Paid but not credited (' + orders.uncredited.length + ')</h3>' +
+          '<div class="note">These orders were settled by the gateway and never produced credits. ' +
+          'Every other payment failure is visible to the person paying; this one is not.</div>' +
+          '<div class="scroll"><table><thead><tr><th>Receipt</th><th>Credits</th><th>Amount</th>' +
+          '<th>Payment id</th><th>When</th></tr></thead><tbody>' +
+          orders.uncredited.map(function (o) {
+            return '<tr><td class="mono">' + esc(o.receipt) + '</td><td>' + num(o.credits) + '</td>' +
+              '<td>' + rupees(o.amount_paise) + '</td>' +
+              '<td class="mono">' + esc(o.razorpay_payment_id || '—') + '</td>' +
+              '<td>' + when(o.created_at) + '</td></tr>';
+          }).join('') + '</tbody></table></div></div>'
+        : '') +
+
+      '<div class="card">' +
+      (data.entries.length
+        ? '<div class="scroll"><table><thead><tr><th>When</th><th>Who</th><th>Type</th><th>Bucket</th>' +
+          '<th style="text-align:right">Change</th><th style="text-align:right">After</th>' +
+          '<th>Reason</th></tr></thead><tbody>' +
+          data.entries.map(function (e) {
+            var who = e.full_name || e.email || maskPhone(e.phone_number) || '—';
+            return '<tr><td style="white-space:nowrap">' + when(e.created_at) + '</td>' +
+              '<td class="trunc" title="' + esc(who) + '">' + esc(who) + '</td>' +
+              '<td><span class="pill ' + creditPill(e.kind) + '">' +
+                esc(e.kind.replace(/_/g, ' ').toLowerCase()) + '</span></td>' +
+              '<td class="mono" style="font-size:11px">' + esc(e.bucket.toLowerCase()) + '</td>' +
+              '<td style="text-align:right;font-weight:700;color:' +
+                (e.delta > 0 ? 'var(--ok)' : 'var(--muted)') + '">' +
+                (e.delta > 0 ? '+' : '') + e.delta + '</td>' +
+              '<td style="text-align:right" class="mono">' + e.balance_after + '</td>' +
+              '<td class="trunc" title="' + esc(e.reason || '') + '">' + esc(e.reason || '—') + '</td></tr>';
+          }).join('') + '</tbody></table></div>'
+        : empty('No credit movements yet',
+                'Entries appear as soon as an advocate is granted or spends credits.')) +
+      pager('credits', data.entries.length) +
+      '</div>';
+  });
+}
+
+/** Colour by what the entry means, so the ledger is scannable. */
+function creditPill(kind) {
+  if (kind === 'SPEND' || kind === 'EXPIRY') return 'neutral';
+  if (kind === 'REFUND' || kind === 'ADJUSTMENT') return 'warn';
+  return 'ok';
+}
+
+/** Paise to rupees. Integer arithmetic only - see migration 0010. */
+function rupees(paise) {
+  var value = Number(paise || 0);
+  return '₹' + (value / 100).toFixed(2);
+}
+
+function openGrant() {
+  var userId = prompt('User id to grant credits to (copy it from the Users page):');
+  if (!userId) return;
+
+  var amount = prompt('How many credits?', '10');
+  if (!amount) return;
+
+  var reason = prompt('Reason (shown to the advocate in their credit history):',
+                      'Goodwill credit');
+  if (reason === null) return;
+
+  // Generated per press, not per retry. A key invented inside api() would be
+  // different on every attempt, which is exactly what the key exists to stop.
+  var key = 'grant-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+
+  api('/credits/grant', {
+    method: 'POST',
+    body: { userId: userId.trim(), amount: Number(amount), reason: reason, idempotencyKey: key }
+  }).then(function (result) {
+    toast(result.applied
+      ? 'Granted. Balance is now ' + (result.free + result.paid) + ' credits.'
+      : 'Already applied — nothing changed.');
+    go('credits');
+  }).catch(function (e) { toast(e.message, true); });
+}
+
+/* -------------------------------------------------------------------------
+   Web chats
+   ------------------------------------------------------------------------- */
+function viewChats() {
+  var off = OFFSET.chats || 0;
+  return api('/chats?limit=' + PAGE + '&offset=' + off).then(function (rows) {
+    CACHE.chatRows = rows;
+    document.getElementById('main').innerHTML =
+      '<div class="head"><h2>Web chats</h2></div>' +
+      '<div class="note">Conversations from the web app. Opening one shows an advocate\'s legal ' +
+      'research, so treat it the way you would their case file — it is here for support and for ' +
+      'the citation review the auditor role exists to do.</div>' +
+      '<div class="card">' +
+      (rows.length
+        ? '<div class="scroll"><table><thead><tr><th>Last activity</th><th>Who</th><th>Conversation</th>' +
+          '<th>Messages</th><th></th></tr></thead><tbody>' +
+          rows.map(function (t) {
+            var who = t.full_name || t.email || '—';
+            return '<tr><td style="white-space:nowrap">' + when(t.last_message_at) + '</td>' +
+              '<td class="trunc" title="' + esc(who) + '">' + esc(who) + '</td>' +
+              '<td class="trunc" title="' + esc(t.title) + '">' + esc(t.title) + '</td>' +
+              '<td>' + num(t.message_count) + '</td>' +
+              '<td><button class="btn secondary sm" onclick="openChat(\'' + t.id + '\')">Open</button></td>' +
+              '</tr>';
+          }).join('') + '</tbody></table></div>'
+        : empty('No web conversations yet',
+                'These appear once advocates start using the web app at /app.')) +
+      pager('chats', rows.length) +
+      '</div>';
+  });
+}
+
+function openChat(threadId) {
+  api('/chats/' + encodeURIComponent(threadId)).then(function (messages) {
+    document.getElementById('main').innerHTML =
+      '<div class="head"><h2>Conversation</h2><div class="grow"></div>' +
+      '<button class="btn secondary sm" onclick="go(\'chats\')">← Back to chats</button></div>' +
+      '<div class="card">' +
+      messages.map(function (m) {
+        var isUser = m.role === 'user';
+        return '<div style="padding:12px 0;border-bottom:1px solid var(--border)">' +
+          '<div style="display:flex;gap:10px;align-items:baseline;margin-bottom:6px">' +
+            '<span class="pill ' + (isUser ? 'neutral' : 'info') + '">' + esc(m.role) + '</span>' +
+            (m.intent ? '<span class="pill neutral">' +
+              esc(String(m.intent).replace(/_/g, ' ').toLowerCase()) + '</span>' : '') +
+            (m.credits_charged ? '<span class="pill neutral">' + m.credits_charged + ' credits</span>' : '') +
+            (m.guardrail_flagged ? '<span class="pill warn" title="' +
+              esc(m.guardrail_reason || '') + '">citation stripped</span>' : '') +
+            (m.error_detail ? '<span class="pill bad">error</span>' : '') +
+            '<span class="grow"></span><span style="font-size:11px;color:var(--dim)">' +
+              when(m.created_at) + '</span>' +
+          '</div>' +
+          '<div style="white-space:pre-wrap;font-size:13px;line-height:1.6">' + esc(m.content) + '</div>' +
+          ((m.citations || []).length
+            ? '<div style="margin-top:8px;font-size:11.5px;color:var(--muted)">Citations: ' +
+              esc(m.citations.join(' · ')) + '</div>'
+            : '') +
+          '</div>';
+      }).join('') +
+      '</div>';
+  }).catch(function (e) { toast(e.message, true); });
 }
 
 function viewSearches() {

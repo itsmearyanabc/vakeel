@@ -267,6 +267,23 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     return Boolean(this.whatsappAccessToken && this.whatsappPhoneNumberId && this.whatsappAppSecret);
   }
 
+  /**
+   * True when Razorpay has both halves of its key pair.
+   *
+   * Gates the buy-credits UI. A checkout button that cannot take money is
+   * indistinguishable from a broken one, and the only way a user finds out is
+   * by trying to pay.
+   */
+  get razorpayConfigured(): boolean {
+    return Boolean(this.get('RAZORPAY_KEY_ID') && this.get('RAZORPAY_KEY_SECRET'));
+  }
+
+  /** GST in basis points; 18% is 1800. See migration 0010 on why not a float. */
+  get gstRateBps(): number {
+    const value = Number(this.get('GST_RATE_BPS'));
+    return Number.isFinite(value) ? value : 1800;
+  }
+
   // --- Writes ---------------------------------------------------------------
 
   /**

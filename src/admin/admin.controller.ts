@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -8,12 +9,16 @@ import {
   Param,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { maskPhone } from '../common/logger';
+import { CreditsService } from '../credits/credits.service';
 import { DatabaseService } from '../database/database.service';
 import { AdminRepository } from '../database/repositories/admin.repository';
 import { AnalyticsRepository } from '../database/repositories/analytics.repository';
+import { ChatRepository } from '../database/repositories/chat.repository';
+import { CreditRepository } from '../database/repositories/credit.repository';
 import { CorpusRepository } from '../database/repositories/corpus.repository';
 import { UserRepository } from '../database/repositories/user.repository';
 import { QueueService } from '../redis/queue.service';
@@ -25,6 +30,7 @@ import { WhatsAppConnectionTester } from '../settings/whatsapp-tester.service';
 import { UsersService } from '../users/users.service';
 import { WhatsAppApiService } from '../whatsapp/whatsapp-api.service';
 import { AdminGuard } from './admin.guard';
+import { AuthenticatedRequest } from './admin.guard';
 
 const int = (v: string | undefined, fallback: number, max = 500): number => {
   const n = Number(v);
@@ -47,6 +53,9 @@ export class AdminController {
     private readonly userRepo: UserRepository,
     private readonly analytics: AnalyticsRepository,
     private readonly adminRepo: AdminRepository,
+    private readonly creditRepo: CreditRepository,
+    private readonly creditsService: CreditsService,
+    private readonly chatRepo: ChatRepository,
     private readonly corpus: CorpusRepository,
     private readonly whatsapp: WhatsAppApiService,
     private readonly settings: SettingsService,
@@ -349,6 +358,123 @@ export class AdminController {
         memoryEnabled: this.settings.getBoolean('MEMORY_ENABLED', true),
       },
     };
+  }
+
+  // --- Credits --------------------------------------------------------------
+
+  /**
+   * The ledger, plus totals for the window.
+   *
+   * Totals are summed from `credit_ledger` rather than from the cached columns
+   * on `users`, because the ledger is the authoritative record and this is the
+   * report that would reveal a divergence between the two.
+   */
+  @Get('credits')
+  async credits(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('days') days?: string,
+    @Query('userId') userId?: string,
+  ) {
+    const [entries, totals] = await Promise.all([
+      this.creditRepo.recentEntries(int(limit, 50), int(offset, 0) || 0, userId?.trim() || undefined),
+      this.creditRepo.totals(int(days, 30, 365)),
+    ]);
+
+    return { entries, totals, window: int(days, 30, 365) };
+  }
+
+  /**
+   * Grant credits by hand.
+   *
+   * Lands in the durable bucket, so a grant made to compensate for a bad answer
+   * is not silently wiped by the nightly free-credit rollover a few hours later.
+   *
+   * `idempotencyKey` is required rather than generated here: it has to survive
+   * the request being retried, and a value invented server-side is different on
+   * every attempt, which is precisely the case it exists to protect against.
+   * The panel sends one per press of the button.
+   */
+  @Post('credits/grant')
+  async grantCredits(
+    @Body() body: { userId?: string; amount?: number; reason?: string; idempotencyKey?: string },
+    @Req() req: AuthenticatedRequest,
+  ) {
+    const amount = Number(body?.amount);
+
+    if (!body?.userId || !Number.isInteger(amount) || amount <= 0 || amount > 100_000) {
+      throw new BadRequestException({
+        code: 'INVALID_GRANT',
+        message: 'Provide a user and a whole number of credits between 1 and 100000.',
+      });
+    }
+
+    if (!body?.idempotencyKey) {
+      throw new BadRequestException({
+        code: 'NO_IDEMPOTENCY_KEY',
+        message: 'An idempotencyKey is required so a retried grant cannot be applied twice.',
+      });
+    }
+
+    const result = await this.creditsService.adminGrant({
+      userId: body.userId,
+      amount,
+      reason: body.reason?.trim() || 'Granted by an administrator',
+      grantedBy: req.admin?.email ?? 'unknown',
+      idempotencyKey: body.idempotencyKey,
+    });
+
+    // `applied: false` means the key had already been used. Reported rather
+    // than hidden, so the operator knows the second click did nothing instead
+    // of wondering why the balance did not move again.
+    return result;
+  }
+
+  /**
+   * Purchases, and the one query that matters operationally.
+   *
+   * `uncredited` lists orders the gateway reports as paid that never produced
+   * credits. Every other failure in a payment flow is visible to the person
+   * paying; this one is invisible to them and to us unless something looks for
+   * it. It is empty until Razorpay is wired up, and it is here now so that it
+   * is not discovered as a missing report after the first real payment.
+   */
+  @Get('orders')
+  async orders(@Query('limit') limit?: string, @Query('offset') offset?: string) {
+    const [orders, uncredited] = await Promise.all([
+      this.creditRepo.listOrders(int(limit, 50), int(offset, 0) || 0),
+      this.creditRepo.uncreditedOrders(20),
+    ]);
+
+    return {
+      orders,
+      uncredited,
+      gateway: {
+        configured: this.settings.razorpayConfigured,
+        gstRateBps: this.settings.gstRateBps,
+      },
+    };
+  }
+
+  // --- Web application ------------------------------------------------------
+
+  /** Web conversations across all users, for support and quality review. */
+  @Get('chats')
+  async chats(@Query('limit') limit?: string, @Query('offset') offset?: string) {
+    return this.chatRepo.recentThreadsForAdmin(int(limit, 50), int(offset, 0) || 0);
+  }
+
+  /**
+   * One conversation in full.
+   *
+   * Deliberately not owner-scoped - that is the point of an admin view - which
+   * is also why it is worth being explicit that this reads an advocate's legal
+   * research. It exists for support ("the bot gave me a wrong citation") and
+   * for the auditor role the schema already defines.
+   */
+  @Get('chats/:threadId')
+  async chatThread(@Param('threadId') threadId: string) {
+    return this.chatRepo.messagesForAdmin(threadId);
   }
 
   // --- Maintenance ----------------------------------------------------------
