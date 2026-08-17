@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AdminModule } from './admin/admin.module';
 import { AiModule } from './ai/ai.module';
+import { AuthModule } from './auth/auth.module';
 import { ConfigModule } from './config/config.module';
 import { DatabaseModule } from './database/database.module';
 import { EcourtsModule } from './ecourts/ecourts.module';
@@ -28,7 +29,17 @@ const INFRASTRUCTURE = [ConfigModule, DatabaseModule, RedisModule, SecurityModul
  * bottleneck.
  */
 @Module({
-  imports: [...INFRASTRUCTURE, AiModule, UsersModule, CreditsModule, EcourtsModule, WhatsAppModule, AdminModule, HealthModule],
+  imports: [
+    ...INFRASTRUCTURE,
+    AiModule,
+    UsersModule,
+    CreditsModule,
+    AuthModule,
+    EcourtsModule,
+    WhatsAppModule,
+    AdminModule,
+    HealthModule,
+  ],
 })
 export class AppModule {}
 
@@ -43,6 +54,7 @@ export class AppModule {}
     AiModule,
     UsersModule,
     CreditsModule,
+    AuthModule,
     EcourtsModule,
     WhatsAppWorkerModule,
   ],

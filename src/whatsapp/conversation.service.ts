@@ -14,6 +14,7 @@ import { ConversationRepository } from '../database/repositories/conversation.re
 import { PrecedentRow, UserRow, WhatsAppUserRow } from '../database/types';
 import { CnrNotFoundError, EcourtsService } from '../ecourts/ecourts.service';
 import { CircuitOpenError } from '../common/circuit-breaker';
+import { PhoneLinkService } from '../auth/phone-link.service';
 import { CreditsService } from '../credits/credits.service';
 import { InboundMessageJob } from '../redis/queue.constants';
 import { UsersService } from '../users/users.service';
@@ -152,6 +153,7 @@ export class ConversationService {
     private readonly memory: ChatMemoryService,
     private readonly ecourts: EcourtsService,
     private readonly credits: CreditsService,
+    private readonly phoneLink: PhoneLinkService,
     private readonly analytics: AnalyticsRepository,
     private readonly transcription: TranscriptionService,
     private readonly registry: ProviderRegistry,
@@ -171,6 +173,19 @@ export class ConversationService {
 
     const text = await this.resolveText(job, user);
     if (text === null) return;
+
+    // A bare six-digit number is almost certainly a web link code, so it is
+    // checked before anything else - including the escape hatches, because a
+    // code that collides with a menu shortcut must still link the account.
+    //
+    // Checked *only* when it matches a code that was actually issued for this
+    // number. A six-digit message that is not a pending code falls straight
+    // through and is answered as an ordinary question, which matters because
+    // "302" and "420" are things advocates genuinely type.
+    if (/^\d{6}$/.test(text.trim())) {
+      const linked = await this.tryPhoneLink(user, text.trim(), job);
+      if (linked) return;
+    }
 
     // Universal escape hatches, checked before any state handling so a user can
     // always get out of a flow they entered by accident.
@@ -616,6 +631,59 @@ export class ConversationService {
       default:
         return false;
     }
+  }
+
+  /**
+   * Redeem a web account-linking code that arrived as a chat message.
+   *
+   * Returns true when the message was a genuine code and has been dealt with;
+   * false when it was not, so the caller can carry on treating it as an
+   * ordinary question. That distinction is the whole reason this returns a
+   * boolean rather than replying itself - "420" is a section number far more
+   * often than it is a link code, and swallowing it would break a real feature
+   * to serve a rare one.
+   */
+  private async tryPhoneLink(
+    user: WhatsAppUserRow,
+    code: string,
+    job: InboundMessageJob,
+  ): Promise<boolean> {
+    const outcome = await this.phoneLink.redeemCode(job.from, code);
+
+    if (outcome.status === 'NO_PENDING_CODE') return false;
+
+    if (outcome.status === 'TOO_MANY_ATTEMPTS') {
+      await this.api.sendText(
+        job.from,
+        'Too many incorrect codes. Request a new one from the website and try again.',
+      );
+      return true;
+    }
+
+    // The account this number now belongs to may not be the one the message
+    // arrived on: linking merges a web account into the WhatsApp one, and the
+    // memory of the discarded row goes with it.
+    await this.memory.clear(user.id);
+    await this.conversations.clear(user.id);
+
+    await this.api.sendText(
+      job.from,
+      outcome.merged
+        ? [
+            '*Account linked.*',
+            '',
+            'This number and your web account are now one account. Your credits, verification and history are shared across both.',
+            '',
+            'Carry on here, or continue on the website — it is the same conversation history either way.',
+          ].join('\n')
+        : [
+            '*Account linked.*',
+            '',
+            'This number is now confirmed on your Vakeel Saathi account. You can use WhatsApp or the website with the same credits.',
+          ].join('\n'),
+    );
+
+    return true;
   }
 
   private async beginVerification(user: WhatsAppUserRow): Promise<void> {

@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { DatabaseService } from './database.service';
 import { AdminRepository } from './repositories/admin.repository';
 import { AnalyticsRepository } from './repositories/analytics.repository';
+import { AuthRepository } from './repositories/auth.repository';
 import { ConversationRepository } from './repositories/conversation.repository';
 import { CorpusRepository } from './repositories/corpus.repository';
 import { CreditRepository } from './repositories/credit.repository';
@@ -17,6 +18,7 @@ const providers = [
   AnalyticsRepository,
   AdminRepository,
   CreditRepository,
+  AuthRepository,
 ];
 
 /**

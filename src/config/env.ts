@@ -83,6 +83,15 @@ const envSchema = z.object({
   WHATSAPP_ACCESS_TOKEN: z.string().default(''),
   WHATSAPP_PHONE_NUMBER_ID: z.string().default(''),
   WHATSAPP_BUSINESS_ACCOUNT_ID: z.string().default(''),
+  /**
+   * The dialable number advocates message, in international format.
+   *
+   * Not derivable from WHATSAPP_PHONE_NUMBER_ID, which is an opaque Meta
+   * identifier and not a phone number - a fact that is easy to miss until the
+   * web app shows it to someone and asks them to message it. Used by the phone
+   * linking screen and the wa.me deep link.
+   */
+  WHATSAPP_DISPLAY_NUMBER: z.string().default(''),
   WHATSAPP_GRAPH_BASE_URL: z.string().url().default('https://graph.facebook.com'),
   WHATSAPP_API_VERSION: z.string().default('v23.0'),
   WHATSAPP_DEDUPE_TTL_SECONDS: z.coerce.number().int().min(60).default(86400),
