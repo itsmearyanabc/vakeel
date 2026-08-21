@@ -22,8 +22,7 @@ import {
  * The consequence worth knowing: this class cannot be unit tested without a
  * database, because the logic it guards does not live in TypeScript. The
  * arithmetic that *is* testable in isolation - what an action costs, whether a
- * question is a repeat - lives in CreditsService and quota.service.ts and is
- * covered there.
+ * question is a repeat - lives in CreditsService and is covered there.
  */
 @Injectable()
 export class CreditRepository {
@@ -42,7 +41,7 @@ export class CreditRepository {
     cost: number;
     action: string;
     reference: string;
-    dailyAllowance: number;
+    monthlyAllowance: number;
   }): Promise<CreditSpendResult> {
     const [row] = await this.db.sql<CreditSpendResult[]>`
       SELECT * FROM credit_spend(
@@ -50,7 +49,7 @@ export class CreditRepository {
         ${input.cost}::integer,
         ${input.action}::varchar,
         ${input.reference}::varchar,
-        ${input.dailyAllowance}::integer
+        ${input.monthlyAllowance}::integer
       )
     `;
     return row;
@@ -83,11 +82,11 @@ export class CreditRepository {
   }
 
   /**
-   * Roll the daily allowance over if it is stale, then read both buckets.
+   * Roll the monthly allowance over if it is stale, then read both buckets.
    *
-   * The refresh runs on a plain balance read, not only on a spend, so the
-   * number the advocate sees at 00:01 is the new day's allowance rather than
-   * yesterday's leftovers waiting to be corrected by their next action.
+   * The refresh runs on a plain balance read, not only on a spend, so the number
+   * the advocate sees at 00:01 on the 1st is the new month's allowance rather
+   * than last month's leftovers waiting to be corrected by their next action.
    *
    * ## Why this is one function call and not a CTE
    *
@@ -95,14 +94,14 @@ export class CreditRepository {
    * a SELECT on `users` - and it silently returned pre-refresh numbers. One
    * statement runs against one snapshot, taken before it starts, so the SELECT
    * could not see the UPDATE the function had just made. A new account reported
-   * zero free credits on its first request and the correct five on the second.
+   * zero free credits on its first request and the correct figure on the second.
    *
    * `credit_balance()` does both steps in plpgsql, where each statement gets
-   * its own snapshot. See migration 0011.
+   * its own snapshot. See migrations 0011 and 0012.
    */
-  async balance(userId: string, dailyAllowance: number): Promise<{ free: number; paid: number }> {
+  async balance(userId: string, monthlyAllowance: number): Promise<{ free: number; paid: number }> {
     const [row] = await this.db.sql<{ free_credits: number; paid_credits: number }[]>`
-      SELECT * FROM credit_balance(${userId}::uuid, ${dailyAllowance}::integer)
+      SELECT * FROM credit_balance(${userId}::uuid, ${monthlyAllowance}::integer)
     `;
     return { free: row?.free_credits ?? 0, paid: row?.paid_credits ?? 0 };
   }
@@ -142,6 +141,38 @@ export class CreditRepository {
     return { refunded: row?.refunded ?? 0, free: row?.free_left ?? 0, paid: row?.paid_left ?? 0 };
   }
 
+  /**
+   * Take credits back.
+   *
+   * Draws from the paid bucket first - the opposite of a spend, and deliberately
+   * so. Deducting from a free allowance that expires in a few days is a
+   * correction the advocate barely notices; the credits actually worth
+   * reclaiming are the durable ones. See `credit_deduct()` in migration 0012.
+   */
+  async deduct(input: {
+    userId: string;
+    amount: number;
+    reason: string;
+    reference: string;
+  }): Promise<{ applied: boolean; deducted: number; free: number; paid: number }> {
+    const [row] = await this.db.sql<
+      { applied: boolean; deducted: number; free_left: number; paid_left: number }[]
+    >`
+      SELECT * FROM credit_deduct(
+        ${input.userId}::uuid,
+        ${input.amount}::integer,
+        ${input.reason}::text,
+        ${input.reference}::varchar
+      )
+    `;
+    return {
+      applied: row?.applied ?? false,
+      deducted: row?.deducted ?? 0,
+      free: row?.free_left ?? 0,
+      paid: row?.paid_left ?? 0,
+    };
+  }
+
   async history(userId: string, limit = 50, offset = 0): Promise<CreditLedgerRow[]> {
     return this.db.sql<CreditLedgerRow[]>`
       SELECT * FROM credit_ledger
@@ -176,20 +207,31 @@ export class CreditRepository {
     purchased: number;
     refunded: number;
     expired: number;
+    deducted: number;
   }> {
     const [row] = await this.db.sql<
-      { granted: number; spent: number; purchased: number; refunded: number; expired: number }[]
+      {
+        granted: number;
+        spent: number;
+        purchased: number;
+        refunded: number;
+        expired: number;
+        deducted: number;
+      }[]
     >`
       SELECT
-        COALESCE(SUM(delta) FILTER (WHERE kind IN ('DAILY_GRANT','SIGNUP_BONUS','ADMIN_GRANT')), 0)::int AS granted,
-        COALESCE(-SUM(delta) FILTER (WHERE kind = 'SPEND'), 0)::int    AS spent,
-        COALESCE(SUM(delta) FILTER (WHERE kind = 'PURCHASE'), 0)::int  AS purchased,
-        COALESCE(SUM(delta) FILTER (WHERE kind = 'REFUND'), 0)::int    AS refunded,
-        COALESCE(-SUM(delta) FILTER (WHERE kind = 'EXPIRY'), 0)::int   AS expired
+        COALESCE(SUM(delta) FILTER (
+          WHERE kind IN ('MONTHLY_GRANT','DAILY_GRANT','SIGNUP_BONUS','ADMIN_GRANT','REFERRAL')
+        ), 0)::int                                                       AS granted,
+        COALESCE(-SUM(delta) FILTER (WHERE kind = 'SPEND'), 0)::int      AS spent,
+        COALESCE(SUM(delta) FILTER (WHERE kind = 'PURCHASE'), 0)::int    AS purchased,
+        COALESCE(SUM(delta) FILTER (WHERE kind = 'REFUND'), 0)::int      AS refunded,
+        COALESCE(-SUM(delta) FILTER (WHERE kind = 'EXPIRY'), 0)::int     AS expired,
+        COALESCE(-SUM(delta) FILTER (WHERE kind = 'DEDUCTION'), 0)::int  AS deducted
       FROM credit_ledger
       WHERE created_at >= NOW() - (${days}::int * INTERVAL '1 day')
     `;
-    return row ?? { granted: 0, spent: 0, purchased: 0, refunded: 0, expired: 0 };
+    return row ?? { granted: 0, spent: 0, purchased: 0, refunded: 0, expired: 0, deducted: 0 };
   }
 
   // ---------------------------------------------------------------------------

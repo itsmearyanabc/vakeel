@@ -225,13 +225,22 @@ const envSchema = z.object({
   KANOON_BREAKER_THRESHOLD: z.coerce.number().int().min(1).default(5),
   KANOON_BREAKER_RESET_MS: z.coerce.number().int().min(1000).default(60_000),
 
-  // --- Quotas ---------------------------------------------------------------
-  // The daily free allowance per role, in credits. Negative means unlimited.
-  // Named QUOTA_* for continuity with existing deployments; these are what the
-  // credit ledger tops the free bucket up to each day.
-  QUOTA_GUEST_DAILY: z.coerce.number().int().default(5),
-  QUOTA_VERIFIED_DAILY: z.coerce.number().int().default(-1),
-  QUOTA_ADMIN_DAILY: z.coerce.number().int().default(-1),
+  // --- Free allowance -------------------------------------------------------
+  /**
+   * The free credit allowance per role, per MONTH. Negative means unlimited.
+   *
+   * Renamed from QUOTA_*_DAILY in migration 0012, because the period changed
+   * from a day to a month and a variable called DAILY holding a monthly figure
+   * is the kind of thing that survives for years and misleads everyone who
+   * reads it. An old QUOTA_* value left in a deployment's environment is simply
+   * ignored rather than silently reinterpreted as a monthly number.
+   *
+   * The allowance resets on the 1st, in Asia/Kolkata. Unused credits expire;
+   * purchased ones never do.
+   */
+  CREDITS_FREE_MONTHLY: z.coerce.number().int().default(30),
+  CREDITS_VERIFIED_MONTHLY: z.coerce.number().int().default(-1),
+  CREDITS_ADMIN_MONTHLY: z.coerce.number().int().default(-1),
 
   // --- Credits --------------------------------------------------------------
   /**

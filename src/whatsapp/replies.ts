@@ -319,27 +319,33 @@ export const ECOURTS_UNAVAILABLE = [
 /**
  * Out of credits.
  *
- * Phrased in credits rather than queries because they stopped being the same
- * number when actions were priced separately: a daily allowance of five buys
- * two precedent searches and any number of case-status lookups, so "you have
- * used all 5 free queries" was wrong in both directions.
- *
- * `remaining` is stated explicitly for the case that produces the most support
- * mail - an advocate with one credit left asking for a two-credit search, who
- * is refused while the balance visibly says they have credit.
+ * Says when they come back, because with a monthly cycle that is genuinely not
+ * obvious - "tomorrow" was self-evident and "the 1st" is not, especially to
+ * someone who has just run out on the 3rd.
  */
-export function quotaExceeded(remaining: number, cost: number, dailyAllowance: number): string {
+export function quotaExceeded(
+  remaining: number,
+  cost: number,
+  monthlyAllowance: number,
+  resetsInDays: number,
+): string {
   const shortfall =
     remaining > 0
-      ? `That search costs *${cost} credits* and you have *${remaining}* left.`
-      : `You have used all *${dailyAllowance} free credits* for today.`;
+      ? `That costs *${cost} credit${cost === 1 ? '' : 's'}* and you have *${remaining}* left.`
+      : `You have used all *${monthlyAllowance} free credits* for this month.`;
+
+  const resets =
+    resetsInDays <= 1
+      ? 'Your free credits reset tomorrow.'
+      : `Your free credits reset in *${resetsInDays} days*.`;
 
   return [
     shortfall,
     '',
     'Verified advocates get unlimited searches. Type *verify* to submit your bar council enrolment number — it takes under a minute.',
     '',
-    'Otherwise your free credits reset tomorrow.',
+    resets,
+    'Checking a case by CNR is always free.',
   ].join('\n');
 }
 

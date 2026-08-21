@@ -18,17 +18,18 @@ function build(overrides: Record<string, string> = {}) {
   const repo = {
     spend: jest.fn(async () => ({
       allowed: true,
-      charged: 2,
-      free_left: 3,
+      charged: 1,
+      free_left: 29,
       paid_left: 0,
-      from_free: 2,
+      from_free: 1,
       from_paid: 0,
       already_spent: false,
     })),
-    balance: jest.fn(async () => ({ free: 5, paid: 0 })),
-    peekBalance: jest.fn(async () => ({ free: 5, paid: 0 })),
-    grant: jest.fn(async () => ({ applied: true, free_left: 5, paid_left: 10 })),
-    refundByReference: jest.fn(async () => ({ refunded: 2, free: 5, paid: 0 })),
+    balance: jest.fn(async () => ({ free: 30, paid: 0 })),
+    peekBalance: jest.fn(async () => ({ free: 30, paid: 0 })),
+    grant: jest.fn(async () => ({ applied: true, free_left: 30, paid_left: 10 })),
+    deduct: jest.fn(async () => ({ applied: true, deducted: 5, free: 30, paid: 5 })),
+    refundByReference: jest.fn(async () => ({ refunded: 1, free: 30, paid: 0 })),
   };
   const service = new CreditsService(repo as unknown as CreditRepository, env(overrides));
   return { service, repo };
@@ -49,9 +50,11 @@ describe('credit costs', () => {
     expect(CREDIT_COST.CASE_STATUS).toBe(0);
   });
 
-  it('charges two for research', () => {
-    expect(CREDIT_COST.SECTION_LOOKUP).toBe(2);
-    expect(CREDIT_COST.PRECEDENT_SEARCH).toBe(2);
+  it('charges one credit for any question', () => {
+    // One question, one credit, is a rule an advocate can hold in their head
+    // and predict. A cost table that needs explaining has already lost.
+    expect(CREDIT_COST.SECTION_LOOKUP).toBe(1);
+    expect(CREDIT_COST.PRECEDENT_SEARCH).toBe(1);
   });
 });
 
@@ -108,22 +111,22 @@ describe('CreditsService.spend', () => {
     });
 
     expect(decision.allowed).toBe(true);
-    expect(decision.charged).toBe(2);
-    expect(decision.balance.total).toBe(3);
+    expect(decision.charged).toBe(1);
+    expect(decision.balance.total).toBe(29);
     expect(repo.spend).toHaveBeenCalledWith(
-      expect.objectContaining({ cost: 2, reference: 'spend:web:msg-1', dailyAllowance: 5 }),
+      expect.objectContaining({ cost: 1, reference: 'spend:web:msg-1', monthlyAllowance: 30 }),
     );
   });
 
   it('never touches the ledger for an unlimited role', async () => {
-    // QUOTA_VERIFIED_DAILY defaults to -1. There is no balance to move, so a
+    // CREDITS_VERIFIED_MONTHLY defaults to -1. There is no balance to move, so a
     // ledger entry would record a movement that did not happen.
     const { service, repo } = build();
 
     const decision = await service.spend({
       userId: 'u1',
       role: 'VERIFIED_ADVOCATE',
-      cost: 2,
+      cost: 1,
       action: 'PRECEDENT_SEARCH',
       reference: 'spend:web:msg-2',
     });
@@ -154,20 +157,21 @@ describe('CreditsService.spend', () => {
   it('reports a refusal without charging', async () => {
     const { service, repo } = build();
     repo.spend.mockResolvedValueOnce({
-      allowed: false, charged: 0, free_left: 1, paid_left: 0,
+      allowed: false, charged: 0, free_left: 0, paid_left: 0,
       from_free: 0, from_paid: 0, already_spent: false,
     });
 
     const decision = await service.spend({
-      userId: 'u1', role: 'GUEST_LAWYER', cost: 2,
+      userId: 'u1', role: 'GUEST_LAWYER', cost: 1,
       action: 'PRECEDENT_SEARCH', reference: 'spend:web:msg-4',
     });
 
     expect(decision.allowed).toBe(false);
     expect(decision.charged).toBe(0);
-    // The remaining credit is reported, because "you have 1 and this costs 2"
-    // is the message, not "you are out".
-    expect(decision.balance.total).toBe(1);
+    expect(decision.balance.total).toBe(0);
+    // The reset date travels with the refusal, because "you are out" without
+    // "until the 1st" leaves someone with no idea whether to wait or to pay.
+    expect(decision.balance.resetsInDays).toBeGreaterThan(0);
   });
 
   it('surfaces a replayed charge as allowed but free', async () => {
@@ -175,12 +179,12 @@ describe('CreditsService.spend', () => {
     // either - the advocate is owed the answer they already paid for.
     const { service, repo } = build();
     repo.spend.mockResolvedValueOnce({
-      allowed: true, charged: 0, free_left: 3, paid_left: 0,
+      allowed: true, charged: 0, free_left: 29, paid_left: 0,
       from_free: 0, from_paid: 0, already_spent: true,
     });
 
     const decision = await service.spend({
-      userId: 'u1', role: 'GUEST_LAWYER', cost: 2,
+      userId: 'u1', role: 'GUEST_LAWYER', cost: 1,
       action: 'PRECEDENT_SEARCH', reference: 'spend:wa:same-message',
     });
 
@@ -225,20 +229,20 @@ describe('CreditsService.creditLine', () => {
     expect(service.creditLine(balance)).toBe('Credits: unlimited');
   });
 
-  it('reports the daily allowance when nothing has been purchased', async () => {
+  it('reports the monthly allowance when nothing has been purchased', async () => {
     const { service } = build();
     const balance = await service.balance('u1', 'GUEST_LAWYER');
-    expect(service.creditLine(balance)).toBe('Credits: 5 of 5 left today');
+    expect(service.creditLine(balance)).toBe('Credits: 30 of 30 left this month');
   });
 
   it('separates free from purchased once there are both', async () => {
     // Collapsing these into one number is what the two buckets exist to avoid:
-    // "8 left" hides that 5 of them vanish at midnight and 3 do not.
+    // "8 left" hides that 5 of them vanish at the end of the month and 3 do not.
     const { service, repo } = build();
     repo.balance.mockResolvedValueOnce({ free: 5, paid: 3 });
 
     const balance = await service.balance('u1', 'GUEST_LAWYER');
-    expect(service.creditLine(balance)).toBe('Credits: 8 left (5 free today + 3 purchased)');
+    expect(service.creditLine(balance)).toBe('Credits: 8 left (5 free this month + 3 purchased)');
   });
 });
 

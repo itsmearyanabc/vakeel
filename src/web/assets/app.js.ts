@@ -1087,8 +1087,8 @@ function renderCredits() {
     left.appendChild(el('div', 'amount', String(state.credits.total)));
     left.appendChild(el('div', 'label',
       state.credits.paid > 0
-        ? state.credits.free + ' free today + ' + state.credits.paid + ' purchased'
-        : 'credits left today'));
+        ? state.credits.free + ' free + ' + state.credits.paid + ' purchased'
+        : 'credits left this month'));
   }
 
   chip.appendChild(left);
@@ -1112,13 +1112,15 @@ async function openCredits() {
       const grid = el('div');
       grid.style.cssText = 'display:flex;gap:12px;margin-bottom:6px';
 
-      grid.appendChild(statBox(data.balance.free, 'free today',
-        'Resets to ' + data.balance.dailyAllowance + ' every day'));
+      grid.appendChild(statBox(data.balance.free, 'free this month',
+        data.balance.resetsInDays === 1
+          ? 'Resets to ' + data.balance.monthlyAllowance + ' tomorrow'
+          : 'Resets to ' + data.balance.monthlyAllowance + ' in ' + data.balance.resetsInDays + ' days'));
       grid.appendChild(statBox(data.balance.paid, 'purchased', 'Never expire'));
       summary.appendChild(grid);
 
       const note = el('p', null,
-        'A section lookup or case-law search costs 2 credits. Checking a case by CNR is free. ' +
+        'Every question costs 1 credit. Checking a case by CNR is always free. ' +
         'Free credits are used before purchased ones.');
       note.style.cssText = 'font-size:12.5px;color:var(--muted);margin:12px 0 0;line-height:1.6';
       summary.appendChild(note);

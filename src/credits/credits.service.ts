@@ -8,11 +8,16 @@ import { CreditLedgerRow, UserRole } from '../database/types';
 /**
  * What each action costs.
  *
- * Case status is free on purpose. It is a lookup against a court record with no
- * model call behind it, it is the thing an advocate does standing outside a
- * courtroom, and charging for it would make the cheapest feature feel like the
- * most rationed one. Research costs two because it is two LLM calls and, for
- * precedents, a billed Kanoon search.
+ * One credit per question, with one exception: case status is free. It is a
+ * lookup against a court record with no model call behind it, it is the thing
+ * an advocate does standing outside a courtroom, and charging for it would make
+ * the cheapest feature feel like the most rationed one. It is also the reason
+ * to open the app on a day you have nothing to research.
+ *
+ * Research used to cost two, on the reasoning that it is two LLM calls plus a
+ * billed Kanoon search. That is true and it is the wrong thing to price on:
+ * "one question, one credit" is a rule an advocate can hold in their head and
+ * predict, and a pricing page that needs a table of costs has already lost.
  *
  * Moved here from quota.service.ts, which now imports it back. The costs belong
  * next to the wallet that applies them, not next to the rate limiter that used
@@ -20,8 +25,8 @@ import { CreditLedgerRow, UserRole } from '../database/types';
  */
 export const CREDIT_COST = {
   CASE_STATUS: 0,
-  SECTION_LOOKUP: 2,
-  PRECEDENT_SEARCH: 2,
+  SECTION_LOOKUP: 1,
+  PRECEDENT_SEARCH: 1,
 } as const;
 
 export type CreditAction = keyof typeof CREDIT_COST;
@@ -41,6 +46,38 @@ export function isSameSearchContext(previous: string | null | undefined, next: s
   return normaliseQuery(previous) === normaliseQuery(next);
 }
 
+/**
+ * The balance an unlimited role reports.
+ *
+ * A frozen object rather than a literal repeated at four call sites, so a field
+ * added to CreditBalance cannot be forgotten in one of them.
+ */
+const UNLIMITED: CreditBalance = Object.freeze({
+  free: 0,
+  paid: 0,
+  total: 0,
+  monthlyAllowance: -1,
+  resetsInDays: 0,
+  unlimited: true,
+});
+
+/**
+ * Whole days until the free allowance refills.
+ *
+ * Computed in Asia/Kolkata, matching `credit_refresh_monthly()`. Doing it in
+ * the server's local zone would tell an advocate in Delhi their credits reset
+ * tomorrow when the database intends to reset them the day after - a small lie
+ * that arrives on the last day of every month.
+ */
+export function daysUntilNextMonth(now: Date = new Date()): number {
+  const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+
+  const firstOfNext = new Date(ist.getFullYear(), ist.getMonth() + 1, 1);
+  const startOfToday = new Date(ist.getFullYear(), ist.getMonth(), ist.getDate());
+
+  return Math.round((firstOfNext.getTime() - startOfToday.getTime()) / 86_400_000);
+}
+
 function normaliseQuery(value: string): string {
   return value
     .toLowerCase()
@@ -52,19 +89,25 @@ function normaliseQuery(value: string): string {
 }
 
 export interface CreditBalance {
-  /** Today's allowance remaining. Resets at midnight. */
+  /** This month's allowance remaining. Resets on the 1st, in Asia/Kolkata. */
   free: number;
   /** Durable credits: purchased, bonus or granted. Never expire. */
   paid: number;
   /** What can actually be spent right now. */
   total: number;
-  /** The role's daily allowance, or -1 when the role is unlimited. */
-  dailyAllowance: number;
+  /** The role's monthly allowance, or -1 when the role is unlimited. */
+  monthlyAllowance: number;
+  /**
+   * Days until the free bucket refills, so the interface can say "resets in 9
+   * days" rather than leaving someone at zero with no idea when that changes.
+   * Zero for unlimited roles.
+   */
+  resetsInDays: number;
   /**
    * True when this role bypasses the wallet entirely.
    *
    * Verified advocates and admins are unlimited by configuration
-   * (`QUOTA_VERIFIED_DAILY = -1`). Their spends are not written to the ledger:
+   * (`CREDITS_VERIFIED_MONTHLY = -1`). Their spends are not written to the ledger:
    * it is a record of credit movements, and nothing moves. Their *usage* is
    * still recorded in `search_history`, which is where usage questions are
    * answered from.
@@ -95,16 +138,17 @@ export interface SpendDecision {
  *
  * This is a ledger. Every movement is a row, the balance is derived and also
  * cached on `users`, and the two are reconcilable. The behaviour an advocate
- * experiences is unchanged: a guest still gets five a day, verified advocates
- * are still unlimited, and a failed delivery is still refunded.
+ * A guest gets 30 credits a month, verified advocates are unlimited, and a
+ * failed delivery is always refunded.
  *
  * ## The two buckets
  *
- * Free credits are the daily allowance and are *reset*, not accumulated. Paid
+ * Free credits are the monthly allowance and are *reset*, not accumulated. Paid
  * credits are durable. Spending draws down free first. The reasoning for all
- * three of those decisions is in migration 0010 - it is the part of this design
- * that is expensive to change once real rows exist, so it is written down where
- * the schema is.
+ * three of those decisions is in migration 0010, and the move from a daily to a
+ * monthly period is in 0012 - they are the parts of this design that are
+ * expensive to change once real rows exist, so they are written down where the
+ * schema is.
  *
  * ## Idempotency is the caller's job
  *
@@ -126,57 +170,67 @@ export class CreditsService {
   /**
    * The daily allowance for a role. Negative means unlimited.
    *
-   * Unchanged from the old QuotaService, deliberately: this is the knob
-   * operators already know, it is already in the environment, and changing its
-   * meaning as part of introducing a ledger would make one deployment's
-   * behaviour depend on which change landed first.
+   * Renamed from the daily equivalent in migration 0012. The variables were
+   * renamed with it rather than reinterpreted, because a value called
+   * QUOTA_GUEST_DAILY holding a monthly figure would outlive everyone who
+   * remembered the change.
    */
-  dailyAllowance(role: UserRole): number {
+  monthlyAllowance(role: UserRole): number {
     switch (role) {
       case 'GUEST_LAWYER':
-        return this.env.QUOTA_GUEST_DAILY;
+        return this.env.CREDITS_FREE_MONTHLY;
       case 'VERIFIED_ADVOCATE':
-        return this.env.QUOTA_VERIFIED_DAILY;
+        return this.env.CREDITS_VERIFIED_MONTHLY;
       case 'LEGAL_AUDITOR':
       case 'SUPER_ADMIN':
-        return this.env.QUOTA_ADMIN_DAILY;
+        return this.env.CREDITS_ADMIN_MONTHLY;
       default:
-        return this.env.QUOTA_GUEST_DAILY;
+        return this.env.CREDITS_FREE_MONTHLY;
     }
   }
 
   isUnlimited(role: UserRole): boolean {
-    return this.dailyAllowance(role) < 0;
+    return this.monthlyAllowance(role) < 0;
   }
 
   /**
-   * Current balance, rolling the daily allowance over first if it is stale.
+   * Current balance, rolling the monthly allowance over first if it is stale.
    *
    * The rollover happens on a read and not only on a spend, so the number shown
-   * at one minute past midnight is the new day's allowance rather than
-   * yesterday's remainder waiting to be corrected by the next action.
+   * at one minute past midnight on the 1st is the new month's allowance rather
+   * than last month's remainder waiting to be corrected by the next action.
    */
   async balance(userId: string, role: UserRole): Promise<CreditBalance> {
-    const allowance = this.dailyAllowance(role);
+    const allowance = this.monthlyAllowance(role);
 
-    if (allowance < 0) {
-      return { free: 0, paid: 0, total: 0, dailyAllowance: -1, unlimited: true };
-    }
+    if (allowance < 0) return UNLIMITED;
 
     const { free, paid } = await this.credits.balance(userId, allowance);
-    return { free, paid, total: free + paid, dailyAllowance: allowance, unlimited: false };
+    return {
+      free,
+      paid,
+      total: free + paid,
+      monthlyAllowance: allowance,
+      resetsInDays: daysUntilNextMonth(),
+      unlimited: false,
+    };
   }
 
   /** Balance with no side effects, for list views that must not write. */
   async peek(userId: string, role: UserRole): Promise<CreditBalance> {
-    const allowance = this.dailyAllowance(role);
+    const allowance = this.monthlyAllowance(role);
 
-    if (allowance < 0) {
-      return { free: 0, paid: 0, total: 0, dailyAllowance: -1, unlimited: true };
-    }
+    if (allowance < 0) return UNLIMITED;
 
     const { free, paid } = await this.credits.peekBalance(userId);
-    return { free, paid, total: free + paid, dailyAllowance: allowance, unlimited: false };
+    return {
+      free,
+      paid,
+      total: free + paid,
+      monthlyAllowance: allowance,
+      resetsInDays: daysUntilNextMonth(),
+      unlimited: false,
+    };
   }
 
   /**
@@ -195,15 +249,10 @@ export class CreditsService {
     /** Stable per request. See the class comment on idempotency. */
     reference: string;
   }): Promise<SpendDecision> {
-    const allowance = this.dailyAllowance(input.role);
+    const allowance = this.monthlyAllowance(input.role);
 
     if (allowance < 0) {
-      return {
-        allowed: true,
-        charged: 0,
-        balance: { free: 0, paid: 0, total: 0, dailyAllowance: -1, unlimited: true },
-        replay: false,
-      };
+      return { allowed: true, charged: 0, balance: UNLIMITED, replay: false };
     }
 
     if (input.cost <= 0) {
@@ -216,14 +265,15 @@ export class CreditsService {
       cost: input.cost,
       action: input.action,
       reference: input.reference,
-      dailyAllowance: allowance,
+      monthlyAllowance: allowance,
     });
 
     const balance: CreditBalance = {
       free: result.free_left,
       paid: result.paid_left,
       total: result.free_left + result.paid_left,
-      dailyAllowance: allowance,
+      monthlyAllowance: allowance,
+      resetsInDays: daysUntilNextMonth(),
       unlimited: false,
     };
 
@@ -319,6 +369,45 @@ export class CreditsService {
     return { applied: result.applied, free: result.free_left, paid: result.paid_left };
   }
 
+  /**
+   * Take credits back, from the admin panel.
+   *
+   * The mirror of {@link adminGrant}, and the reason the ledger never edits a
+   * row: a mistaken grant is corrected by a compensating entry, so the history
+   * shows both what happened and that it was undone. An edit would make the
+   * mistake disappear along with the evidence that it was made.
+   *
+   * Floors at the available balance rather than failing. A deduction larger than
+   * what is left means the advocate already spent it, and refusing the whole
+   * operation would leave an administrator unable to correct anything at all.
+   */
+  async adminDeduct(input: {
+    userId: string;
+    amount: number;
+    reason: string;
+    deductedBy: string;
+    idempotencyKey: string;
+  }): Promise<{ applied: boolean; deducted: number; free: number; paid: number }> {
+    const result = await this.credits.deduct({
+      userId: input.userId,
+      amount: input.amount,
+      reason: `${input.reason} (by ${input.deductedBy})`,
+      reference: `deduct:${input.idempotencyKey}`,
+    });
+
+    this.logger.info(
+      {
+        userId: input.userId,
+        requested: input.amount,
+        deducted: result.deducted,
+        by: input.deductedBy,
+      },
+      'Admin credit deduction',
+    );
+
+    return result;
+  }
+
   async history(userId: string, limit = 50, offset = 0): Promise<CreditLedgerRow[]> {
     return this.credits.history(userId, limit, offset);
   }
@@ -326,15 +415,15 @@ export class CreditsService {
   /**
    * The balance line shown with every WhatsApp help menu.
    *
-   * Phrased in credits rather than "queries left" because the two are not the
-   * same number - a case status costs nothing and a precedent search costs two,
-   * so "3 queries left" would be a lie in both directions.
+   * Phrased in credits rather than "questions left" because they are not quite
+   * the same number: a case status costs nothing, so an advocate with 3 credits
+   * can ask an unbounded number of those and exactly 3 of anything else.
    */
   creditLine(balance: CreditBalance): string {
     if (balance.unlimited) return 'Credits: unlimited';
     if (balance.paid > 0) {
-      return `Credits: ${balance.total} left (${balance.free} free today + ${balance.paid} purchased)`;
+      return `Credits: ${balance.total} left (${balance.free} free this month + ${balance.paid} purchased)`;
     }
-    return `Credits: ${balance.free} of ${balance.dailyAllowance} left today`;
+    return `Credits: ${balance.free} of ${balance.monthlyAllowance} left this month`;
   }
 }

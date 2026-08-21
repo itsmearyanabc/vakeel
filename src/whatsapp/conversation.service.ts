@@ -371,7 +371,12 @@ export class ConversationService {
       if (!decision.allowed) {
         await this.api.sendText(
           job.from,
-          Replies.quotaExceeded(decision.balance.total, charge, decision.balance.dailyAllowance),
+          Replies.quotaExceeded(
+            decision.balance.total,
+            charge,
+            decision.balance.monthlyAllowance,
+            decision.balance.resetsInDays,
+          ),
         );
         return;
       }
@@ -1046,11 +1051,15 @@ export class ConversationService {
 
     // Nudge unverified users towards verification, but only when they are
     // actually close to the limit - doing it on every reply is nagging.
-    if (user.verification_status !== 'VERIFIED' && !balance.unlimited && balance.total <= 2) {
+    // Nudge towards verification only when they are actually close to the
+    // limit. On a monthly cycle the threshold is higher than it was daily -
+    // five left out of thirty is the point where it is worth mentioning, and
+    // doing it on every reply is nagging.
+    if (user.verification_status !== 'VERIFIED' && !balance.unlimited && balance.total <= 5) {
       await this.api.send(
         buttonMessage(
           job.from,
-          `You have *${balance.total}* ${balance.total === 1 ? 'credit' : 'credits'} left today. Verified advocates get unlimited searches.`,
+          `You have *${balance.total}* ${balance.total === 1 ? 'credit' : 'credits'} left this month. Verified advocates get unlimited searches.`,
           [{ id: ACTION.VERIFY, title: 'Verify licence' }],
         ),
       );

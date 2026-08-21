@@ -62,11 +62,13 @@ export interface UserRow {
   signup_source: AccountSource;
   last_web_login_at: Date | null;
 
-  // --- Wallet (migration 0010) -----------------------------------------------
-  /** Today's free allowance remaining. Reset daily, never accumulated. */
+  // --- Wallet (migrations 0010, 0012) ----------------------------------------
+  /** This month's free allowance remaining. Reset on the 1st, never accumulated. */
   free_credits: number;
-  /** The date `free_credits` belongs to; older than today means stale. */
+  /** Superseded by `free_period` in migration 0012. No longer read or written. */
   free_credits_date: Date | null;
+  /** First day (Asia/Kolkata) of the month `free_credits` belongs to. */
+  free_period: Date | null;
   /** Purchased credits. Never expire. Spent only after the free bucket. */
   paid_credits: number;
 }
@@ -193,13 +195,17 @@ export interface QuotaResult {
 // -----------------------------------------------------------------------------
 
 export type CreditEntryKind =
+  /** Superseded by MONTHLY_GRANT in migration 0012; kept for historical rows. */
   | 'DAILY_GRANT'
+  | 'MONTHLY_GRANT'
   | 'SIGNUP_BONUS'
   | 'ADMIN_GRANT'
+  | 'REFERRAL'
   | 'PURCHASE'
   | 'SPEND'
   | 'REFUND'
   | 'EXPIRY'
+  | 'DEDUCTION'
   | 'ADJUSTMENT';
 
 export type CreditBucket = 'FREE' | 'PAID';
@@ -246,6 +252,32 @@ export interface CreditGrantResult {
  * A credit purchase. Every money field is integer PAISE, matching Razorpay's
  * API in both directions - see migration 0010 for why this is not rupees.
  */
+/**
+ * A purchasable credit pack, defined in the admin panel.
+ *
+ * Every money field is integer PAISE, matching Razorpay - see migration 0010.
+ * `base_paise + tax_paise = price_paise` is enforced by the schema, so an
+ * invoice can never fail to add up.
+ */
+export interface CreditPlanRow {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  credits: number;
+  base_paise: number;
+  tax_rate_bps: number;
+  tax_paise: number;
+  price_paise: number;
+  currency: string;
+  badge: string | null;
+  sort_order: number;
+  is_active: boolean;
+  archived_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export interface CreditOrderRow {
   id: string;
   user_id: string;
@@ -266,6 +298,8 @@ export interface CreditOrderRow {
   credited_at: Date | null;
   refunded_at: Date | null;
   notes: Record<string, unknown>;
+  /** The plan bought, when there was one. Null once that plan is deleted. */
+  plan_id: string | null;
   created_at: Date;
   updated_at: Date;
 }

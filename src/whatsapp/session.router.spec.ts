@@ -148,9 +148,9 @@ describe('case status', () => {
 });
 
 describe('billing', () => {
-  it('charges 2 for a new section lookup', () => {
+  it('charges 1 for a new section lookup', () => {
     const out = route('IPC 420', ctx({ state: SESSION_STATE.SECTION_INFO }), KNOWN_USER, CREDITS);
-    expect(out.actions[0]).toMatchObject({ kind: 'lookupSection', charge: 2 });
+    expect(out.actions[0]).toMatchObject({ kind: 'lookupSection', charge: 1 });
     expect(out.contextPatch?.lastChargedQuery).toBe('IPC 420');
   });
 
@@ -171,7 +171,7 @@ describe('billing', () => {
       KNOWN_USER,
       CREDITS,
     );
-    expect(out.actions[0]).toMatchObject({ charge: 2 });
+    expect(out.actions[0]).toMatchObject({ charge: 1 });
   });
 
   it('never charges for paging with "more"', () => {
