@@ -5,9 +5,8 @@ import { getLogger, maskPhone } from '../common/logger';
 import { InjectEnv } from '../config/config.module';
 import { AppEnv } from '../config/env';
 import { MessageRepository } from '../database/repositories/message.repository';
-import { InboundMessageJob } from '../redis/queue.constants';
-import { QueueService } from '../redis/queue.service';
-import { RedisService } from '../redis/redis.service';
+import { InboundMessageJob } from '../jobs/queue.constants';
+import { JobQueueService } from '../jobs/job-queue.service';
 import { SignatureService } from '../security/signature.service';
 import { SettingsService } from '../settings/settings.service';
 import { WebhookMessage, WebhookStatus, WhatsAppWebhookPayload } from './whatsapp.types';
@@ -38,8 +37,7 @@ export class WebhookController {
 
   constructor(
     private readonly signature: SignatureService,
-    private readonly queue: QueueService,
-    private readonly redis: RedisService,
+    private readonly queue: JobQueueService,
     private readonly messages: MessageRepository,
     private readonly settings: SettingsService,
     @InjectEnv() private readonly env: AppEnv,
@@ -127,13 +125,14 @@ export class WebhookController {
       return;
     }
 
-    // First of three dedupe layers (Redis here, unique index in the message
-    // log, deterministic BullMQ job id). Meta redelivers aggressively, and each
-    // duplicate would otherwise cost an LLM call.
-    const fresh = await this.redis.claimOnce(
-      `wa:seen:${message.id}`,
-      this.env.WHATSAPP_DEDUPE_TTL_SECONDS,
-    );
+    // First of three dedupe layers: this table, the unique index on the message
+    // log, and the queue's own dedupe key. Meta redelivers aggressively and each
+    // duplicate would otherwise cost a model call.
+    //
+    // Moved from Redis to `processed_webhooks` in migration 0013 - a table that
+    // already existed for exactly this and was, until now, only the second line
+    // of defence.
+    const fresh = await this.messages.claimWebhookEvent(`wa:${message.id}`);
     if (!fresh) {
       this.logger.debug({ waMessageId: message.id }, 'Duplicate webhook delivery ignored');
       return;

@@ -30,6 +30,13 @@ import { UserAuthGuard, WebRequest } from './user-auth.guard';
 
 /** Short-lived cookie holding the OAuth `state`, for CSRF. See google-oauth.service.ts. */
 const OAUTH_STATE_COOKIE = 'vs_oauth_state';
+/**
+ * Carries the PKCE verifier and the post-sign-in destination, signed.
+ *
+ * Replaced a Redis record in migration 0013. Same data, held by the only party
+ * that will ever present it, and signed so neither half can be edited.
+ */
+const OAUTH_FLOW_COOKIE = 'vs_oauth_flow';
 const OAUTH_STATE_TTL_SECONDS = 600;
 
 interface SignUpBody {
@@ -153,20 +160,22 @@ export class AuthController {
       return;
     }
 
-    const { url, state } = await this.google.beginFlow(safeReturnTo(returnTo));
+    const { url, state, flow } = this.google.beginFlow(safeReturnTo(returnTo));
 
-    reply.header(
-      'set-cookie',
-      serializeCookie(OAUTH_STATE_COOKIE, state, {
-        secure: this.env.cookieSecure,
-        maxAgeSeconds: OAUTH_STATE_TTL_SECONDS,
-        // Lax, not Strict: Google's redirect back to us is a cross-site
-        // top-level navigation, and Strict would withhold the cookie on
-        // exactly the request that needs it - making every sign-in fail with
-        // a state mismatch.
-        sameSite: 'Lax',
-      }),
-    );
+    // Lax, not Strict, on both: Google's redirect back to us is a cross-site
+    // top-level navigation, and Strict would withhold the cookies on exactly
+    // the request that needs them - making every sign-in fail with a state
+    // mismatch.
+    const cookieOptions = {
+      secure: this.env.cookieSecure,
+      maxAgeSeconds: OAUTH_STATE_TTL_SECONDS,
+      sameSite: 'Lax' as const,
+    };
+
+    reply.header('set-cookie', [
+      serializeCookie(OAUTH_STATE_COOKIE, state, cookieOptions),
+      serializeCookie(OAUTH_FLOW_COOKIE, flow, cookieOptions),
+    ]);
 
     reply.redirect(url, HttpStatus.FOUND);
   }
@@ -187,7 +196,12 @@ export class AuthController {
     @Req() req: FastifyRequest,
     @Res() reply: FastifyReply,
   ) {
-    const cookies: string[] = [clearCookie(OAUTH_STATE_COOKIE, this.env.cookieSecure)];
+    // Both flow cookies are cleared on every outcome, success or failure. A
+    // stale one left behind is a confusing second attempt later.
+    const cookies: string[] = [
+      clearCookie(OAUTH_STATE_COOKIE, this.env.cookieSecure),
+      clearCookie(OAUTH_FLOW_COOKIE, this.env.cookieSecure),
+    ];
 
     const fail = (reason: string): void => {
       reply.header('set-cookie', cookies);
@@ -204,6 +218,7 @@ export class AuthController {
         code,
         queryState: state,
         cookieState: readCookie(req.headers.cookie, OAUTH_STATE_COOKIE),
+        flowCookie: readCookie(req.headers.cookie, OAUTH_FLOW_COOKIE),
       });
 
       const session = await this.auth.signInWithGoogle({

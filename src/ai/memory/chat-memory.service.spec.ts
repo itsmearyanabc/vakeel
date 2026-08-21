@@ -1,32 +1,39 @@
 import { AppEnv } from '../../config/env';
 import { ChatMemoryService, MemoryTurn } from './chat-memory.service';
 
-/** In-memory stand-in for the Redis JSON helpers this service uses. */
-class FakeRedis {
+/**
+ * In-memory stand-in for MemoryRepository.
+ *
+ * Was a fake Redis until migration 0013 moved this store to Postgres. The
+ * substance of these tests is unchanged, because what they actually assert is
+ * per-user isolation and trimming - properties of the service, not of whatever
+ * is holding the bytes.
+ */
+class FakeMemoryStore {
   store = new Map<string, unknown>();
   ttls = new Map<string, number>();
   failNext = false;
 
-  async getJson<T>(key: string): Promise<T | null> {
+  async load<T>(userId: string): Promise<T> {
     if (this.failNext) {
       this.failNext = false;
-      throw new Error('redis down');
+      throw new Error('database down');
     }
-    return (this.store.get(key) as T) ?? null;
+    return (this.store.get(userId) as T) ?? ([] as unknown as T);
   }
 
-  async setJson(key: string, value: unknown, ttl: number): Promise<void> {
+  async save(userId: string, turns: unknown, ttl: number): Promise<void> {
     if (this.failNext) {
       this.failNext = false;
-      throw new Error('redis down');
+      throw new Error('database down');
     }
-    this.store.set(key, value);
-    this.ttls.set(key, ttl);
+    this.store.set(userId, turns);
+    this.ttls.set(userId, ttl);
   }
 
-  async del(key: string): Promise<void> {
-    this.store.delete(key);
-    this.ttls.delete(key);
+  async clear(userId: string): Promise<void> {
+    this.store.delete(userId);
+    this.ttls.delete(userId);
   }
 }
 
@@ -37,7 +44,7 @@ const passthroughSettings = {
 };
 
 function makeService(over: Partial<AppEnv> = {}) {
-  const redis = new FakeRedis();
+  const redis = new FakeMemoryStore();
   const env = {
     MEMORY_ENABLED: true,
     MEMORY_MAX_TURNS: 3,
@@ -73,10 +80,12 @@ describe('ChatMemoryService', () => {
       expect(JSON.stringify(b)).not.toContain('420');
     });
 
-    it('uses a key namespaced by user id', async () => {
+    it('stores each advocate under their own user id', async () => {
+      // Isolation is structural - a row per user - rather than a filter applied
+      // at read time that somebody could forget to apply.
       const { service, redis } = makeService();
       await service.append('user-a', 'q', 'a');
-      expect([...redis.store.keys()]).toEqual(['chat:mem:user-a']);
+      expect([...redis.store.keys()]).toEqual(['user-a']);
     });
 
     it('clearing one advocate leaves others untouched', async () => {
@@ -174,7 +183,7 @@ describe('ChatMemoryService', () => {
     it('applies the configured TTL so idle conversations expire', async () => {
       const { service, redis } = makeService({ MEMORY_TTL_SECONDS: 7200 } as Partial<AppEnv>);
       await service.append('u', 'q', 'a');
-      expect(redis.ttls.get('chat:mem:u')).toBe(7200);
+      expect(redis.ttls.get('u')).toBe(7200);
     });
   });
 
@@ -190,7 +199,7 @@ describe('ChatMemoryService', () => {
   it('stores turns oldest-first with timestamps', async () => {
     const { service, redis } = makeService();
     await service.append('u', 'q', 'a');
-    const stored = redis.store.get('chat:mem:u') as MemoryTurn[];
+    const stored = redis.store.get('u') as MemoryTurn[];
     expect(stored[0].role).toBe('user');
     expect(stored[1].role).toBe('assistant');
     expect(typeof stored[0].at).toBe('number');

@@ -1,12 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { getLogger } from '../common/logger';
+import { RateLimiter } from '../common/rate-limiter';
 import { InjectEnv } from '../config/config.module';
 import { AppEnv } from '../config/env';
 import { CreditsService } from '../credits/credits.service';
 import { AuthRepository } from '../database/repositories/auth.repository';
 import { UserRepository } from '../database/repositories/user.repository';
 import { UserRow, WebSessionRow } from '../database/types';
-import { RedisService } from '../redis/redis.service';
 import { EmailService } from './email.service';
 import { GoogleProfile } from './google-oauth.service';
 import { hashPassword, needsRehash, passwordProblem, verifyPassword } from './password';
@@ -53,6 +53,16 @@ const MAX_IP_ATTEMPTS = 20;
 const MAX_ACCOUNT_ATTEMPTS = 10;
 const LOCKOUT_SECONDS = 900;
 
+/**
+ * In-process since migration 0013, having been in Redis.
+ *
+ * One counter per process rather than one shared. Only the web process serves
+ * sign-ins, so in practice there is one, and Cloudflare rate-limits
+ * `/api/auth/*` at the edge as the outer bound. See rate-limiter.ts for the
+ * condition under which this needs to become shared again.
+ */
+const failures = new RateLimiter(LOCKOUT_SECONDS);
+
 const EMAIL_VERIFY_TTL_SECONDS = 86_400;
 const PASSWORD_RESET_TTL_SECONDS = 3600;
 
@@ -95,7 +105,6 @@ export class AuthService {
     private readonly users: UserRepository,
     private readonly credits: CreditsService,
     private readonly email: EmailService,
-    private readonly redis: RedisService,
     @InjectEnv() private readonly env: AppEnv,
   ) {}
 
@@ -166,8 +175,8 @@ export class AuthService {
     const accountKey = `auth:fail:account:${email}`;
 
     if (
-      (await this.failureCount(ipKey)) >= MAX_IP_ATTEMPTS ||
-      (await this.failureCount(accountKey)) >= MAX_ACCOUNT_ATTEMPTS
+      failures.count(ipKey) >= MAX_IP_ATTEMPTS ||
+      failures.count(accountKey) >= MAX_ACCOUNT_ATTEMPTS
     ) {
       throw new AuthError(
         'TOO_MANY_ATTEMPTS',
@@ -185,8 +194,8 @@ export class AuthService {
     const ok = await verifyPassword(input.password, user?.password_hash ?? DUMMY_HASH);
 
     if (!user || !ok) {
-      await this.recordFailure(ipKey);
-      await this.recordFailure(accountKey);
+      failures.record(ipKey);
+      failures.record(accountKey);
       throw new AuthError('INVALID_CREDENTIALS', 'Incorrect email or password.');
     }
 
@@ -194,7 +203,7 @@ export class AuthService {
       throw new AuthError('ACCOUNT_BLOCKED', 'This account has been suspended. Contact support.');
     }
 
-    await this.clearFailures(ipKey, accountKey);
+    failures.clear(ipKey, accountKey);
 
     // Sign-in is the only moment the plaintext exists, so it is the only moment
     // an outdated work factor can be upgraded. See needsRehash() in password.ts.
@@ -465,47 +474,6 @@ export class AuthService {
 
     await this.auth.setPasswordHash(user.id, await hashPassword(newPassword));
     this.logger.info({ userId: user.id }, 'Password changed');
-  }
-
-  // ---------------------------------------------------------------------------
-  // Brute-force counters
-  //
-  // These fail open when Redis is unreachable, matching the admin login. The
-  // reasoning is the same: the counter is a rate limit, not the authentication,
-  // and letting it throw would turn a cache outage into a total sign-in outage
-  // for everyone including the operator trying to diagnose it. The password is
-  // still required and still compared in constant time throughout.
-  // ---------------------------------------------------------------------------
-
-  private async failureCount(key: string): Promise<number> {
-    try {
-      return Number((await this.redis.client.get(key)) ?? 0);
-    } catch (err) {
-      this.logger.error({ err, key }, 'Could not read the sign-in attempt counter; allowing the attempt');
-      return 0;
-    }
-  }
-
-  private async recordFailure(key: string): Promise<void> {
-    try {
-      const count = await this.redis.client.incr(key);
-      // Only the first failure sets the TTL, so the window runs from the first
-      // bad attempt rather than sliding forward with each new one - otherwise a
-      // slow trickle of guesses extends the lockout indefinitely.
-      if (count === 1) await this.redis.client.expire(key, LOCKOUT_SECONDS);
-    } catch (err) {
-      this.logger.error({ err, key }, 'Could not record a failed sign-in');
-    }
-  }
-
-  private async clearFailures(...keys: string[]): Promise<void> {
-    for (const key of keys) {
-      try {
-        await this.redis.del(key);
-      } catch {
-        // A counter that fails to clear expires on its own.
-      }
-    }
   }
 
   private publicBase(): string {

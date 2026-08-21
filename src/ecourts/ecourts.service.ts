@@ -1,10 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { CircuitBreaker, CircuitOpenError } from '../common/circuit-breaker';
 import { getLogger } from '../common/logger';
+import { LruCache } from '../common/lru-cache';
 import { InjectEnv } from '../config/config.module';
 import { AppEnv } from '../config/env';
 import { isValidCnr } from '../ai/legal-patterns';
-import { RedisService } from '../redis/redis.service';
 import { SettingsService } from '../settings/settings.service';
 
 export interface CaseStatus {
@@ -64,9 +64,10 @@ export class EcourtsService {
   private readonly logger = getLogger().child({ module: 'ecourts' });
   private readonly breaker: CircuitBreaker;
 
+  private readonly cache = new LruCache<CaseStatus>(1_000, CACHE_TTL_SECONDS);
+
   constructor(
     @InjectEnv() private readonly env: AppEnv,
-    private readonly redis: RedisService,
     private readonly settings: SettingsService,
   ) {
     this.breaker = new CircuitBreaker('ecourts', env.ECOURTS_BREAKER_THRESHOLD, env.ECOURTS_BREAKER_RESET_MS);
@@ -84,8 +85,12 @@ export class EcourtsService {
       throw new CnrNotFoundError(cnr);
     }
 
+    // Memory only, unlike Kanoon. A CNR lookup is free to us either way, so
+    // there is nothing to protect against a deploy - and cause lists move
+    // daily, so a cache that survived restarts would mostly serve stale
+    // hearing dates.
     const cacheKey = `ecourts:cnr:${cnr}`;
-    const cached = await this.redis.getJson<CaseStatus>(cacheKey);
+    const cached = this.cache.get(cacheKey);
     if (cached) {
       this.logger.debug({ cnr }, 'CNR served from cache');
       return cached;
@@ -100,7 +105,7 @@ export class EcourtsService {
             (err) => !(err instanceof CnrNotFoundError),
           );
 
-    await this.redis.setJson(cacheKey, result, CACHE_TTL_SECONDS);
+    this.cache.set(cacheKey, result, CACHE_TTL_SECONDS);
     return result;
   }
 

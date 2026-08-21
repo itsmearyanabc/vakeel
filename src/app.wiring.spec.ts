@@ -1,7 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { AppModule, WorkerModule } from './app.module';
 import { resetEnvCache } from './config/env';
-import { RedisService } from './redis/redis.service';
 
 /**
  * Dependency-injection wiring, checked at test time instead of at boot.
@@ -26,26 +25,14 @@ import { RedisService } from './redis/redis.service';
  * ## Why compile() and not init()
  *
  * `.compile()` resolves and instantiates providers but does not run
- * `onModuleInit`, so nothing opens a database or queue connection. The only
- * provider that connects from its constructor is RedisService, which is stubbed
- * below. Everything else is exercised for real, which is the point - a mock of
+ * `onModuleInit`, so nothing opens a database connection or starts the worker
+ * loop. Every provider is exercised for real, which is the point — a mock of
  * the module under test would defeat the purpose.
+ *
+ * Nothing is stubbed any more. RedisService used to be, because it opened a
+ * socket from its constructor; since migration 0013 removed Redis there is no
+ * provider left that does I/O before `onModuleInit`.
  */
-
-/** Minimal stand-in: RedisService opens a socket from its constructor. */
-const redisStub = {
-  client: { on() {}, publish: async () => 0, get: async () => null, incr: async () => 1, expire: async () => 1 },
-  createQueueConnection: () => ({ on() {}, subscribe: async () => undefined, quit: async () => undefined }),
-  ping: async () => true,
-  getJson: async () => null,
-  setJson: async () => undefined,
-  del: async () => undefined,
-  claimOnce: async () => true,
-  acquireLock: async () => null,
-  releaseLock: async () => undefined,
-  withLock: async () => null,
-  claimQuota: async () => ({ allowed: true, used: 1 }),
-};
 
 /**
  * The minimum required to satisfy env validation. Deliberately not read from a
@@ -55,7 +42,6 @@ function setTestEnv(): void {
   Object.assign(process.env, {
     NODE_ENV: 'test',
     DATABASE_URL: 'postgresql://user:pass@localhost:5432/test',
-    REDIS_URL: 'redis://localhost:6379',
     WHATSAPP_VERIFY_TOKEN: 'test-verify-token',
     JWT_SECRET: 'test-jwt-secret-at-least-16-chars',
     ENCRYPTION_KEY: 'a'.repeat(64),
@@ -70,10 +56,7 @@ describe('application wiring', () => {
   it('resolves every dependency in the web process', async () => {
     // Catches a controller or service injecting something its module does not
     // import - the failure mode that only shows up on deploy.
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
-      .overrideProvider(RedisService)
-      .useValue(redisStub)
-      .compile();
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
 
     expect(moduleRef).toBeDefined();
     await moduleRef.close();
@@ -83,10 +66,7 @@ describe('application wiring', () => {
     // The worker builds a different module graph, so it can break independently
     // of the web process - and its failures are quieter, because nothing is
     // serving HTTP to notice.
-    const moduleRef = await Test.createTestingModule({ imports: [WorkerModule] })
-      .overrideProvider(RedisService)
-      .useValue(redisStub)
-      .compile();
+    const moduleRef = await Test.createTestingModule({ imports: [WorkerModule] }).compile();
 
     expect(moduleRef).toBeDefined();
     await moduleRef.close();

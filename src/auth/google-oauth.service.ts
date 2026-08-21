@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { getLogger } from '../common/logger';
 import { InjectEnv } from '../config/config.module';
 import { AppEnv } from '../config/env';
-import { RedisService } from '../redis/redis.service';
+import { signPayload, verifyPayload } from './signed-payload';
 
 const AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -13,6 +13,14 @@ const VALID_ISSUERS = new Set(['https://accounts.google.com', 'accounts.google.c
 
 /** How long a half-finished sign-in stays resumable. */
 const FLOW_TTL_SECONDS = 600;
+
+/** What the flow cookie carries between the redirect and the callback. */
+interface FlowState {
+  /** PKCE verifier. Not a secret from this browser - see signed-payload.ts. */
+  v: string;
+  /** Where to land afterwards. Signed, so it cannot be turned into an open redirect. */
+  r: string;
+}
 
 export interface GoogleProfile {
   /** The `sub` claim. Stable for the life of the Google account. */
@@ -82,7 +90,6 @@ export class GoogleOAuthService {
 
   constructor(
     @InjectEnv() private readonly env: AppEnv,
-    private readonly redis: RedisService,
   ) {}
 
   get isConfigured(): boolean {
@@ -92,11 +99,15 @@ export class GoogleOAuthService {
   /**
    * Begin a sign-in.
    *
-   * Returns the URL to redirect to and the `state` value, which the caller must
-   * also set as a short-lived httpOnly cookie. Both halves are required at the
-   * callback; neither is sufficient alone.
+   * Returns the redirect URL plus two values the caller must set as short-lived
+   * httpOnly cookies: `state`, which proves the callback belongs to this
+   * browser, and `flow`, which carries the PKCE verifier and the destination.
+   *
+   * Both are required at the callback and neither is sufficient alone. The flow
+   * cookie replaced a Redis record in migration 0013 - it is the same data, held
+   * by the only party that will ever present it, signed so it cannot be edited.
    */
-  async beginFlow(returnTo: string): Promise<{ url: string; state: string }> {
+  beginFlow(returnTo: string): { url: string; state: string; flow: string } {
     if (!this.isConfigured) {
       throw new OAuthError('NOT_CONFIGURED', 'Google sign-in is not configured on this deployment.');
     }
@@ -105,7 +116,11 @@ export class GoogleOAuthService {
     const codeVerifier = randomBytes(32).toString('base64url');
     const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
 
-    await this.redis.setJson(this.flowKey(state), { codeVerifier, returnTo }, FLOW_TTL_SECONDS);
+    const flow = signPayload<FlowState>(
+      { v: codeVerifier, r: returnTo },
+      this.env.JWT_SECRET,
+      FLOW_TTL_SECONDS,
+    );
 
     const params = new URLSearchParams({
       client_id: this.env.GOOGLE_OAUTH_CLIENT_ID,
@@ -125,7 +140,7 @@ export class GoogleOAuthService {
       prompt: 'select_account',
     });
 
-    return { url: `${AUTHORIZE_URL}?${params.toString()}`, state };
+    return { url: `${AUTHORIZE_URL}?${params.toString()}`, state, flow };
   }
 
   /**
@@ -140,6 +155,7 @@ export class GoogleOAuthService {
     code: string;
     queryState: string;
     cookieState: string | undefined;
+    flowCookie: string | undefined;
   }): Promise<{ profile: GoogleProfile; returnTo: string }> {
     if (!this.isConfigured) {
       throw new OAuthError('NOT_CONFIGURED', 'Google sign-in is not configured on this deployment.');
@@ -150,21 +166,20 @@ export class GoogleOAuthService {
       throw new OAuthError('STATE_MISMATCH', 'This sign-in link has expired. Please try again.');
     }
 
-    const flow = await this.redis.getJson<{ codeVerifier: string; returnTo: string }>(
-      this.flowKey(input.queryState),
-    );
+    const flow = verifyPayload<FlowState>(input.flowCookie, this.env.JWT_SECRET);
     if (!flow) {
+      // Expired, tampered with, or simply absent - all indistinguishable to the
+      // caller on purpose, and all resolved the same way: start again.
       throw new OAuthError('STATE_EXPIRED', 'This sign-in took too long. Please try again.');
     }
 
-    // Single use. Deleted before the exchange, so a replayed callback cannot
-    // ride the same flow record even if the exchange below is slow.
-    await this.redis.del(this.flowKey(input.queryState));
-
-    const tokens = await this.exchangeCode(input.code, flow.codeVerifier);
+    const tokens = await this.exchangeCode(input.code, flow.v);
     const profile = this.readIdToken(tokens.id_token);
 
-    return { profile, returnTo: flow.returnTo };
+    // Re-checked here as well as when it was issued. The cookie is signed, so
+    // this cannot have been edited - but the check costs nothing and means a
+    // bug in the issuing path cannot become an open redirect.
+    return { profile, returnTo: safeReturnTo(flow.r) };
   }
 
   private async exchangeCode(
@@ -277,7 +292,17 @@ export class GoogleOAuthService {
     };
   }
 
-  private flowKey(state: string): string {
-    return `oauth:google:${state}`;
-  }
+}
+
+/**
+ * Constrain the post-sign-in destination to this application.
+ *
+ * Only a same-origin absolute path is accepted. `//evil.example` is rejected
+ * because a protocol-relative URL is a cross-origin destination wearing a
+ * path's clothes.
+ */
+function safeReturnTo(value: string | undefined): string {
+  if (!value) return '/app';
+  if (!value.startsWith('/') || value.startsWith('//')) return '/app';
+  return value;
 }

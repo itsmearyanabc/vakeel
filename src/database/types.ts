@@ -381,6 +381,47 @@ export interface ChatMessageRow {
   created_at: Date;
 }
 
+// -----------------------------------------------------------------------------
+// Job queue (migration 0013)
+// -----------------------------------------------------------------------------
+
+export type JobState = 'QUEUED' | 'ACTIVE' | 'DONE' | 'FAILED' | 'DEAD';
+
+export interface JobRow {
+  id: string;
+  queue: string;
+  /** Idempotency key. Unique; a redelivered webhook collides here. */
+  dedupe_key: string | null;
+  payload: Record<string, unknown>;
+  /** Jobs sharing this never run concurrently. See migration 0013. */
+  lock_key: string | null;
+  state: JobState;
+  attempts: number;
+  max_attempts: number;
+  run_at: Date;
+  lease_until: Date | null;
+  claimed_at: Date | null;
+  finished_at: Date | null;
+  last_error: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface JobStats {
+  waiting: number;
+  active: number;
+  dead: number;
+  done_24h: number;
+  /**
+   * How long the oldest waiting job has been waiting.
+   *
+   * The operationally important number: a rising figure with a flat completion
+   * count means the worker is dead or stuck, which presents to advocates as
+   * "the bot never replied" and leaves nothing in the web logs.
+   */
+  oldest_wait_seconds: number;
+}
+
 export interface SearchHistoryInput {
   userId: string;
   queryText: string;

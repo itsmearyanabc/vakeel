@@ -1,6 +1,5 @@
 import { Global, Module } from '@nestjs/common';
 import { DatabaseModule } from '../database/database.module';
-import { RedisModule } from '../redis/redis.module';
 import { SettingsService } from './settings.service';
 import { WhatsAppConnectionTester } from './whatsapp-tester.service';
 
@@ -14,7 +13,7 @@ import { WhatsAppConnectionTester } from './whatsapp-tester.service';
  */
 @Global()
 @Module({
-  imports: [DatabaseModule, RedisModule],
+  imports: [DatabaseModule],
   providers: [SettingsService, WhatsAppConnectionTester],
   exports: [SettingsService, WhatsAppConnectionTester],
 })

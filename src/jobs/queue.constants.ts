@@ -9,7 +9,7 @@ export const QUEUE_WHATSAPP_INBOUND = 'whatsapp-inbound';
 
 /** One inbound WhatsApp message, handed off for asynchronous processing. */
 export interface InboundMessageJob {
-  /** Meta's message id (wamid...). Doubles as the BullMQ job id for dedupe. */
+  /** Meta's message id (wamid...). Doubles as the queue's dedupe key. */
   waMessageId: string;
   /** Sender, digits only, as Meta delivers it. */
   from: string;
@@ -29,7 +29,13 @@ export interface InboundMessageJob {
   profileName?: string;
 }
 
-/** Deterministic BullMQ job id, so a redelivered webhook cannot double-enqueue. */
+/**
+ * Deterministic dedupe key, so a redelivered webhook cannot double-enqueue.
+ *
+ * Meta retries aggressively, and this is the constraint that makes those
+ * retries harmless: the unique index on `job_queue.dedupe_key` rejects the
+ * second insert rather than the application having to notice.
+ */
 export function inboundJobId(waMessageId: string): string {
   return `wa-${waMessageId}`;
 }

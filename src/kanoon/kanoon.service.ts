@@ -2,10 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { CircuitBreaker } from '../common/circuit-breaker';
 import { getLogger } from '../common/logger';
+import { LruCache } from '../common/lru-cache';
+import { CacheRepository } from '../database/repositories/cache.repository';
 import { InjectEnv } from '../config/config.module';
 import { AppEnv } from '../config/env';
 import { PrecedentRow } from '../database/types';
-import { RedisService } from '../redis/redis.service';
 import { SettingsService } from '../settings/settings.service';
 import { applyCourtFilter, toPrecedentRows } from './kanoon.mapper';
 import { KanoonSearchDoc, KanoonSearchResponse } from './kanoon.types';
@@ -51,10 +52,16 @@ export class KanoonService {
   private readonly logger = getLogger().child({ module: 'kanoon' });
   private readonly breaker: CircuitBreaker;
 
+  /**
+   * In-process tier. Bounded so a long-running container cannot grow until it
+   * is killed; 500 searches is far more than any one advocate produces in a day.
+   */
+  private readonly hot = new LruCache<PrecedentRow[]>(500, 86_400);
+
   constructor(
+    private readonly cache: CacheRepository,
     @InjectEnv() private readonly env: AppEnv,
     private readonly settings: SettingsService,
-    private readonly redis: RedisService,
   ) {
     this.breaker = new CircuitBreaker(
       'kanoon',
@@ -99,15 +106,21 @@ export class KanoonService {
 
     const cacheKey = this.cacheKey(normalised, maxResults);
 
-    const cached = await this.redis.getJson<PrecedentRow[]>(cacheKey);
-    if (cached) {
-      this.logger.debug({ query: normalised, results: cached.length }, 'Kanoon result served from cache');
-      // JSON has no Date type, so judgment_date came back as a string and the
-      // formatter's date handling would silently produce "Invalid Date".
-      return cached.map((row) => ({
-        ...row,
-        judgment_date: row.judgment_date ? new Date(row.judgment_date) : null,
-      }));
+    // Two tiers, because the two failure modes are different. Memory is free
+    // and fast and empty after every deploy; the table survives a restart,
+    // which is what stops a release from re-buying every search an advocate
+    // already paid for today. Kanoon bills per query, so that is real money.
+    const hot = this.hot.get(cacheKey);
+    if (hot) {
+      this.logger.debug({ query: normalised, results: hot.length }, 'Kanoon result served from memory');
+      return reviveDates(hot);
+    }
+
+    const stored = await this.cache.get<PrecedentRow[]>(cacheKey);
+    if (stored) {
+      this.logger.debug({ query: normalised, results: stored.length }, 'Kanoon result served from the cache table');
+      this.hot.set(cacheKey, stored, this.cacheTtl);
+      return reviveDates(stored);
     }
 
     const rows = await this.breaker.execute(
@@ -116,7 +129,8 @@ export class KanoonService {
       (err) => !(err instanceof KanoonNotConfiguredError),
     );
 
-    await this.redis.setJson(cacheKey, rows, this.cacheTtl);
+    this.hot.set(cacheKey, rows, this.cacheTtl);
+    await this.cache.set(cacheKey, rows, this.cacheTtl);
     return rows;
   }
 
@@ -202,4 +216,19 @@ export class KanoonService {
     const digest = createHash('sha256').update(`${query}|${maxResults}`).digest('hex').slice(0, 32);
     return `kanoon:search:${digest}`;
   }
+}
+
+/**
+ * Restore Date objects lost to JSON.
+ *
+ * JSON has no date type, so `judgment_date` comes back from either cache tier
+ * as a string. The precedent formatter calls date methods on it, and a string
+ * silently produces "Invalid Date" in an advocate's results rather than
+ * throwing anywhere anyone would notice.
+ */
+function reviveDates(rows: PrecedentRow[]): PrecedentRow[] {
+  return rows.map((row) => ({
+    ...row,
+    judgment_date: row.judgment_date ? new Date(row.judgment_date) : null,
+  }));
 }

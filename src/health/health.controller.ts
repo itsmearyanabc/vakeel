@@ -1,7 +1,6 @@
 import { Controller, Get, HttpCode, HttpStatus, ServiceUnavailableException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
-import { QueueService } from '../redis/queue.service';
-import { RedisService } from '../redis/redis.service';
+import { JobQueueService } from '../jobs/job-queue.service';
 
 /**
  * Liveness and readiness.
@@ -17,8 +16,7 @@ export class HealthController {
 
   constructor(
     private readonly db: DatabaseService,
-    private readonly redis: RedisService,
-    private readonly queue: QueueService,
+    private readonly queue: JobQueueService,
   ) {}
 
 
@@ -32,17 +30,19 @@ export class HealthController {
   /** Dependencies are reachable, so this replica can serve webhooks. */
   @Get('ready')
   async ready() {
-    const [database, redis] = await Promise.all([this.db.ping(), this.redis.ping()]);
+    // Postgres is the only dependency now. Redis went in migration 0013, and
+    // reporting on something that no longer exists is worse than not reporting.
+    const database = await this.db.ping();
 
-    if (!database || !redis) {
+    if (!database) {
       throw new ServiceUnavailableException({
         code: 'DEPENDENCY_UNAVAILABLE',
-        message: 'One or more dependencies are unreachable.',
-        details: { database, redis },
+        message: 'The database is unreachable.',
+        details: { database },
       });
     }
 
-    return { status: 'ok', database, redis };
+    return { status: 'ok', database };
   }
 
   /** Queue depth, for eyeballing whether the worker is keeping up. */

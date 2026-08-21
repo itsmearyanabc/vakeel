@@ -16,7 +16,7 @@ import { CnrNotFoundError, EcourtsService } from '../ecourts/ecourts.service';
 import { CircuitOpenError } from '../common/circuit-breaker';
 import { PhoneLinkService } from '../auth/phone-link.service';
 import { CreditsService } from '../credits/credits.service';
-import { InboundMessageJob } from '../redis/queue.constants';
+import { InboundMessageJob } from '../jobs/queue.constants';
 import { UsersService } from '../users/users.service';
 import { buttonMessage, listMessage } from './message-builder';
 import * as Replies from './replies';

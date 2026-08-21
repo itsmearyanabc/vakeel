@@ -43,39 +43,39 @@ const envSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
   SUPABASE_STORAGE_BUCKET: z.string().default('vakeel-documents'),
 
-  // --- Redis ----------------------------------------------------------------
-  REDIS_URL: z.string().min(1, 'REDIS_URL is required (Railway Redis plugin)'),
-  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(8),
+  // --- Job queue ------------------------------------------------------------
+  // Postgres-backed since migration 0013. There is no Redis in this service.
+  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(4),
   WORKER_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
 
   /**
-   * How long the worker blocks on an empty queue before re-issuing the wait.
+   * How long a slot waits before asking for work again.
    *
-   * BullMQ's default is 5 seconds, which on a per-command Redis plan is the
-   * single largest line on the bill: an *idle* worker re-issues `bzpopmin`
-   * 17,280 times a day and never touches a job. On Upstash's free tier
-   * (500k commands/month) that alone is ~605k/month with zero users.
-   *
-   * Raising it costs nothing in pickup latency. Adding a job writes the queue's
-   * marker key, and `bzpopmin` is blocked *on that key* - so the worker wakes the
-   * instant a message arrives, not when the timeout lapses. Delayed and retried
-   * jobs take a different branch in BullMQ's `getBlockTimeout`, capped at 10s
-   * regardless of this value. This number is therefore only ever the idle
-   * heartbeat.
+   * Added to the latency of every reply, and invisible against a model call
+   * that takes seconds. LISTEN/NOTIFY would remove it entirely and cannot be
+   * used over Supabase's transaction pooler, which cannot hold a listening
+   * session - see migration 0013.
    */
-  WORKER_DRAIN_DELAY_SECONDS: z.coerce.number().int().min(1).max(300).default(60),
+  JOB_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
 
   /**
-   * How often the worker scans for jobs whose lock expired mid-flight.
+   * How long a claimed job is reserved for.
    *
-   * This one *is* a real trade. A job is stalled when the process holding it
-   * died without releasing the lock (SIGKILL, OOM, a hibernating container), and
-   * it is not retried until this scan notices. BullMQ defaults to 30s; that is
-   * 2,880 more commands a day to shorten a crash-recovery window that should
-   * almost never open. Two minutes keeps recovery well inside "the advocate is
-   * still waiting" while cutting the polling cost fourfold.
+   * Must exceed the longest a single message can legitimately take - retrieval
+   * plus a synthesis call plus the send - or a slow job is reclaimed while it
+   * is still running and answered twice. Two minutes against a 45s model
+   * timeout leaves generous headroom.
    */
-  WORKER_STALLED_INTERVAL_MS: z.coerce.number().int().min(5_000).default(120_000),
+  JOB_LEASE_SECONDS: z.coerce.number().int().min(30).max(3_600).default(120),
+
+  /**
+   * How often to look for jobs whose worker died mid-flight.
+   *
+   * This is crash-recovery latency. Until the sweep runs, a job stranded by a
+   * SIGKILL is not retried - and because its lock key stays busy, every later
+   * message from that advocate waits behind it.
+   */
+  JOB_STALLED_SWEEP_MS: z.coerce.number().int().min(5_000).default(60_000),
 
   // --- WhatsApp Cloud API ---------------------------------------------------
   WHATSAPP_VERIFY_TOKEN: z.string().min(1, 'WHATSAPP_VERIFY_TOKEN is required'),

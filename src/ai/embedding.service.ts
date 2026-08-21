@@ -1,9 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { getLogger } from '../common/logger';
+import { LruCache } from '../common/lru-cache';
+import { CacheRepository } from '../database/repositories/cache.repository';
 import { InjectEnv } from '../config/config.module';
 import { AppEnv } from '../config/env';
-import { RedisService } from '../redis/redis.service';
 import { ProviderRegistry } from './providers/provider.registry';
 
 /** Embedding API calls are batched at this size during ingestion. */
@@ -16,9 +17,11 @@ const QUERY_CACHE_TTL_SECONDS = 86400;
 export class EmbeddingService {
   private readonly logger = getLogger().child({ module: 'embeddings' });
 
+  private readonly hot = new LruCache<number[]>(2_000, QUERY_CACHE_TTL_SECONDS);
+
   constructor(
     private readonly registry: ProviderRegistry,
-    private readonly redis: RedisService,
+    private readonly cache: CacheRepository,
     @InjectEnv() private readonly env: AppEnv,
   ) {}
 
@@ -46,8 +49,16 @@ export class EmbeddingService {
     // wrong width would be rejected by pgvector at query time.
     const key = `emb:${provider.name}:${provider.dimensions}:${createHash('sha256').update(normalised).digest('hex').slice(0, 32)}`;
 
-    const cached = await this.redis.getJson<number[]>(key);
-    if (cached && cached.length === provider.dimensions) return cached;
+    const hot = this.hot.get(key);
+    if (hot && hot.length === provider.dimensions) return hot;
+
+    // Billed per token, and the embedding of a fixed string never changes, so
+    // this one is worth surviving a deploy.
+    const stored = await this.cache.get<number[]>(key);
+    if (stored && stored.length === provider.dimensions) {
+      this.hot.set(key, stored, QUERY_CACHE_TTL_SECONDS);
+      return stored;
+    }
 
     try {
       const [vector] = await provider.embed([normalised]);
@@ -61,7 +72,8 @@ export class EmbeddingService {
         return null;
       }
 
-      await this.redis.setJson(key, vector, QUERY_CACHE_TTL_SECONDS);
+      this.hot.set(key, vector, QUERY_CACHE_TTL_SECONDS);
+      await this.cache.set(key, vector, QUERY_CACHE_TTL_SECONDS);
       return vector;
     } catch (err) {
       this.logger.error({ err }, 'Query embedding failed; retrieval will fall back to lexical search');

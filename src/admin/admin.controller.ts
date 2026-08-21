@@ -21,8 +21,7 @@ import { ChatRepository } from '../database/repositories/chat.repository';
 import { CreditRepository } from '../database/repositories/credit.repository';
 import { CorpusRepository } from '../database/repositories/corpus.repository';
 import { UserRepository } from '../database/repositories/user.repository';
-import { QueueService } from '../redis/queue.service';
-import { RedisService } from '../redis/redis.service';
+import { JobQueueService } from '../jobs/job-queue.service';
 import { KanoonService } from '../kanoon/kanoon.service';
 import { SETTING_DEFINITIONS, SETTING_GROUPS } from '../settings/settings.catalog';
 import { SettingsService } from '../settings/settings.service';
@@ -61,9 +60,8 @@ export class AdminController {
     private readonly settings: SettingsService,
     private readonly tester: WhatsAppConnectionTester,
     private readonly kanoon: KanoonService,
-    private readonly queue: QueueService,
+    private readonly queue: JobQueueService,
     private readonly db: DatabaseService,
-    private readonly redis: RedisService,
   ) {}
 
   // --- Dashboard ------------------------------------------------------------
@@ -327,17 +325,16 @@ export class AdminController {
    */
   @Get('system')
   async system() {
-    const [queue, database, redis] = await Promise.all([
+    const [queue, database] = await Promise.all([
       this.queue.stats().catch(() => ({}) as Record<string, number>),
       this.db.ping().catch(() => false),
-      this.redis.ping().catch(() => false),
     ]);
 
     const memory = process.memoryUsage();
 
     return {
       queue,
-      dependencies: { database, redis },
+      dependencies: { database },
       process: {
         uptimeSeconds: Math.floor(process.uptime()),
         nodeVersion: process.version,

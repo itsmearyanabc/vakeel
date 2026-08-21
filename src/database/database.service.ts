@@ -70,6 +70,48 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Run something while holding a named lock, or skip it if someone else is.
+   *
+   * Replaces the Redis lock (migration 0013). Advisory locks are better suited
+   * to this than a key with a TTL, for one reason that matters: the lock is
+   * held by a *session*, so a process that dies releases it immediately. A TTL
+   * lock held by a dead process stays held until it lapses, and the window
+   * where nothing can run is exactly the window after a crash when the work
+   * most needs to.
+   *
+   * Returns null when the lock was not free, which callers read as "another
+   * instance is already doing this" rather than as a failure.
+   *
+   * ## Why a transaction-scoped lock is not used here
+   *
+   * `pg_try_advisory_xact_lock` releases at commit, which is wrong for work
+   * that spans several statements and is not one transaction. This takes a
+   * session lock and releases it in a `finally`, on the same connection - the
+   * `reserve()` is what guarantees that, since releasing from a different
+   * pooled connection than the one that acquired it would silently do nothing.
+   */
+  async withLock<T>(name: string, fn: () => Promise<T>): Promise<T | null> {
+    const key = lockKey(name);
+    const connection = await this.sql.reserve();
+
+    try {
+      const [row] = await connection<{ locked: boolean }[]>`
+        SELECT pg_try_advisory_lock(${key}::bigint) AS locked
+      `;
+
+      if (!row?.locked) return null;
+
+      try {
+        return await fn();
+      } finally {
+        await connection`SELECT pg_advisory_unlock(${key}::bigint)`.catch(() => undefined);
+      }
+    } finally {
+      connection.release();
+    }
+  }
+
+  /**
    * Verify the migrations have actually been applied.
    *
    * The alternative is a confusing "relation users does not exist" on the first
@@ -103,4 +145,23 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
   }
+}
+
+/**
+ * Turn a lock name into the bigint advisory locks are keyed on.
+ *
+ * A 53-bit FNV-1a fold. Collisions are possible in principle and harmless in
+ * practice: this application takes exactly two named locks, and a collision
+ * would only mean one waits for the other. Staying inside 2^53 keeps the value
+ * exact as a JavaScript number, which a full 64-bit hash would not.
+ */
+function lockKey(name: string): number {
+  let hash = 0x811c9dc5;
+
+  for (let i = 0; i < name.length; i++) {
+    hash ^= name.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+
+  return hash;
 }

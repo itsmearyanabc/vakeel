@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { getLogger } from '../../common/logger';
 import { InjectEnv } from '../../config/config.module';
 import { AppEnv } from '../../config/env';
-import { RedisService } from '../../redis/redis.service';
+import { MemoryRepository } from '../../database/repositories/memory.repository';
 import { SettingsService } from '../../settings/settings.service';
 import { LlmMessage } from '../providers/llm-provider.interface';
 
@@ -18,7 +18,7 @@ export interface MemoryTurn {
  *
  * ## The isolation guarantee
  *
- * Every advocate's history lives under its own Redis key, `chat:mem:{userId}`.
+ * Every advocate's history lives in its own row, keyed by user id.
  * There is no shared structure and no filtering step that could be got wrong -
  * two users cannot see each other's context because they are never in the same
  * place to begin with. That is the strongest form this guarantee can take:
@@ -58,14 +58,11 @@ export class ChatMemoryService {
   private readonly logger = getLogger().child({ module: 'ai:memory' });
 
   constructor(
-    private readonly redis: RedisService,
+    private readonly memory: MemoryRepository,
     private readonly settings: SettingsService,
     @InjectEnv() private readonly env: AppEnv,
   ) {}
 
-  private key(userId: string): string {
-    return `chat:mem:${userId}`;
-  }
 
   private get enabled(): boolean {
     return this.settings.getBoolean('MEMORY_ENABLED', this.env.MEMORY_ENABLED);
@@ -86,14 +83,14 @@ export class ChatMemoryService {
   /**
    * Prior turns for this advocate, oldest first, ready to hand to the model.
    *
-   * Never throws: memory is an enhancement, and a Redis blip must degrade the
-   * answer rather than fail the message.
+   * Never throws: memory is an enhancement, and a database blip must degrade
+   * the answer rather than fail the message.
    */
   async load(userId: string): Promise<LlmMessage[]> {
     if (!this.enabled) return [];
 
     try {
-      const turns = (await this.redis.getJson<MemoryTurn[]>(this.key(userId))) ?? [];
+      const turns = (await this.memory.load(userId)) as MemoryTurn[];
       return turns.map((t) => ({ role: t.role, content: t.content }));
     } catch (err) {
       this.logger.warn({ err, userId }, 'Could not load chat memory; answering without history');
@@ -113,7 +110,7 @@ export class ChatMemoryService {
     if (!userMessage.trim() || !assistantMessage.trim()) return;
 
     try {
-      const existing = (await this.redis.getJson<MemoryTurn[]>(this.key(userId))) ?? [];
+      const existing = (await this.memory.load(userId)) as MemoryTurn[];
       const now = Date.now();
 
       const next = this.trim([
@@ -122,7 +119,7 @@ export class ChatMemoryService {
         { role: 'assistant', content: assistantMessage.trim(), at: now },
       ]);
 
-      await this.redis.setJson(this.key(userId), next, this.ttl);
+      await this.memory.save(userId, next, this.ttl);
     } catch (err) {
       // Losing a turn is survivable; failing the reply is not.
       this.logger.warn({ err, userId }, 'Could not persist chat memory');
@@ -132,7 +129,7 @@ export class ChatMemoryService {
   /** Forget this advocate's history - "new chat", or on opt-out. */
   async clear(userId: string): Promise<void> {
     try {
-      await this.redis.del(this.key(userId));
+      await this.memory.clear(userId);
     } catch (err) {
       this.logger.warn({ err, userId }, 'Could not clear chat memory');
     }
@@ -140,7 +137,7 @@ export class ChatMemoryService {
 
   /** Turn count, for the admin panel and for tests. */
   async size(userId: string): Promise<number> {
-    const turns = (await this.redis.getJson<MemoryTurn[]>(this.key(userId))) ?? [];
+    const turns = await this.memory.load(userId);
     return turns.length;
   }
 

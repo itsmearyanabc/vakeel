@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { CreditsModule } from '../credits/credits.module';
+import { JobsModule } from '../jobs/jobs.module';
 import { KanoonModule } from '../kanoon/kanoon.module';
 import { UsersModule } from '../users/users.module';
 import { WhatsAppModule } from '../whatsapp/whatsapp.module';
@@ -16,7 +17,7 @@ import { AdminGuard } from './admin.guard';
   // KanoonModule is needed for the dashboard's case-law source status. Nest
   // only reports a missing import at boot, which is why module-resolution has
   // its own test - see app.wiring.spec.ts.
-  imports: [UsersModule, WhatsAppModule, KanoonModule, CreditsModule],
+  imports: [UsersModule, WhatsAppModule, KanoonModule, CreditsModule, JobsModule],
   controllers: [AdminUiController, AdminAuthController, AdminController],
   providers: [AdminGuard],
 })

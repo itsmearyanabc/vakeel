@@ -1,20 +1,20 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import type Redis from 'ioredis';
 import { getLogger } from '../common/logger';
 import { InjectEnv } from '../config/config.module';
 import { AppEnv } from '../config/env';
 import { DatabaseService } from '../database/database.service';
 import { CryptoService } from '../security/crypto.service';
-import { RedisService } from '../redis/redis.service';
 import { SETTING_DEFINITIONS, isKnownSetting, isSecretSetting } from './settings.catalog';
 
-/** Redis channel every process listens on for "settings changed, re-read". */
-const SETTINGS_CHANNEL = 'vakeel:settings:changed';
 
 /**
- * Safety net for a dropped pub/sub connection. Pub/sub is fire-and-forget: if a
- * worker's subscriber drops at the moment an admin saves, it would keep serving
- * stale settings forever. A slow poll bounds that staleness to 60s.
+ * How long a process can serve a stale snapshot.
+ *
+ * This used to be the backstop behind Redis pub/sub, which pushed changes
+ * instantly. Pub/sub went with Redis in migration 0013 and the poll is now the
+ * only mechanism - which is sufficient, because settings are read-only at
+ * runtime and every value comes from the environment. The only thing a refresh
+ * can pick up is a redeploy, and a redeploy restarts the process anyway.
  */
 const REFRESH_INTERVAL_MS = 60_000;
 
@@ -79,9 +79,8 @@ export const CredentialWriteRejectedError = SettingWriteRejectedError;
  *
  * ## Consistency model
  *
- * Each process keeps an in-memory snapshot. A write publishes on Redis and every
- * process re-reads. So a change is visible across web and worker in roughly the
- * time of one Redis round trip, with a 60-second poll as backstop.
+ * Each process keeps an in-memory snapshot, refreshed on a 60-second poll, so a
+ * change is visible across web and worker within a minute.
  *
  * This is deliberately eventually-consistent. The alternative - reading the
  * table on every message - would add a query to the hot path of a system whose
@@ -97,30 +96,17 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
   private cache = new Map<string, string>();
   private meta = new Map<string, { updatedBy: string; updatedAt: Date }>();
 
-  private subscriber?: Redis;
   private timer?: NodeJS.Timeout;
   private ready = false;
 
   constructor(
     private readonly db: DatabaseService,
     private readonly crypto: CryptoService,
-    private readonly redis: RedisService,
     @InjectEnv() private readonly env: AppEnv,
   ) {}
 
   async onModuleInit(): Promise<void> {
     await this.refresh();
-
-    // A subscribed ioredis connection cannot issue ordinary commands, so this
-    // needs its own socket rather than sharing the main client.
-    this.subscriber = this.redis.createQueueConnection();
-    await this.subscriber.subscribe(SETTINGS_CHANNEL).catch((err) => {
-      this.logger.warn({ err }, 'Could not subscribe to settings channel; falling back to polling');
-    });
-    this.subscriber.on('message', (channel) => {
-      if (channel !== SETTINGS_CHANNEL) return;
-      void this.refresh().catch((err) => this.logger.error({ err }, 'Settings refresh failed'));
-    });
 
     this.timer = setInterval(() => {
       void this.refresh().catch((err) => this.logger.debug({ err }, 'Periodic settings refresh failed'));
@@ -131,7 +117,6 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleDestroy(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
-    await this.subscriber?.quit().catch(() => this.subscriber?.disconnect());
   }
 
   /**
@@ -391,13 +376,9 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async publishChange(): Promise<void> {
+    // Peers pick the change up on their next poll. Nothing pushes any more -
+    // see onModuleInit for why that is sufficient.
     await this.refresh();
-    try {
-      await this.redis.client.publish(SETTINGS_CHANNEL, Date.now().toString());
-    } catch (err) {
-      // Other processes will still pick the change up on their next poll.
-      this.logger.warn({ err }, 'Could not publish settings change; peers will refresh within 60s');
-    }
   }
 
   // --- Admin presentation ---------------------------------------------------
