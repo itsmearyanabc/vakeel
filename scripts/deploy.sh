@@ -70,6 +70,24 @@ grep -qE '^DATABASE_URL=.+' .env || die "DATABASE_URL is not set in .env"
 grep -qE '^JWT_SECRET=.{16,}' .env || die "JWT_SECRET is missing or shorter than 16 characters"
 grep -qE '^ENCRYPTION_KEY=[0-9a-fA-F]{64}$' .env || die "ENCRYPTION_KEY must be exactly 64 hex characters (openssl rand -hex 32)"
 
+# An unsubstituted placeholder is the most likely thing to be wrong in a
+# hand-edited .env, and it fails deep inside a library with `ERR_INVALID_URL`
+# and a stack trace that says nothing about which variable is at fault. Caught
+# here instead, by name.
+for var in DATABASE_URL DIRECT_URL APP_PUBLIC_URL OPENAI_API_KEY KANOON_API_KEY; do
+  if grep -qE "^${var}=.*[<>]" .env; then
+    die "${var} still contains a <placeholder> from the template. Replace it, or delete the line if it is optional."
+  fi
+done
+
+# DIRECT_URL is only consulted by the migration runner, and only because the
+# Supabase transaction pooler (port 6543) cannot run DDL reliably. Pointing it
+# at 6543 defeats the entire reason it exists.
+if grep -qE '^DIRECT_URL=.*:6543' .env; then
+  warn "DIRECT_URL points at the transaction pooler (6543). Migrations need the session port (5432);
+   DDL on 6543 fails intermittently, which is worse than failing outright."
+fi
+
 if grep -qE '^REDIS_URL=.+' .env; then
   warn "REDIS_URL is set but nothing reads it any more (migration 0013). Safe to delete."
 fi
