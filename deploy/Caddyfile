@@ -1,0 +1,110 @@
+# =============================================================================
+# vakeelsaathi.in — Caddy
+#
+# Use this file ONLY if nothing is currently listening on ports 80 and 443.
+#
+# If nginx (or Apache) is already serving another application on this host,
+# installing Caddy will fail to bind, and depending on start order it can take
+# the running site down with it. In that case use deploy/nginx-vakeelsaathi.conf
+# and add a vhost instead — adding a server block is additive, adding a second
+# web server is not.
+#
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo caddy validate --config /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+# =============================================================================
+
+{
+	# Caddy's automatic HTTPS is disabled for these hostnames because Cloudflare
+	# terminates TLS at the edge and this origin presents a Cloudflare Origin
+	# Certificate instead. Letting Caddy also try ACME would mean two systems
+	# managing the same certificate and periodic HTTP-01 challenges that
+	# Cloudflare's proxy intercepts.
+	email admin@vakeelsaathi.in
+}
+
+# www redirects to the apex, so there is one canonical origin. Two hostnames
+# serving the same app means session cookies that do not follow the user
+# between them.
+www.vakeelsaathi.in {
+	tls /etc/ssl/cloudflare/vakeelsaathi.in.pem /etc/ssl/cloudflare/vakeelsaathi.in.key
+	redir https://vakeelsaathi.in{uri} permanent
+}
+
+vakeelsaathi.in {
+	tls /etc/ssl/cloudflare/vakeelsaathi.in.pem /etc/ssl/cloudflare/vakeelsaathi.in.key
+
+	# Cloudflare sends the visitor's real address here. Without this every
+	# request appears to come from Cloudflare, and since the application
+	# rate-limits sign-ins per IP, twenty failed logins from anywhere would lock
+	# out every advocate at once.
+	servers {
+		trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 \
+			103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 \
+			188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 \
+			104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 \
+			2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 \
+			2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+		client_ip_headers CF-Connecting-IP X-Forwarded-For
+	}
+
+	encode gzip
+
+	header {
+		# Only safe once HTTPS is known to work. If the certificate breaks,
+		# browsers refuse to fall back for the whole max-age — so start short
+		# and raise it after a week of clean running.
+		Strict-Transport-Security "max-age=86400"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+	}
+
+	# -------------------------------------------------------------------------
+	# The chat stream.
+	#
+	# `flush_interval -1` is the whole reason this block exists: it disables
+	# response buffering, without which every server-sent event is held until
+	# the response completes. The progress stream would arrive all at once at
+	# the end, looking exactly like the application hanging.
+	#
+	# Compression is also disabled here — a gzip filter buffers to fill its
+	# window, which would undo the flush setting.
+	# -------------------------------------------------------------------------
+	handle /api/chat/ask {
+		reverse_proxy 127.0.0.1:3001 {
+			flush_interval -1
+			transport http {
+				# Long enough for a slow model call. The application sends a
+				# heartbeat comment every 15s, so an idle stream is never
+				# actually idle.
+				read_timeout 3600s
+				compression off
+			}
+		}
+	}
+
+	# Meta's webhook signature is an HMAC over the exact bytes received, so
+	# nothing may rewrite the body. Kept separate so a future directive added to
+	# the general handler cannot silently break verification — a failure that
+	# presents as "the bot stopped replying".
+	handle /webhooks/* {
+		reverse_proxy 127.0.0.1:3001 {
+			transport http {
+				read_timeout 30s
+			}
+		}
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3001 {
+			transport http {
+				# An answer is a model call; 60s is not always enough.
+				read_timeout 120s
+			}
+		}
+	}
+
+	log {
+		output file /var/log/caddy/vakeelsaathi.log
+	}
+}
