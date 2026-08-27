@@ -109,6 +109,16 @@ async function boot() {
   if (path === '/app/reset-password') return renderResetPassword();
   if (path === '/app/verify-email')  return renderVerifyEmail();
 
+  // The landing page needs a link that lands on the sign-up form rather than
+  // the sign-in one, and a link cannot set state.authMode - so the path does.
+  // The URL is normalised back to /app immediately: it exists to be linked to,
+  // not to be somewhere the app lives, and leaving it in the bar means a
+  // refresh after signing in reads as an invitation to sign up again.
+  if (path === '/app/signup' || path === '/app/sign-up') {
+    state.authMode = 'signup';
+    history.replaceState({}, '', '/app');
+  }
+
   try {
     await loadSession();
     await enterApp();

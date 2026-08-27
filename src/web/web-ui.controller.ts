@@ -1,6 +1,8 @@
 import { Controller, Get, Header, HttpStatus, Res } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 import { RawResponse } from '../common/api-response';
+import { InjectEnv } from '../config/config.module';
+import { AppEnv } from '../config/env';
 import { APP_CSS } from './assets/app.css';
 import { APP_JS } from './assets/app.js';
 
@@ -26,18 +28,22 @@ import { APP_JS } from './assets/app.js';
  */
 @Controller()
 export class WebUiController {
+  constructor(@InjectEnv() private readonly env: AppEnv) {}
+
   /**
    * The application shell.
    *
-   * Also answers `/`, which hosting platforms probe on every deploy. Returning
-   * the app there is both the right thing for a visitor and a valid 200 for the
-   * probe, so nothing needs a redirect.
+   * No longer answers `/`. That is the landing page now - see LandingController
+   * for why somebody who has never heard of this product should not arrive at a
+   * password field. Nothing that already worked moved: the Google callback,
+   * both email links and the app's own routing all point at `/app` and always
+   * did.
    */
   // `app/*` and not Nest 11's named `app/*path`: the named form is an Express
   // convention, and Fastify's router rejects it outright with "Wildcard must be
   // the last character in the route" - at boot, so the whole service fails to
   // start rather than just this route.
-  @Get(['/', 'app', 'app/*'])
+  @Get(['app', 'app/*'])
   @Header('content-type', 'text/html; charset=utf-8')
   @Header('cache-control', 'no-store')
   @Header('referrer-policy', 'same-origin')
@@ -50,22 +56,72 @@ export class WebUiController {
   }
 
   /**
-   * Deliberately not indexed.
+   * The landing page is indexable; nothing else is.
    *
-   * Every URL under /app is either a sign-in form or a private conversation.
-   * When there is a marketing site to index, it should be a separate origin
-   * with its own robots policy rather than an exception carved out here.
+   * This was a blanket `Disallow: /`, which was correct when every URL on the
+   * origin was either a sign-in form or a private conversation. Now that `/`
+   * explains the product, that rule would hide the only page worth indexing.
+   *
+   * The disallows are by prefix: `/app` is a signed-in application's shell,
+   * `/admin` is an operations panel, and `/api`, `/auth` and `/webhooks` are
+   * machine surfaces. None has a public document behind it, and a crawler
+   * following them spends its budget on redirects to a sign-in form.
+   *
+   * What this is not is access control. robots.txt is a request that only
+   * polite crawlers honour, and it is itself public - it tells anyone curious
+   * exactly where the admin panel is. That is acceptable precisely because
+   * every path below is guarded on its own; if it were not, hiding it here
+   * would not help.
    */
   @Get('robots.txt')
   @Header('content-type', 'text/plain; charset=utf-8')
   robots(): RawResponse<string> {
-    return new RawResponse('User-agent: *\nDisallow: /\n');
+    return new RawResponse(
+      [
+        'User-agent: *',
+        'Allow: /$',
+        'Disallow: /app',
+        'Disallow: /admin',
+        'Disallow: /api',
+        'Disallow: /auth',
+        'Disallow: /webhooks',
+        '',
+        `Sitemap: ${this.publicBase()}/sitemap.xml`,
+        '',
+      ].join('\n'),
+    );
   }
 
   /**
-   * Health probes sometimes issue HEAD on `/`; Fastify answers those from the
-   * GET route above. This exists only so that a request for the old JSON
-   * status document gets something useful rather than the HTML shell.
+   * One URL, because there is one public page.
+   *
+   * Trivial today and still worth having: it is what a search console asks for,
+   * and the day there is a second public page it is a line in this array rather
+   * than something somebody has to remember to create.
+   */
+  @Get('sitemap.xml')
+  @Header('content-type', 'application/xml; charset=utf-8')
+  sitemap(): RawResponse<string> {
+    return new RawResponse(
+      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
+        `  <url><loc>${this.publicBase()}/</loc><changefreq>weekly</changefreq>` +
+        '<priority>1.0</priority></url>\n' +
+        '</urlset>\n',
+    );
+  }
+
+  /** APP_PUBLIC_URL without its trailing slash, so joins do not double up. */
+  private publicBase(): string {
+    return this.env.APP_PUBLIC_URL.replace(/\/+$/, '');
+  }
+
+  /**
+   * The old JSON status document, kept at its own path.
+   *
+   * `/` returns the landing page and answers a platform probe with a 200 just
+   * as well, so nothing needs this - but anything already pointed here keeps
+   * getting a machine-readable answer instead of a page of HTML.
    */
   @Get('status')
   status(@Res({ passthrough: true }) reply: FastifyReply) {

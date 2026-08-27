@@ -133,6 +133,20 @@ export class ProviderRegistry {
   }
 
   /**
+   * True when legal analysis specifically is a placeholder.
+   *
+   * Narrower than {@link isFullyMocked} on purpose. A deployment can route
+   * intent classification through the mock and still answer with a real model,
+   * and the reverse costs far more: the landing page uses this to decide
+   * whether to tell visitors that answers are not yet real, and "the router is
+   * also mocked" is not a condition anyone should have to meet before that
+   * warning appears.
+   */
+  get isSynthesisMocked(): boolean {
+    return this.synthesis.name === 'mock';
+  }
+
+  /**
    * Run a completion, falling back to the mock provider if the live one fails.
    *
    * Errors are logged with the provider name; the user-visible result is a mock
