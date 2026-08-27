@@ -103,11 +103,24 @@ describe('admin UI document integrity', () => {
     expect(count('<style>')).toBeGreaterThan(0);
   });
 
-  it('ships the login form and the olive palette', () => {
+  it('ships the login form and the shared palette', () => {
     expect(ADMIN_UI_HTML).toContain('id="email"');
     expect(ADMIN_UI_HTML).toContain('id="password"');
-    expect(ADMIN_UI_HTML).toContain('--olive:#6B8E23');
-    expect(ADMIN_UI_HTML).toContain('--red:#C1121F');
+
+    // The panel, the app and the landing page are one product and share one
+    // set of values. These are landing.css's; if they drift here, the admin
+    // panel has been re-themed on its own and the three no longer match.
+    expect(ADMIN_UI_HTML).toContain('--olive:#12805C');
+    expect(ADMIN_UI_HTML).toContain('--red:#C0392B');
+  });
+
+  it('keeps the primary action off the verification green', () => {
+    // The green means "verified" and is spent on nothing else, so a button
+    // cannot be painted with it - see the palette note in app.css.ts. Asserted
+    // because the failure is invisible: a green button looks fine and quietly
+    // makes every green badge on the page mean less.
+    expect(ADMIN_UI_HTML).toContain('--accent:#0D0D0D');
+    expect(ADMIN_UI_HTML).not.toContain('--accent:var(--olive)');
   });
 
   it('loads no external resources', () => {

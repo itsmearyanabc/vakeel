@@ -37,27 +37,31 @@ export const ADMIN_UI_HTML = String.raw`<!doctype html>
      are wrong or destructive, so it keeps its meaning instead of becoming
      decoration. */
   :root {
-    --bg:#F4F6EC; --panel:#FFFFFF; --panel-2:#F0F4E4; --border:#D9E2C4;
-    --text:#1C2411; --muted:#5A6B45; --dim:#8A9A72;
+    --bg:#FFFFFF; --panel:#FFFFFF; --panel-2:#F7F7F8; --border:rgba(13,13,13,.09);
+    --text:#0D0D0D; --muted:#6B6B6B; --dim:#9B9B9B;
 
-    --olive:#6B8E23; --olive-dark:#50691A; --olive-light:#E9F1D6;
-    --red:#C1121F; --red-dark:#960D18; --red-light:#FCE4E6;
+    --olive:#12805C; --olive-dark:#0E6A4C; --olive-light:rgba(18,128,92,.09);
+    --red:#C0392B; --red-dark:#96271C; --red-light:rgba(192,57,43,.08);
 
-    --accent:var(--olive); --accent-dim:var(--olive-dark);
-    --ok:#4F7A1F; --warn:#B35C00; --bad:var(--red);
-    --radius:12px; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
-    --shadow:0 1px 2px rgba(28,36,17,.06),0 4px 14px rgba(28,36,17,.05);
+    /* Primary action, deliberately not the green - see app.css.ts. */
+    --accent:#0D0D0D; --accent-dim:#2B2B2B; --accent-ink:#FFFFFF;
+    /* The sidebar is a surface, not an action, so it gets its own token. */
+    --rail:#0D0D0D; --rail-2:#1D1D1D;
+    --ok:#12805C; --warn:#B35C00; --bad:var(--red);
+    --radius:12px; --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --shadow:0 1px 2px rgba(13,13,13,.04),0 8px 28px rgba(13,13,13,.06);
   }
   :root[data-theme="dark"] {
-    --bg:#14180E; --panel:#1D2315; --panel-2:#262E1B; --border:#3A462A;
-    --text:#EDF2E2; --muted:#A7B893; --dim:#7C8C69;
+    --bg:#0A0A0A; --panel:#151515; --panel-2:#1D1D1D; --border:rgba(255,255,255,.11);
+    --text:#F5F5F5; --muted:#A1A1A1; --dim:#6E6E6E;
 
-    --olive:#9BC53D; --olive-dark:#7FA82B; --olive-light:#2B3519;
-    --red:#F0555F; --red-dark:#C1121F; --red-light:#3A1A1D;
+    --olive:#3DD68C; --olive-dark:#3DD68C; --olive-light:rgba(61,214,140,.12);
+    --red:#FF7B6B; --red-dark:#FF7B6B; --red-light:rgba(255,123,107,.12);
 
-    --accent:var(--olive); --accent-dim:var(--olive-dark);
-    --ok:#9BC53D; --warn:#E0A44A; --bad:var(--red);
-    --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 14px rgba(0,0,0,.25);
+    --accent:#FFFFFF; --accent-dim:#E2E2E2; --accent-ink:#0A0A0A;
+    --rail:#151515; --rail-2:#0F0F0F;
+    --ok:#3DD68C; --warn:#E0A44A; --bad:var(--red);
+    --shadow:0 1px 2px rgba(0,0,0,.5),0 12px 40px rgba(0,0,0,.4);
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--text);
@@ -68,16 +72,16 @@ export const ADMIN_UI_HTML = String.raw`<!doctype html>
   /* ---------- login ---------- */
   #login{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;
     background:
-      radial-gradient(1100px 520px at 12% -10%, var(--olive-light) 0%, transparent 62%),
+      radial-gradient(1100px 520px at 12% -10%, var(--panel-2) 0%, transparent 62%),
       radial-gradient(900px 460px at 105% 108%, var(--red-light) 0%, transparent 58%),
       var(--bg)}
   .login-card{background:var(--panel);border:1px solid var(--border);border-radius:18px;
               padding:34px;width:100%;max-width:430px;box-shadow:var(--shadow)}
   .brand{display:flex;align-items:center;gap:11px;margin-bottom:6px}
   .brand-mark{width:38px;height:38px;border-radius:11px;flex:0 0 auto;
-    background:linear-gradient(140deg,var(--olive) 0%,var(--olive-dark) 55%,var(--red) 100%);
-    display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;
-    font-size:15px;letter-spacing:.5px;box-shadow:0 2px 8px rgba(107,142,35,.35)}
+    background:var(--accent);
+    display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--accent-ink);
+    font-size:15px;letter-spacing:-.02em}
   .brand h1{font-size:18px;margin:0;font-weight:700;letter-spacing:-.01em}
   .brand .tag{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;
     letter-spacing:.1em;margin-top:1px}
@@ -88,13 +92,13 @@ export const ADMIN_UI_HTML = String.raw`<!doctype html>
     color:var(--text);padding:10px 12px;border-radius:9px;font:inherit;outline:none;
     transition:border-color .12s,box-shadow .12s}
   input:focus,select:focus,textarea:focus{
-    border-color:var(--olive);box-shadow:0 0 0 3.5px var(--olive-light)}
-  .btn{background:var(--olive);color:#fff;border:none;padding:10px 18px;
+    border-color:var(--accent);box-shadow:0 0 0 3.5px var(--border)}
+  .btn{background:var(--accent);color:var(--accent-ink);border:none;padding:10px 18px;
        border-radius:9px;font-weight:650;transition:background .12s,transform .06s}
-  .btn:hover{background:var(--olive-dark)}
+  .btn:hover{background:var(--accent-dim)}
   .btn:active{transform:translateY(1px)}
   .btn.secondary{background:var(--panel);border:1.5px solid var(--border);color:var(--text)}
-  .btn.secondary:hover{background:var(--panel-2);border-color:var(--olive)}
+  .btn.secondary:hover{background:var(--panel-2);border-color:var(--accent)}
   .btn.danger{background:var(--red)}
   .btn.danger:hover{background:var(--red-dark)}
   .btn:disabled{opacity:.5;cursor:not-allowed}
@@ -102,19 +106,19 @@ export const ADMIN_UI_HTML = String.raw`<!doctype html>
 
   /* ---------- shell ---------- */
   #app{display:none;grid-template-columns:228px 1fr;min-height:100vh}
-  aside{background:linear-gradient(178deg,var(--olive-dark) 0%,#3E5214 100%);
+  aside{background:var(--rail);
         padding:18px 13px;display:flex;flex-direction:column;gap:3px}
-  :root[data-theme="dark"] aside{background:linear-gradient(178deg,#232C15 0%,#161C0D 100%);
+  :root[data-theme="dark"] aside{background:var(--rail);
         border-right:1px solid var(--border)}
   aside .brand{padding:6px 8px 18px}
   aside .brand h1{color:#fff}
   aside .brand .tag{color:rgba(255,255,255,.62)}
-  aside .brand-mark{background:#fff;color:var(--olive-dark)}
+  aside .brand-mark{background:#FFFFFF;color:#0D0D0D}
   nav button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
     background:none;border:none;color:rgba(255,255,255,.8);padding:9px 11px;
     border-radius:9px;font-size:13.5px;font-weight:550;transition:background .12s}
   nav button:hover{background:rgba(255,255,255,.13);color:#fff}
-  nav button.active{background:#fff;color:var(--olive-dark);font-weight:700;
+  nav button.active{background:#FFFFFF;color:#0D0D0D;font-weight:700;
     box-shadow:0 2px 8px rgba(0,0,0,.16)}
   nav button .ico{width:17px;text-align:center;opacity:.9}
   nav button .badge{margin-left:auto;background:var(--red);color:#fff;
@@ -135,13 +139,12 @@ export const ADMIN_UI_HTML = String.raw`<!doctype html>
   .kpis{grid-template-columns:repeat(auto-fit,minmax(162px,1fr))}
   .kpi{position:relative;overflow:hidden}
   /* Olive rail on every tile; red only on the ones that need attention. */
-  .kpi::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--olive)}
+  .kpi::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--accent)}
   .kpi.alert::before{background:var(--red)}
   .kpi .label{color:var(--muted);font-size:11px;text-transform:uppercase;
               letter-spacing:.07em;font-weight:700}
   .kpi .value{font-size:29px;font-weight:780;margin-top:6px;letter-spacing:-.03em;
-              color:var(--olive-dark)}
-  :root[data-theme="dark"] .kpi .value{color:var(--olive)}
+              color:var(--text)}
   .kpi.alert .value{color:var(--red)}
   .kpi .foot{color:var(--dim);font-size:11.5px;margin-top:4px}
   .two{grid-template-columns:1.65fr 1fr}
@@ -149,10 +152,9 @@ export const ADMIN_UI_HTML = String.raw`<!doctype html>
   @media(max-width:760px){#app{grid-template-columns:1fr}aside{display:none}}
 
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th{text-align:left;color:var(--olive-dark);font-weight:750;font-size:11px;
-     text-transform:uppercase;letter-spacing:.06em;background:var(--olive-light);
-     padding:9px 10px;border-bottom:2px solid var(--olive);white-space:nowrap}
-  :root[data-theme="dark"] th{color:var(--olive)}
+  th{text-align:left;color:var(--muted);font-weight:750;font-size:11px;
+     text-transform:uppercase;letter-spacing:.06em;background:var(--panel-2);
+     padding:9px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
   td{padding:10px;border-bottom:1px solid var(--border);vertical-align:top}
   tbody tr:hover{background:var(--panel-2)}
   tbody tr:last-child td{border-bottom:none}
@@ -171,7 +173,7 @@ export const ADMIN_UI_HTML = String.raw`<!doctype html>
   :root[data-theme="dark"] .pill.info{color:var(--olive)}
 
   .empty{text-align:center;padding:44px 20px;color:var(--muted)}
-  .empty .big{font-size:34px;margin-bottom:10px;opacity:.4;color:var(--olive)}
+  .empty .big{font-size:34px;margin-bottom:10px;opacity:.4;color:var(--dim)}
   .err{background:var(--red-light);border:1.5px solid var(--red);color:var(--red-dark);
        padding:11px 14px;border-radius:9px;margin-bottom:14px;font-size:13px;font-weight:550}
   :root[data-theme="dark"] .err{color:var(--red)}
