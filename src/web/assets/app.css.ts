@@ -7,41 +7,71 @@
  * locally and 404ing in production. Exporting it as a string makes it part of
  * the compiled output by construction.
  *
- * The palette is the admin panel's: olive carries identity and confirmation,
- * red is reserved for things that are wrong or destructive so it keeps its
- * meaning. Both themes are defined in full rather than one overriding the
- * other, so a token can never be left holding a value from the wrong theme.
+ * ## The palette is the landing page's
+ *
+ * `/` and `/app` are one product and used to look like two: the landing page is
+ * neutral - near-black on white, with a single green reserved for verification -
+ * and this file was the admin panel's olive-on-cream. Crossing from the front
+ * page into the app changed every colour on the screen, which reads as leaving
+ * the site rather than entering the product.
+ *
+ * The values below are landing.css's, token for token. The *names* here are
+ * unchanged, so the four hundred lines of rules underneath did not have to be
+ * rewritten to adopt it.
+ *
+ * ## Why --accent and --olive are now separate
+ *
+ * One token used to carry two jobs: it painted the primary button *and* the
+ * "verified" pill. The landing page keeps those deliberately apart - actions are
+ * near-black, and green means one thing only, which is why a green badge there
+ * is worth reading. Collapsing them back into one token would make the accent
+ * ambient, and a colour that appears everywhere confirms nothing.
+ *
+ *   --accent   primary action: buttons, focus rings, the send key, active nav
+ *   --olive    verification, success, and link affordance - never navigation
+ *              state, which is what --surface-3 and --accent are for
+ *
+ * Both themes are defined in full rather than one overriding the other, so a
+ * token can never be left holding a value from the wrong theme.
  */
 export const APP_CSS = String.raw`
 :root {
-  --bg:#F4F6EC; --surface:#FFFFFF; --surface-2:#F0F4E4; --surface-3:#E9EEDC;
-  --border:#D9E2C4; --border-soft:#E7EDD9;
-  --text:#1C2411; --muted:#5A6B45; --dim:#8A9A72;
+  --bg:#FFFFFF; --surface:#FFFFFF; --surface-2:#F7F7F8; --surface-3:#F0F0F1;
+  --border:rgba(13,13,13,.09); --border-soft:rgba(13,13,13,.055);
+  --text:#0D0D0D; --muted:#6B6B6B; --dim:#9B9B9B;
 
-  --olive:#6B8E23; --olive-dark:#50691A; --olive-light:#E9F1D6;
-  --red:#C1121F; --red-dark:#960D18; --red-light:#FCE4E6;
+  /* Primary action. Near-black, as on the landing page. */
+  --accent:#0D0D0D; --accent-ink:#FFFFFF; --accent-hover:#2B2B2B;
 
-  --ok:#4F7A1F; --warn:#B35C00; --bad:var(--red);
+  /* Verification only. */
+  --olive:#12805C; --olive-dark:#0E6A4C; --olive-light:rgba(18,128,92,.09);
+  --red:#C0392B; --red-dark:#96271C; --red-light:rgba(192,57,43,.08);
 
-  --radius:12px; --radius-lg:16px; --radius-sm:8px;
-  --shadow:0 1px 2px rgba(28,36,17,.06), 0 4px 14px rgba(28,36,17,.05);
-  --shadow-lg:0 8px 30px rgba(28,36,17,.12);
-  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
-  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --ok:#12805C; --warn:#B35C00; --bad:var(--red);
+
+  --radius:12px; --radius-lg:20px; --radius-sm:8px;
+  --shadow:0 1px 2px rgba(13,13,13,.04), 0 8px 28px rgba(13,13,13,.06);
+  --shadow-lg:0 8px 30px rgba(13,13,13,.10);
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Segoe UI",
+         Inter,Roboto,"Helvetica Neue",Arial,sans-serif;
   --sidebar-width:264px;
 }
 
 [data-theme="dark"] {
-  --bg:#14180E; --surface:#1D2315; --surface-2:#262E1B; --surface-3:#2F3922;
-  --border:#3A462A; --border-soft:#313C24;
-  --text:#EDF2E2; --muted:#A7B893; --dim:#7C8C69;
+  --bg:#0A0A0A; --surface:#151515; --surface-2:#1D1D1D; --surface-3:#262626;
+  --border:rgba(255,255,255,.11); --border-soft:rgba(255,255,255,.07);
+  --text:#F5F5F5; --muted:#A1A1A1; --dim:#6E6E6E;
 
-  --olive:#9BC53D; --olive-dark:#7FA82B; --olive-light:#2B3519;
-  --red:#F0555F; --red-dark:#C1121F; --red-light:#3A1A1D;
+  /* Inverted, so a primary button stays the highest-contrast thing on screen. */
+  --accent:#FFFFFF; --accent-ink:#0A0A0A; --accent-hover:#E2E2E2;
 
-  --ok:#9BC53D; --warn:#E0A44A; --bad:var(--red);
-  --shadow:0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.25);
-  --shadow-lg:0 8px 30px rgba(0,0,0,.45);
+  --olive:#3DD68C; --olive-dark:#3DD68C; --olive-light:rgba(61,214,140,.12);
+  --red:#FF7B6B; --red-dark:#FF7B6B; --red-light:rgba(255,123,107,.12);
+
+  --ok:#3DD68C; --warn:#E0A44A; --bad:var(--red);
+  --shadow:0 1px 2px rgba(0,0,0,.5), 0 12px 40px rgba(0,0,0,.4);
+  --shadow-lg:0 12px 40px rgba(0,0,0,.5);
 }
 
 * { box-sizing:border-box; }
@@ -55,7 +85,7 @@ a { color:var(--olive-dark); }
 [data-theme="dark"] a { color:var(--olive); }
 button, input, textarea, select { font:inherit; color:inherit; }
 button { cursor:pointer; }
-:focus-visible { outline:2px solid var(--olive); outline-offset:2px; border-radius:4px; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:4px; }
 
 /* ==========================================================================
    Shared controls
@@ -64,9 +94,9 @@ button { cursor:pointer; }
   display:inline-flex; align-items:center; justify-content:center; gap:8px;
   border:1px solid transparent; border-radius:var(--radius-sm);
   padding:10px 16px; font-weight:600; font-size:14px;
-  background:var(--olive); color:#fff; transition:background .12s, opacity .12s;
+  background:var(--accent); color:var(--accent-ink); transition:background .12s, opacity .12s;
 }
-.btn:hover { background:var(--olive-dark); }
+.btn:hover { background:var(--accent-hover); }
 .btn:disabled { opacity:.5; cursor:not-allowed; }
 .btn.secondary { background:var(--surface); color:var(--text); border-color:var(--border); }
 .btn.secondary:hover { background:var(--surface-2); }
@@ -83,7 +113,7 @@ button { cursor:pointer; }
   width:100%; background:var(--surface); border:1px solid var(--border);
   border-radius:var(--radius-sm); padding:11px 13px; font-size:15px;
 }
-.field input:focus { border-color:var(--olive); outline:none; box-shadow:0 0 0 3px var(--olive-light); }
+.field input:focus { border-color:var(--accent); outline:none; box-shadow:0 0 0 3px var(--border); }
 .field .hint { font-size:12px; color:var(--dim); margin-top:5px; }
 
 .alert {
@@ -93,7 +123,7 @@ button { cursor:pointer; }
 .alert.error { background:var(--red-light); border-color:var(--red); color:var(--red-dark); }
 .alert.info { background:var(--olive-light); border-color:var(--olive); color:var(--olive-dark); }
 .alert.warn { background:#FFF4E0; border-color:#E0A44A; color:#8A5200; }
-[data-theme="dark"] .alert.error { color:#FFD9DC; }
+[data-theme="dark"] .alert.error { color:var(--red); }
 [data-theme="dark"] .alert.info { color:var(--olive); }
 [data-theme="dark"] .alert.warn { background:#332612; color:#E8C288; }
 
@@ -105,11 +135,11 @@ button { cursor:pointer; }
 .pill.good { background:var(--olive-light); border-color:var(--olive); color:var(--olive-dark); }
 .pill.bad  { background:var(--red-light); border-color:var(--red); color:var(--red-dark); }
 [data-theme="dark"] .pill.good { color:var(--olive); }
-[data-theme="dark"] .pill.bad { color:#FFD9DC; }
+[data-theme="dark"] .pill.bad { color:var(--red); }
 
 .spinner {
   width:14px; height:14px; border-radius:50%; flex:0 0 auto;
-  border:2px solid var(--border); border-top-color:var(--olive);
+  border:2px solid var(--border); border-top-color:var(--accent);
   animation:spin .7s linear infinite;
 }
 @keyframes spin { to { transform:rotate(360deg); } }
@@ -120,8 +150,8 @@ button { cursor:pointer; }
 #auth {
   min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:24px;
   background:
-    radial-gradient(1100px 520px at 12% -10%, var(--olive-light) 0%, transparent 62%),
-    radial-gradient(900px 460px at 105% 108%, var(--red-light) 0%, transparent 58%),
+    radial-gradient(1100px 520px at 12% -10%, var(--surface-2) 0%, transparent 62%),
+    radial-gradient(900px 460px at 105% 108%, var(--olive-light) 0%, transparent 58%),
     var(--bg);
 }
 .auth-card {
@@ -132,9 +162,9 @@ button { cursor:pointer; }
 .brand { display:flex; align-items:center; gap:11px; margin-bottom:22px; }
 .brand-mark {
   width:38px; height:38px; border-radius:11px; flex:0 0 auto;
-  background:linear-gradient(140deg, var(--olive) 0%, var(--olive-dark) 55%, var(--red) 100%);
+  background:var(--accent);
   display:flex; align-items:center; justify-content:center;
-  font-weight:800; color:#fff; font-size:15px; letter-spacing:.5px;
+  font-weight:800; color:var(--accent-ink); font-size:15px; letter-spacing:-.02em;
 }
 .brand-text b { display:block; font-size:16px; letter-spacing:-.2px; }
 .brand-text span { font-size:12.5px; color:var(--muted); }
@@ -183,8 +213,7 @@ button { cursor:pointer; }
   color:var(--text); font-size:13.5px; margin-bottom:1px;
 }
 .thread:hover { background:var(--surface-3); }
-.thread.active { background:var(--olive-light); color:var(--olive-dark); font-weight:600; }
-[data-theme="dark"] .thread.active { color:var(--olive); }
+.thread.active { background:var(--surface-3); color:var(--text); font-weight:600; }
 .thread .title { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .thread .menu-btn { opacity:0; border:none; background:none; color:var(--muted); padding:2px 4px; border-radius:4px; }
 .thread:hover .menu-btn, .thread.active .menu-btn { opacity:1; }
@@ -207,7 +236,7 @@ button { cursor:pointer; }
 .account-btn:hover { background:var(--surface-3); }
 .avatar {
   width:28px; height:28px; border-radius:50%; flex:0 0 auto; object-fit:cover;
-  background:var(--olive); color:#fff; display:flex; align-items:center; justify-content:center;
+  background:var(--accent); color:var(--accent-ink); display:flex; align-items:center; justify-content:center;
   font-weight:700; font-size:12px;
 }
 .account-btn .who { flex:1; overflow:hidden; }
@@ -235,7 +264,7 @@ button { cursor:pointer; }
   display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700;
 }
 .msg.user .who-mark { background:var(--surface-3); color:var(--muted); }
-.msg.assistant .who-mark { background:linear-gradient(140deg,var(--olive),var(--olive-dark)); color:#fff; }
+.msg.assistant .who-mark { background:var(--olive); color:#FFFFFF; }
 .msg .body { flex:1; min-width:0; padding-top:3px; }
 .msg .body > *:first-child { margin-top:0; }
 .msg .body > *:last-child { margin-bottom:0; }
@@ -303,10 +332,9 @@ button { cursor:pointer; }
   border:1px solid var(--border); border-radius:var(--radius); background:var(--surface);
   padding:14px 15px; font-size:13.5px; line-height:1.5;
 }
-.suggestion:hover { border-color:var(--olive); background:var(--surface-2); }
-.suggestion b { display:block; font-size:12px; color:var(--olive-dark); margin-bottom:4px; font-weight:700;
+.suggestion:hover { border-color:var(--accent); background:var(--surface-2); }
+.suggestion b { display:block; font-size:12px; color:var(--text); margin-bottom:4px; font-weight:700;
   letter-spacing:.4px; text-transform:uppercase; }
-[data-theme="dark"] .suggestion b { color:var(--olive); }
 
 /* Composer */
 .composer-wrap { padding:12px 18px 18px; background:var(--bg); }
@@ -316,14 +344,14 @@ button { cursor:pointer; }
   border:1px solid var(--border); border-radius:var(--radius-lg);
   padding:9px 9px 9px 15px; box-shadow:var(--shadow);
 }
-.composer:focus-within { border-color:var(--olive); box-shadow:0 0 0 3px var(--olive-light); }
+.composer:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px var(--border); }
 .composer textarea {
   flex:1; border:none; background:none; resize:none; outline:none;
   font-size:15px; line-height:1.5; max-height:190px; padding:6px 0;
 }
 .send-btn {
   width:34px; height:34px; flex:0 0 auto; border-radius:9px; border:none;
-  background:var(--olive); color:#fff; display:flex; align-items:center; justify-content:center;
+  background:var(--accent); color:var(--accent-ink); display:flex; align-items:center; justify-content:center;
 }
 .send-btn:disabled { background:var(--border); color:var(--dim); }
 .composer-note { font-size:11.5px; color:var(--dim); text-align:center; margin-top:9px; line-height:1.5; }
@@ -366,8 +394,7 @@ button { cursor:pointer; }
   border:none; background:none; padding:11px 12px; font-size:13.5px; font-weight:600;
   color:var(--muted); border-bottom:2px solid transparent; margin-bottom:-1px;
 }
-.tab.active { color:var(--olive-dark); border-bottom-color:var(--olive); }
-[data-theme="dark"] .tab.active { color:var(--olive); }
+.tab.active { color:var(--text); border-bottom-color:var(--accent); }
 
 .ledger { font-size:13px; }
 .ledger .entry { display:flex; align-items:baseline; gap:11px; padding:9px 0; border-bottom:1px solid var(--border-soft); }
