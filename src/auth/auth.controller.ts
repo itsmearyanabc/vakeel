@@ -403,7 +403,15 @@ export class AuthController {
         // The number the advocate must send the code to. Null when it has not
         // been configured, and the UI says so rather than showing an empty box
         // beside an instruction to message it.
-        botNumber: this.env.WHATSAPP_DISPLAY_NUMBER || null,
+        //
+        // Digits only, because the client builds a wa.me link out of this and
+        // wa.me accepts nothing else. The value is hand-typed into .env and
+        // arrives in whatever shape somebody copied it - "+1 (555) 642-1913"
+        // survives encodeURIComponent as %2B1%20(555)... and produces a link
+        // that silently goes nowhere. The landing page already strips it; doing
+        // it here means both consumers get the same number rather than each
+        // remembering to sanitise.
+        botNumber: normalisePhone(this.env.WHATSAPP_DISPLAY_NUMBER || '') || null,
         whatsappConfigured: this.env.whatsappConfigured,
       };
     } catch (err) {
