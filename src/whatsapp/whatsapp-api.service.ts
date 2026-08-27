@@ -139,6 +139,52 @@ export class WhatsAppApiService {
   }
 
   /**
+   * Send a one-time code as an authentication template.
+   *
+   * ## Why this exists rather than `sendText`
+   *
+   * A person signing up has never messaged the bot, so the 24-hour customer
+   * service window is closed for them and a free-form message is refused by
+   * Meta with error 131047. An approved authentication template is the only
+   * category exempt from that window, which makes it the only way an account
+   * verification code can reach a handset at all.
+   *
+   * ## Why the code is repeated
+   *
+   * Meta requires the code in the body parameter *and* in the copy-code button
+   * parameter. Supplying only the body is accepted by the API and delivers a
+   * message whose button copies an empty string - a failure that looks like a
+   * working send in every log and only shows up on the handset.
+   *
+   * Deliberately not routed through `sendText`'s splitting: a code is never
+   * long enough to split, and a split code would be two useless messages.
+   */
+  async sendAuthCode(to: string, code: string): Promise<SendResult> {
+    const name = this.settings.get('WHATSAPP_OTP_TEMPLATE_NAME') || 'otp_verify';
+    const language = this.settings.get('WHATSAPP_OTP_TEMPLATE_LANG') || 'en';
+
+    return this.send({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'template',
+      template: {
+        name,
+        language: { code: language },
+        components: [
+          { type: 'body', parameters: [{ type: 'text', text: code }] },
+          {
+            type: 'button',
+            sub_type: 'copy_code',
+            index: '0',
+            parameters: [{ type: 'coupon_code', coupon_code: code }],
+          },
+        ],
+      },
+    });
+  }
+
+  /**
    * Mark an inbound message as read (the blue ticks).
    *
    * Best-effort: a failure here is cosmetic and must never fail the job.
@@ -202,7 +248,25 @@ export class WhatsAppApiService {
 
   private preview(message: OutboundMessage): string {
     if (message.type === 'text') return message.text.body.slice(0, 300);
+    // Never the parameters: for an authentication template those are the
+    // one-time code, and this string is written to the log line that runs when
+    // credentials are absent. The template name is enough to identify it.
+    if (message.type === 'template') return `[template:${message.template.name}]`;
     return `[interactive:${message.interactive.type}] ${message.interactive.body.text.slice(0, 200)}`;
+  }
+
+  /**
+   * What of this message is safe to keep in the message log.
+   *
+   * The log is an audit trail an admin can read in the panel, and it is kept
+   * for the retention window. A one-time code in there outlives its usefulness
+   * by weeks and turns the log into a credential store, so a template records
+   * that it was sent and not what it said.
+   */
+  private loggableBody(message: OutboundMessage): string {
+    if (message.type === 'text') return message.text.body;
+    if (message.type === 'template') return `[template:${message.template.name}]`;
+    return message.interactive.body.text;
   }
 
   private async logOutbound(
@@ -217,7 +281,7 @@ export class WhatsAppApiService {
         phoneNumber: message.to,
         direction: 'OUTBOUND',
         messageType: message.type,
-        body: message.type === 'text' ? message.text.body : message.interactive.body.text,
+        body: this.loggableBody(message),
         payload: message as unknown as Record<string, unknown>,
         status,
       });

@@ -94,6 +94,12 @@ const envSchema = z.object({
   WHATSAPP_DISPLAY_NUMBER: z.string().default(''),
   WHATSAPP_GRAPH_BASE_URL: z.string().url().default('https://graph.facebook.com'),
   WHATSAPP_API_VERSION: z.string().default('v23.0'),
+
+  // Authentication-category template used to deliver one-time codes. Named
+  // rather than hardcoded because the name is chosen in Meta's dashboard and
+  // has to match exactly; a mismatch fails at send time with error 132001.
+  WHATSAPP_OTP_TEMPLATE_NAME: z.string().default('otp_verify'),
+  WHATSAPP_OTP_TEMPLATE_LANG: z.string().default('en'),
   WHATSAPP_DEDUPE_TTL_SECONDS: z.coerce.number().int().min(60).default(86400),
 
   // --- Security -------------------------------------------------------------

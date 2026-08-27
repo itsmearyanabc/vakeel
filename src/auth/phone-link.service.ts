@@ -129,7 +129,7 @@ export class PhoneLinkService {
     const consumed = await this.auth.consumeToken(hashToken(code), 'PHONE_LINK');
     if (!consumed) return { status: 'NO_PENDING_CODE' };
 
-    return this.link(pending.user_id, phoneNumber);
+    return this.attachOrMerge(pending.user_id, phoneNumber);
   }
 
   /**
@@ -138,8 +138,17 @@ export class PhoneLinkService {
    * The self-link case - the number already belongs to the very account being
    * linked - is checked first and is not a no-op: it marks the number verified,
    * which is the thing the code proved and which may not have been true before.
+   *
+   * ## The caller must decide whether merging is allowed
+   *
+   * Merging retires `webUserId` and hands its history to the row that already
+   * owns the number. That is right when the owner is a WhatsApp-only account,
+   * which has no credentials of its own. It is an account takeover when the
+   * owner is a full web account: whoever completed the merge would be signed in
+   * as them. PhoneVerificationService refuses that case before it gets here;
+   * anything else calling this must do the same.
    */
-  private async link(webUserId: string, phoneNumber: string): Promise<LinkOutcome> {
+  async attachOrMerge(webUserId: string, phoneNumber: string): Promise<LinkOutcome> {
     const owner = await this.users.findByPhone(phoneNumber);
 
     if (owner && owner.id !== webUserId) {
@@ -184,6 +193,6 @@ export class PhoneLinkService {
  * spaces, a `+` or brackets has to end up as the same string or the lookup
  * silently fails to find an account that is right there.
  */
-function normalisePhone(value: string): string {
+export function normalisePhone(value: string): string {
   return value.replace(/\D/g, '');
 }

@@ -139,6 +139,23 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     help: 'Optional. Only needed for template management and account-level reporting; sending and receiving work without it.',
   },
   {
+    key: 'WHATSAPP_OTP_TEMPLATE_NAME',
+    group: 'whatsapp',
+    label: 'OTP template name',
+    type: 'text',
+    placeholder: 'otp_verify',
+    help: 'Name of the APPROVED authentication-category template that carries the sign-up code. Must match Meta exactly - a mismatch fails at send with error 132001. Free-form messages cannot be used: a new user has never messaged the bot, so the 24-hour window is closed.',
+    requiredFor: 'phone verification and password reset',
+  },
+  {
+    key: 'WHATSAPP_OTP_TEMPLATE_LANG',
+    group: 'whatsapp',
+    label: 'OTP template language',
+    type: 'text',
+    placeholder: 'en',
+    help: 'Language code the template was approved under. `en` and `en_US` are different templates to Meta; using the wrong one fails the same way a wrong name does.',
+  },
+  {
     key: 'WHATSAPP_API_VERSION',
     group: 'whatsapp',
     label: 'Graph API version',

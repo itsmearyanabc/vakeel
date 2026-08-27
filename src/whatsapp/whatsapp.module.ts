@@ -8,7 +8,7 @@ import { CreditsModule } from '../credits/credits.module';
 import { UsersModule } from '../users/users.module';
 import { ConversationService } from './conversation.service';
 import { WebhookController } from './webhook.controller';
-import { WhatsAppApiService } from './whatsapp-api.service';
+import { WhatsAppApiModule } from './whatsapp-api.module';
 
 /**
  * The webhook controller and the queue consumer are separated on purpose.
@@ -22,15 +22,18 @@ import { WhatsAppApiService } from './whatsapp-api.service';
  * processing.
  */
 @Module({
-  imports: [AiModule, AuthModule, EcourtsModule, CreditsModule, UsersModule, JobsModule],
+  imports: [AiModule, AuthModule, EcourtsModule, CreditsModule, UsersModule, JobsModule, WhatsAppApiModule],
   controllers: [WebhookController],
-  providers: [WhatsAppApiService, ConversationService],
-  exports: [WhatsAppApiService, ConversationService],
+  providers: [ConversationService],
+  // The module, not the service: WhatsAppModule no longer provides the client
+  // itself, and Nest can only re-export a provider it owns. Re-exporting the
+  // module keeps every existing consumer's import working unchanged.
+  exports: [WhatsAppApiModule, ConversationService],
 })
 export class WhatsAppModule {}
 
 @Module({
-  imports: [AiModule, AuthModule, EcourtsModule, CreditsModule, UsersModule, JobsModule],
-  providers: [WhatsAppApiService, ConversationService, InboundWorker],
+  imports: [AiModule, AuthModule, EcourtsModule, CreditsModule, UsersModule, JobsModule, WhatsAppApiModule],
+  providers: [ConversationService, InboundWorker],
 })
 export class WhatsAppWorkerModule {}

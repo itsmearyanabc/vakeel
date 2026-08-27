@@ -115,4 +115,50 @@ export interface InteractiveList {
   };
 }
 
-export type OutboundMessage = OutboundTextMessage | OutboundInteractiveMessage;
+/**
+ * A pre-approved template, which is the only thing that reaches a handset
+ * outside the 24-hour customer service window.
+ *
+ * Everything else in this union is free-form, and WhatsApp will only deliver
+ * free-form messages to someone who has messaged the business in the last 24
+ * hours. That rule is why account verification could not previously be sent to
+ * a phone: a person signing up has, by definition, never messaged the bot.
+ *
+ * ## The body parameter is the code, and nothing else
+ *
+ * Authentication-category templates take exactly one body parameter - the
+ * one-time code - and Meta rejects the template at review if the body contains
+ * anything it did not approve. The copy lives in the template, not here, so
+ * this type deliberately cannot express a template with arbitrary prose.
+ */
+export interface OutboundTemplateMessage {
+  messaging_product: 'whatsapp';
+  recipient_type: 'individual';
+  to: string;
+  type: 'template';
+  template: {
+    name: string;
+    language: { code: string };
+    components: TemplateComponent[];
+  };
+}
+
+export type TemplateComponent =
+  | { type: 'body'; parameters: { type: 'text'; text: string }[] }
+  /**
+   * Authentication templates render their code as a copy-to-clipboard button,
+   * and Meta requires the code to be repeated here as well as in the body.
+   * Sending the body alone is accepted by the API and then silently delivers a
+   * message whose button copies an empty string.
+   */
+  | {
+      type: 'button';
+      sub_type: 'url' | 'copy_code';
+      index: string;
+      parameters: { type: 'text' | 'coupon_code'; text?: string; coupon_code?: string }[];
+    };
+
+export type OutboundMessage =
+  | OutboundTextMessage
+  | OutboundInteractiveMessage
+  | OutboundTemplateMessage;

@@ -332,7 +332,14 @@ export interface WebSessionRow {
   created_at: Date;
 }
 
-export type AuthTokenPurpose = 'EMAIL_VERIFY' | 'PASSWORD_RESET' | 'PHONE_LINK';
+export type AuthTokenPurpose =
+  | 'EMAIL_VERIFY'
+  | 'PASSWORD_RESET'
+  | 'PHONE_LINK'
+  /** Sign-up verification: a code sent TO the handset, redeemed in the browser. */
+  | 'PHONE_VERIFY'
+  /** Password reset driven by the same code, for deployments with no email. */
+  | 'PHONE_RESET';
 
 export interface AuthTokenRow {
   id: string;
