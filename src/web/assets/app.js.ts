@@ -186,13 +186,15 @@ function renderAuth() {
       '<form id="auth-form">' +
         (signup ? field('fullName', 'Full name', 'text', 'As it appears on your enrolment') : '') +
         field('email', 'Email', 'email', 'you@example.com') +
+        (signup ? field('phoneNumber', 'WhatsApp number', 'tel',
+                        'With country code, e.g. 919876543210. We send a code here.') : '') +
         field('password', 'Password', 'password',
               signup ? 'At least ' + state.config.passwordMinLength + ' characters' : '') +
         '<button class="btn block" type="submit">' +
           (signup ? 'Create account' : 'Sign in') +
         '</button>' +
       '</form>' +
-      (!signup && state.config.emailRecovery
+      (!signup && (state.config.phoneRecovery || state.config.emailRecovery)
         ? '<div style="text-align:center;margin-top:14px">' +
             '<button class="forgot" id="forgot">Forgot your password?</button></div>'
         : '') +
@@ -209,7 +211,11 @@ function renderAuth() {
 
   $('#switch').onclick = () => { state.authMode = signup ? 'signin' : 'signup'; renderAuth(); };
   const forgot = $('#forgot');
-  if (forgot) forgot.onclick = renderForgotPassword;
+  // WhatsApp first where it exists: every account here is verified by number,
+  // so it is the one contact route guaranteed to be present and proven.
+  if (forgot) {
+    forgot.onclick = state.config.phoneRecovery ? renderForgotByPhone : renderForgotPassword;
+  }
 
   $('#auth-form').onsubmit = async (event) => {
     event.preventDefault();
@@ -222,14 +228,26 @@ function renderAuth() {
         email: $('#f-email').value.trim(),
         password: $('#f-password').value,
       };
-      if (signup) payload.fullName = $('#f-fullName').value.trim();
+      if (signup) {
+        payload.fullName = $('#f-fullName').value.trim();
+        payload.phoneNumber = $('#f-phoneNumber').value.trim();
+      }
 
-      await post(signup ? '/api/auth/signup' : '/api/auth/login', payload);
+      const result = await post(signup ? '/api/auth/signup' : '/api/auth/login', payload);
+
+      // Signing up leaves the account behind the verification gate, so it goes
+      // to the code screen rather than into the app. The session cookie is
+      // already set - that is what lets the verify call authenticate.
+      if (signup) return renderVerifyPhone(result && result.verification);
+
       // The session cookie is set by the response above; everything the app
       // needs comes from one place so the two entry paths cannot diverge again.
       await loadSession();
       await enterApp();
     } catch (err) {
+      // An existing account that predates verification lands here on sign-in:
+      // the credentials are right and the gate is still down.
+      if (err.code === 'PHONE_UNVERIFIED') return renderVerifyPhone(null);
       showAuthError(err.message);
       button.disabled = false;
     }
@@ -239,7 +257,12 @@ function renderAuth() {
 function field(name, label, type, hint) {
   return '<div class="field"><label for="f-' + name + '">' + esc(label) + '</label>' +
     '<input id="f-' + name + '" type="' + type + '" ' +
-    'autocomplete="' + (type === 'password' ? 'current-password' : type === 'email' ? 'email' : 'name') + '" ' +
+    'autocomplete="' + (type === 'password' ? 'current-password'
+                        : type === 'email' ? 'email'
+                        : type === 'tel' ? 'tel' : 'name') + '" ' +
+    // A numeric keypad on a phone, without type=number - which would strip a
+    // leading zero and offer spinner arrows on a value that is not a quantity.
+    (type === 'tel' ? 'inputmode="numeric" ' : '') +
     'required>' +
     (hint ? '<div class="hint">' + esc(hint) + '</div>' : '') + '</div>';
 }
@@ -254,6 +277,87 @@ function showAuthError(message) {
   const box = $('#auth-error');
   if (!box) return;
   box.innerHTML = message ? '<div class="alert error">' + esc(message) + '</div>' : '';
+}
+
+/**
+ * The code screen.
+ *
+ * Reached two ways: straight after signing up, and after signing in to an
+ * account created before verification existed. The info argument carries the
+ * delivery result when there is one - on the sign-in path there is not,
+ * because nothing was sent, which is why resend is offered rather than assumed.
+ */
+function renderVerifyPhone(info) {
+  var sentTo = info && info.phoneNumber ? info.phoneNumber : '';
+  var failed = info && info.sent === false;
+
+  document.body.innerHTML =
+    '<div id="auth"><div class="auth-card">' + brandMarkup() +
+      '<h1>Verify your WhatsApp</h1>' +
+      '<p class="sub">' +
+        (sentTo
+          ? 'We sent a six-digit code to ' + esc(sentTo) + '.'
+          : 'Enter the six-digit code we sent to your WhatsApp.') +
+      '</p>' +
+      '<div id="auth-error"></div>' +
+      '<form id="auth-form">' +
+        '<div class="field"><label for="f-code">Code</label>' +
+          '<input id="f-code" type="text" inputmode="numeric" autocomplete="one-time-code" ' +
+                 'maxlength="6" pattern="[0-9]{6}" required>' +
+          '<div class="hint">It expires in ten minutes.</div></div>' +
+        '<button class="btn block" type="submit">Verify</button>' +
+      '</form>' +
+      '<div style="text-align:center;margin-top:14px">' +
+        '<button class="forgot" id="resend">Send another code</button></div>' +
+      '<div class="auth-switch"><button id="switch">Back to sign in</button></div>' +
+    '</div></div>';
+
+  // A failed delivery is shown immediately rather than after a wasted wait for
+  // a code that is not coming.
+  if (failed) showAuthError(info.message || 'We could not send the code.');
+
+  $('#switch').onclick = function () {
+    // Sign out first: the session is live but gated, and leaving it in place
+    // means the sign-in form would be rendered for somebody already holding a
+    // cookie, which reads as the form silently doing nothing.
+    post('/api/auth/logout', {}).catch(function () {}).then(function () {
+      state.user = null;
+      state.authMode = 'signin';
+      renderAuth();
+    });
+  };
+
+  $('#resend').onclick = function () {
+    var button = $('#resend');
+    button.disabled = true;
+    showAuthError('');
+    post('/api/auth/phone/resend', {}).then(function (r) {
+      $('#auth-error').innerHTML =
+        '<div class="alert info">Sent again' +
+        (r && r.phoneNumber ? ' to ' + esc(r.phoneNumber) : '') + '.</div>';
+      button.disabled = false;
+    }).catch(function (err) {
+      showAuthError(err.message);
+      button.disabled = false;
+    });
+  };
+
+  $('#auth-form').onsubmit = async function (event) {
+    event.preventDefault();
+    var button = $('#auth-form button');
+    button.disabled = true;
+    showAuthError('');
+
+    try {
+      await post('/api/auth/phone/verify-code', { code: $('#f-code').value.trim() });
+      // The gate is lifted from this point, so the ordinary entry path works.
+      await loadSession();
+      await enterApp();
+    } catch (err) {
+      showAuthError(err.message);
+      button.disabled = false;
+    }
+  };
 }
 
 function renderForgotPassword() {
@@ -279,6 +383,85 @@ function renderForgotPassword() {
       $('#auth-error').innerHTML =
         '<div class="alert info">If that address has an account, a reset link is on its way. ' +
         'The link is valid for one hour.</div>';
+    } catch (err) {
+      showAuthError(err.message);
+      button.disabled = false;
+    }
+  };
+}
+
+/**
+ * Reset by WhatsApp code.
+ *
+ * One screen for both halves - request the code, then set the password - rather
+ * than two. The number is already typed in by the time the code arrives, and a
+ * second screen would ask for it again or carry it in a URL, neither of which
+ * is better than keeping it on screen.
+ */
+function renderForgotByPhone() {
+  document.body.innerHTML =
+    '<div id="auth"><div class="auth-card">' + brandMarkup() +
+      '<h1>Reset your password</h1>' +
+      '<p class="sub">We will send a code to your WhatsApp number.</p>' +
+      '<div id="auth-error"></div>' +
+      '<form id="request-form">' +
+        field('phoneNumber', 'WhatsApp number', 'tel', 'With country code, e.g. 919876543210') +
+        '<button class="btn block" type="submit">Send code</button>' +
+      '</form>' +
+      '<div id="stage-two" style="display:none">' +
+        '<div class="divider">then</div>' +
+        '<form id="auth-form">' +
+          '<div class="field"><label for="f-code">Code</label>' +
+            '<input id="f-code" type="text" inputmode="numeric" autocomplete="one-time-code" ' +
+                   'maxlength="6" pattern="[0-9]{6}" required></div>' +
+          field('password', 'New password', 'password',
+                'At least ' + state.config.passwordMinLength + ' characters') +
+          '<button class="btn block" type="submit">Set password</button>' +
+        '</form>' +
+      '</div>' +
+      '<div class="auth-switch"><button id="switch">Back to sign in</button></div>' +
+    '</div></div>';
+
+  $('#switch').onclick = function () { state.authMode = 'signin'; renderAuth(); };
+
+  $('#request-form').onsubmit = async function (event) {
+    event.preventDefault();
+    var button = $('#request-form button');
+    button.disabled = true;
+    showAuthError('');
+    try {
+      await post('/api/auth/password/forgot-phone', {
+        phoneNumber: $('#f-phoneNumber').value.trim(),
+      });
+      // Identical whether or not that number has an account - see the
+      // enumeration note on the endpoint.
+      $('#auth-error').innerHTML =
+        '<div class="alert info">If that number has an account, a code is on its way. ' +
+        'It expires in ten minutes.</div>';
+      $('#stage-two').style.display = 'block';
+    } catch (err) {
+      showAuthError(err.message);
+    }
+    button.disabled = false;
+  };
+
+  $('#auth-form').onsubmit = async function (event) {
+    event.preventDefault();
+    var button = $('#auth-form button');
+    button.disabled = true;
+    showAuthError('');
+    try {
+      await post('/api/auth/password/reset-phone', {
+        phoneNumber: $('#f-phoneNumber').value.trim(),
+        code: $('#f-code').value.trim(),
+        password: $('#f-password').value,
+      });
+      // Every session was revoked, including any the attacker held, so this
+      // ends at the sign-in form rather than inside the app.
+      state.authMode = 'signin';
+      renderAuth();
+      $('#auth-error').innerHTML =
+        '<div class="alert info">Password updated. Sign in with your new password.</div>';
     } catch (err) {
       showAuthError(err.message);
       button.disabled = false;

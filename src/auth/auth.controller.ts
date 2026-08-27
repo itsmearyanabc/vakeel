@@ -20,12 +20,15 @@ import { getLogger } from '../common/logger';
 import { InjectEnv } from '../config/config.module';
 import { AppEnv } from '../config/env';
 import { CreditsService } from '../credits/credits.service';
+import { SettingsService } from '../settings/settings.service';
 import { AuthRepository } from '../database/repositories/auth.repository';
+import { UserRepository } from '../database/repositories/user.repository';
 import { UserRow } from '../database/types';
 import { AuthError, AuthService, SignedInSession } from './auth.service';
 import { clearCookie, readCookie, serializeCookie } from './cookies';
 import { GoogleOAuthService, OAuthError } from './google-oauth.service';
-import { PhoneLinkService } from './phone-link.service';
+import { normalisePhone, PhoneLinkService } from './phone-link.service';
+import { PhoneVerificationService, StartOutcome } from './phone-verification.service';
 import { UserAuthGuard, WebRequest } from './user-auth.guard';
 
 /** Short-lived cookie holding the OAuth `state`, for CSRF. See google-oauth.service.ts. */
@@ -42,6 +45,7 @@ const OAUTH_STATE_TTL_SECONDS = 600;
 interface SignUpBody {
   email?: string;
   password?: string;
+  phoneNumber?: string;
   fullName?: string;
 }
 
@@ -63,7 +67,10 @@ export class AuthController {
     private readonly google: GoogleOAuthService,
     private readonly credits: CreditsService,
     private readonly repo: AuthRepository,
+    private readonly users: UserRepository,
     private readonly phoneLink: PhoneLinkService,
+    private readonly phones: PhoneVerificationService,
+    private readonly settings: SettingsService,
     @InjectEnv() private readonly env: AppEnv,
   ) {}
 
@@ -85,6 +92,10 @@ export class AuthController {
     return {
       google: this.google.isConfigured,
       emailRecovery: this.env.emailConfigured,
+      // Preferred over email where both exist: this deployment verifies every
+      // account by WhatsApp, so the number is the one contact route that is
+      // guaranteed to be present and proven.
+      phoneRecovery: this.settings.whatsappConfigured,
       passwordMinLength: this.env.PASSWORD_MIN_LENGTH,
       payments: this.env.razorpayConfigured,
     };
@@ -101,13 +112,28 @@ export class AuthController {
       this.auth.signUp({
         email: body?.email ?? '',
         password: body?.password ?? '',
+        phoneNumber: body?.phoneNumber ?? '',
         fullName: body?.fullName ?? null,
         userAgent: req.headers['user-agent'] ?? null,
         ip: req.ip ?? null,
       }),
     );
 
-    return this.completeSignIn(session, reply);
+    /*
+     * Awaited, not fired and forgotten.
+     *
+     * The account now exists but cannot be used until the number is proven, so
+     * a delivery failure is not a background inconvenience - it is the user
+     * staring at a code entry box that no code will ever arrive for. Waiting
+     * lets the response say so, and `start` returns a reason rather than
+     * throwing, so a failure here never rolls back a good signup.
+     */
+    const delivery = await this.phones.start(session.user, body?.phoneNumber ?? '');
+
+    return {
+      ...(await this.completeSignIn(session, reply)),
+      verification: this.deliveryView(delivery),
+    };
   }
 
   @Post('api/auth/login')
@@ -259,8 +285,16 @@ export class AuthController {
       capabilities: {
         google: this.google.isConfigured,
         emailRecovery: this.env.emailConfigured,
+        // Recovery by WhatsApp needs a channel that can actually send. Reported
+        // separately from `emailRecovery` so the sign-in screen can offer the
+        // one that works rather than guessing.
+        phoneRecovery: this.settings.whatsappConfigured,
         payments: this.env.razorpayConfigured,
       },
+      // The gate. Everything else on this response is useful to a client that
+      // is about to be told it cannot proceed, so it is reported rather than
+      // withheld.
+      phoneVerified: Boolean(user.phone_verified_at),
     };
   }
 
@@ -476,6 +510,194 @@ export class AuthController {
    * 500 for something the user can fix - which is the difference between "your
    * password is too short" and "the service is broken".
    */
+  @Post('api/auth/password/forgot-phone')
+  @HttpCode(HttpStatus.OK)
+  async forgotPasswordByPhone(@Body() body: { phoneNumber?: string }) {
+    if (!this.settings.whatsappConfigured) {
+      // Refused rather than pretended, for the same reason the email path
+      // refuses: "check your WhatsApp" is a lie the person cannot detect until
+      // they have waited for a message that was never sent.
+      throw new HttpException(
+        {
+          code: 'CHANNEL_UNAVAILABLE',
+          message: 'Reset by WhatsApp is not available on this deployment. Contact support.',
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    const owner = await this.users.findByPhone(normalisePhone(body?.phoneNumber ?? ''));
+    if (owner) await this.phones.start(owner, body?.phoneNumber ?? '', 'PHONE_RESET');
+
+    /*
+     * Identical whether or not the number is registered, and identical whether
+     * or not delivery succeeded.
+     *
+     * Anything else turns this endpoint into a way to ask "does this advocate
+     * have an account here", which is exactly the question the email flow
+     * refuses to answer. The cost is that a genuine delivery failure looks like
+     * success to the user; the resend button and the server log are where that
+     * is recovered.
+     */
+    return { sent: true };
+  }
+
+  @Post('api/auth/password/reset-phone')
+  @HttpCode(HttpStatus.OK)
+  async resetPasswordByPhone(
+    @Body() body: { phoneNumber?: string; code?: string; password?: string },
+  ) {
+    const proven = await this.phones.redeemReset(body?.phoneNumber ?? '', body?.code ?? '');
+
+    if (!proven) {
+      throw new BadRequestException({
+        code: 'INVALID_CODE',
+        message: 'That code is wrong or has expired. Request a new one.',
+      });
+    }
+
+    await this.run(() => this.auth.setPasswordAfterProof(proven, body?.password ?? ''));
+
+    // Deliberately not signed in here. Every session was just revoked, and
+    // handing back a fresh one would undo the revocation for whoever ran the
+    // reset - including an attacker who had the handset for five minutes.
+    return { reset: true };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Phone verification
+  //
+  // The account exists from the moment of signup but cannot be used until the
+  // number is proven, so these two endpoints sit inside the session (the user
+  // is authenticated) and outside the gate (they are what lifts it).
+  // ---------------------------------------------------------------------------
+
+  @Post('api/auth/phone/verify-code')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(UserAuthGuard)
+  async verifyPhoneCode(@Body() body: { code?: string }, @Req() req: WebRequest) {
+    const outcome = await this.phones.verify(req.principal!.user, body?.code ?? '');
+
+    switch (outcome.status) {
+      case 'VERIFIED':
+        return { verified: true, merged: outcome.merged, user: publicUser(outcome.user) };
+
+      case 'TOO_MANY_ATTEMPTS':
+        throw new HttpException(
+          {
+            code: 'TOO_MANY_ATTEMPTS',
+            message: 'That code has been guessed too many times. Request a new one.',
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+
+      case 'ALREADY_REGISTERED':
+        throw new HttpException(
+          {
+            code: 'PHONE_TAKEN',
+            message: 'That number now belongs to another account. Sign in with it instead.',
+          },
+          HttpStatus.CONFLICT,
+        );
+
+      case 'WRONG_CODE':
+        throw new BadRequestException({
+          code: 'WRONG_CODE',
+          message:
+            outcome.remaining > 0
+              ? `That code is not right. ${outcome.remaining} attempt${outcome.remaining === 1 ? '' : 's'} left.`
+              : 'That code is not right.',
+          remaining: outcome.remaining,
+        });
+
+      default:
+        throw new BadRequestException({
+          code: 'NO_PENDING_CODE',
+          message: 'That code has expired. Request a new one.',
+        });
+    }
+  }
+
+  @Post('api/auth/phone/resend')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(UserAuthGuard)
+  async resendPhoneCode(@Req() req: WebRequest) {
+    const user = req.principal!.user;
+
+    // The number comes from the outstanding request, never from the body:
+    // accepting a new one here would turn resend into an unauthenticated way to
+    // send a message to any number at all.
+    const pending = await this.phones.pendingFor(user.id);
+    if (!pending) {
+      throw new BadRequestException({
+        code: 'NO_PENDING_CODE',
+        message: 'There is nothing to resend. Start again from sign-up.',
+      });
+    }
+
+    const outcome = await this.phones.start(user, pending.phoneNumber);
+    if (outcome.status === 'SENT') return { sent: true, phoneNumber: outcome.phoneNumber };
+
+    const view = this.deliveryView(outcome);
+    throw new HttpException(
+      { code: view.code, message: view.message, retryAfterSeconds: view.retryAfterSeconds },
+      outcome.status === 'COOLDOWN' ? HttpStatus.TOO_MANY_REQUESTS : HttpStatus.SERVICE_UNAVAILABLE,
+    );
+  }
+
+  /**
+   * Turn a delivery outcome into something the browser can act on.
+   *
+   * Kept in one place because signup and resend must describe the same failure
+   * the same way - a person who sees "code sent" on one screen and a different
+   * story on the next assumes the product is broken rather than their number.
+   */
+  private deliveryView(outcome: StartOutcome): {
+    sent: boolean;
+    code: string;
+    message: string;
+    phoneNumber?: string;
+    retryAfterSeconds?: number;
+  } {
+    switch (outcome.status) {
+      case 'SENT':
+        return {
+          sent: true,
+          code: 'SENT',
+          message: 'We sent a code to your WhatsApp.',
+          phoneNumber: outcome.phoneNumber,
+        };
+      case 'COOLDOWN':
+        return {
+          sent: false,
+          code: 'COOLDOWN',
+          message: `Wait ${outcome.retryAfterSeconds}s before asking for another code.`,
+          retryAfterSeconds: outcome.retryAfterSeconds,
+        };
+      case 'INVALID_PHONE':
+        return { sent: false, code: 'INVALID_PHONE', message: 'That is not a valid WhatsApp number.' };
+      case 'ALREADY_REGISTERED':
+        return {
+          sent: false,
+          code: 'PHONE_TAKEN',
+          message: 'An account already exists for that number. Try signing in.',
+        };
+      case 'CHANNEL_UNAVAILABLE':
+        return {
+          sent: false,
+          code: 'CHANNEL_UNAVAILABLE',
+          message:
+            'WhatsApp is not configured on this deployment, so no code can be sent. Contact support.',
+        };
+      default:
+        return {
+          sent: false,
+          code: 'DELIVERY_FAILED',
+          message: outcome.hint ?? 'We could not deliver the code to that number.',
+        };
+    }
+  }
+
   private async run<T>(operation: () => Promise<T>): Promise<T> {
     try {
       return await operation();

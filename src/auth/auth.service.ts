@@ -9,6 +9,7 @@ import { UserRepository } from '../database/repositories/user.repository';
 import { UserRow, WebSessionRow } from '../database/types';
 import { EmailService } from './email.service';
 import { GoogleProfile } from './google-oauth.service';
+import { normalisePhone } from './phone-link.service';
 import { hashPassword, needsRehash, passwordProblem, verifyPassword } from './password';
 import { generateToken, hashToken } from './tokens';
 
@@ -20,7 +21,9 @@ export type AuthFailure =
   | 'TOO_MANY_ATTEMPTS'
   | 'ACCOUNT_BLOCKED'
   | 'NO_PASSWORD_SET'
-  | 'INVALID_TOKEN';
+  | 'INVALID_TOKEN'
+  | 'INVALID_PHONE'
+  | 'PHONE_TAKEN';
 
 export class AuthError extends Error {
   constructor(
@@ -115,6 +118,7 @@ export class AuthService {
   async signUp(input: {
     email: string;
     password: string;
+    phoneNumber: string;
     fullName: string | null;
     userAgent: string | null;
     ip: string | null;
@@ -123,6 +127,31 @@ export class AuthService {
 
     if (!EMAIL_PATTERN.test(email)) {
       throw new AuthError('INVALID_EMAIL', 'Enter a valid email address.');
+    }
+
+    /*
+     * The number is validated here and deliberately not stored.
+     *
+     * `users.phone_number` is UNIQUE, so writing an unproven number would let
+     * anyone reserve a handset they do not own simply by typing it into the
+     * signup form - and the real owner would then be unable to register at all.
+     * The claim lives in the verification token's `subject` until a code proves
+     * it, and PhoneVerificationService writes it to the row at that point.
+     */
+    const phoneNumber = normalisePhone(input.phoneNumber);
+    if (phoneNumber.length < 10 || phoneNumber.length > 15) {
+      throw new AuthError('INVALID_PHONE', 'Enter your WhatsApp number in international format, e.g. 919876543210.');
+    }
+
+    // Refused up front rather than at verification, so the person is told
+    // before they wait for a code that can never succeed. The check is repeated
+    // after the code is proven, because these two moments are minutes apart.
+    const numberOwner = await this.users.findByPhone(phoneNumber);
+    if (numberOwner && (numberOwner.password_hash || numberOwner.email)) {
+      throw new AuthError(
+        'PHONE_TAKEN',
+        'An account already exists for this WhatsApp number. Try signing in instead.',
+      );
     }
 
     const weak = passwordProblem(input.password, this.env.PASSWORD_MIN_LENGTH);
@@ -449,6 +478,29 @@ export class AuthService {
 
     this.logger.info({ userId: row.user_id }, 'Password reset completed; all sessions revoked');
     return true;
+  }
+
+  /**
+   * Set a password after identity was proven by a one-time code.
+   *
+   * No current password is asked for, because there is none to ask about - the
+   * whole point of the flow is that it was forgotten. What stands in its place
+   * is the code, which PhoneVerificationService has already consumed by the
+   * time this runs; this method must therefore never be reachable from a route
+   * that has not done that.
+   *
+   * Sessions are revoked for the same reason the emailed flow revokes them: if
+   * the reset happened because somebody else had the account, leaving their
+   * session alive hands it straight back.
+   */
+  async setPasswordAfterProof(user: UserRow, password: string): Promise<void> {
+    const weak = passwordProblem(password, this.env.PASSWORD_MIN_LENGTH);
+    if (weak) throw new AuthError('WEAK_PASSWORD', weak);
+
+    await this.auth.setPasswordHash(user.id, await hashPassword(password));
+    await this.auth.revokeAllSessions(user.id);
+
+    this.logger.info({ userId: user.id }, 'Password set from a phone code; all sessions revoked');
   }
 
   /**

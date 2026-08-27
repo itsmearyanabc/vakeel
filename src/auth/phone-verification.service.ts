@@ -208,6 +208,41 @@ export class PhoneVerificationService {
     return { status: 'VERIFIED', user: outcome.user, merged: outcome.merged };
   }
 
+  /**
+   * Redeem a reset code, identified by the number rather than by a session.
+   *
+   * Password reset runs signed out, so there is no principal to look the token
+   * up against - the number is the only handle the caller has. That makes this
+   * the one path where an attacker chooses the account being attacked, so the
+   * attempt ceiling is doing more work here than anywhere else.
+   *
+   * Returns the user rather than setting the password: what a proven code
+   * establishes is identity, and what to do with that belongs to AuthService,
+   * which already owns hashing and session revocation.
+   */
+  async redeemReset(rawPhone: string, code: string): Promise<UserRow | null> {
+    const phoneNumber = normalisePhone(rawPhone);
+    const owner = await this.users.findByPhone(phoneNumber);
+    if (!owner) return null;
+
+    const pending = await this.auth.findLiveToken(owner.id, 'PHONE_RESET');
+    // Bound to the number the code was issued for, so a code cannot be carried
+    // from one account to another by editing the form.
+    if (!pending || pending.subject !== phoneNumber) return null;
+
+    const attempts = await this.auth.recordTokenAttempt(owner.id, 'PHONE_RESET');
+    if (attempts > MAX_ATTEMPTS) {
+      this.logger.warn({ userId: owner.id, attempts }, 'Reset code exceeded its attempt limit');
+      return null;
+    }
+
+    const consumed = await this.auth.consumeToken(hashToken(code.trim()), 'PHONE_RESET');
+    if (!consumed || consumed.user_id !== owner.id) return null;
+
+    this.logger.info({ userId: owner.id, phone: maskPhone(phoneNumber) }, 'Reset code accepted');
+    return owner;
+  }
+
   /** The outstanding request for this account, if there is one. */
   async pendingFor(userId: string): Promise<{ phoneNumber: string; expiresAt: Date } | null> {
     const row = await this.auth.findLiveToken(userId, 'PHONE_VERIFY');
