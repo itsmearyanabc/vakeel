@@ -15,7 +15,7 @@ import { PrecedentRow, UserRow, WhatsAppUserRow } from '../database/types';
 import { CnrNotFoundError, EcourtsService } from '../ecourts/ecourts.service';
 import { CircuitOpenError } from '../common/circuit-breaker';
 import { PhoneLinkService } from '../auth/phone-link.service';
-import { CreditsService } from '../credits/credits.service';
+import { CREDIT_COST, CreditAction, CreditsService } from '../credits/credits.service';
 import { InboundMessageJob } from '../jobs/queue.constants';
 import { UsersService } from '../users/users.service';
 import { buttonMessage, listMessage } from './message-builder';
@@ -315,6 +315,10 @@ export class ConversationService {
           await this.sendNextPrecedentPage(acting, job);
           break;
 
+        case 'freeform':
+          await this.handleFreeformQuery(acting, action.text, job);
+          break;
+
         default: {
           // Exhaustiveness: adding an Action variant without handling it here
           // is a compile error rather than a message the bot silently ignores.
@@ -350,6 +354,53 @@ export class ConversationService {
    * can prevent the spend. If delivery then fails, {@link answerWithRag} and
    * the precedent path refund it - a claim is a promise to deliver an answer.
    */
+  /**
+   * Take payment for a query, or explain why it cannot run.
+   *
+   * Extracted so the menu path and the free-text path bill through the same
+   * code. They used to differ: `answerSearch` charged and `handleFreeformQuery`
+   * called the answer methods directly, which billed nothing at all. Two
+   * billing paths is one more than a product with credits can afford, and the
+   * one that was wrong was the one that gave the work away.
+   *
+   * Returns false when the advocate has been told they are out of credits, so
+   * every caller can simply stop.
+   */
+  private async chargeOrExplain(
+    user: WhatsAppUserRow,
+    job: InboundMessageJob,
+    action: CreditAction,
+    charge: number = CREDIT_COST[action],
+  ): Promise<boolean> {
+    if (charge <= 0) return true;
+
+    const decision = await this.credits.spend({
+      userId: user.id,
+      role: user.role,
+      cost: charge,
+      action,
+      // Keyed on Meta's message id, which is stable across their retries. A
+      // webhook redelivered after our reply timed out therefore charges once,
+      // not once per delivery attempt.
+      reference: spendReference(job.waMessageId),
+    });
+
+    if (!decision.allowed) {
+      await this.api.sendText(
+        job.from,
+        Replies.quotaExceeded(
+          decision.balance.total,
+          charge,
+          decision.balance.monthlyAllowance,
+          decision.balance.resetsInDays,
+        ),
+      );
+      return false;
+    }
+
+    return true;
+  }
+
   private async answerSearch(
     user: WhatsAppUserRow,
     query: string,
@@ -357,31 +408,13 @@ export class ConversationService {
     job: InboundMessageJob,
     kind: 'SECTION' | 'PRECEDENT',
   ): Promise<void> {
-    if (charge > 0) {
-      const decision = await this.credits.spend({
-        userId: user.id,
-        role: user.role,
-        cost: charge,
-        action: kind === 'PRECEDENT' ? 'PRECEDENT_SEARCH' : 'SECTION_LOOKUP',
-        // Keyed on Meta's message id, which is stable across their retries.
-        // A webhook redelivered after our reply timed out therefore charges
-        // once, not once per delivery attempt.
-        reference: spendReference(job.waMessageId),
-      });
-
-      if (!decision.allowed) {
-        await this.api.sendText(
-          job.from,
-          Replies.quotaExceeded(
-            decision.balance.total,
-            charge,
-            decision.balance.monthlyAllowance,
-            decision.balance.resetsInDays,
-          ),
-        );
-        return;
-      }
-    }
+    const paid = await this.chargeOrExplain(
+      user,
+      job,
+      kind === 'PRECEDENT' ? 'PRECEDENT_SEARCH' : 'SECTION_LOOKUP',
+      charge,
+    );
+    if (!paid) return;
 
     // Classification still runs: it extracts the section number and act code
     // the retrieval layer needs, and detects the language. What it no longer
@@ -781,10 +814,16 @@ export class ConversationService {
         return;
 
       case 'PRECEDENT_SEARCH':
+        // Billed here rather than inside answerPrecedents, which is also
+        // reached from the menu path where answerSearch has already charged.
+        if (!(await this.chargeOrExplain(user, job, 'PRECEDENT_SEARCH'))) return;
         await this.answerPrecedents(user, intent, text, job);
         return;
 
       default:
+        // SECTION_LOOKUP, GENERAL_LEGAL and DRAFTING_HELP all end in retrieval
+        // and all cost the same, so they share one charge.
+        if (!(await this.chargeOrExplain(user, job, 'SECTION_LOOKUP'))) return;
         await this.answerWithRag(user, intent, text, job);
     }
   }

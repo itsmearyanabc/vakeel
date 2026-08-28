@@ -114,15 +114,34 @@ describe('main menu', () => {
     expect(route(input, ctx(), KNOWN_USER, CREDITS).nextState).toBe(expected);
   });
 
-  it('shows the menu again, with the reason, on anything else', () => {
-    // A free-text question here has not said which of the three is wanted, and
-    // guessing spends credits on the wrong search.
+  it('hands a free-text question to the classifier instead of refusing it', () => {
+    // This used to answer "I could not understand that", on the reasoning that
+    // the advocate had not chosen a feature and guessing would spend a credit
+    // on the wrong search. It is only a guess if nothing reads the message -
+    // IntentService does, so the message goes there instead.
     const out = route('what is ipc 420', ctx(), KNOWN_USER, CREDITS);
 
-    expect(replies(out.actions)).toContain('could not understand');
-    expect(replies(out.actions)).toContain(CREDITS);
+    expect(out.actions).toEqual([{ kind: 'freeform', text: 'what is ipc 420' }]);
+    expect(replies(out.actions)).not.toContain('could not understand');
+    // Stays at the menu: the classifier decides what to do, and the advocate
+    // should be able to ask the next thing without navigating back.
     expect(out.nextState).toBe(SESSION_STATE.MAIN_MENU);
-    expect(out.actions.every((a) => a.kind === 'reply')).toBe(true);
+  });
+
+  it.each(['1', '2', '3', '0'])('still treats %p as a menu choice, not free text', (key) => {
+    const out = route(key, ctx(), KNOWN_USER, CREDITS);
+
+    // The shortcut has to keep working: it costs nothing to interpret and it
+    // is how a returning advocate skips straight to what they came for.
+    expect(out.actions.some((a) => a.kind === 'freeform')).toBe(false);
+  });
+
+  it('passes the message through untouched, including casing and spacing', () => {
+    const out = route('  Kya hai IPC 420?  ', ctx(), KNOWN_USER, CREDITS);
+
+    // Trimmed once at the top of route(), never lowercased - the classifier
+    // detects the language from how the advocate actually wrote it.
+    expect(out.actions).toEqual([{ kind: 'freeform', text: 'Kya hai IPC 420?' }]);
   });
 });
 

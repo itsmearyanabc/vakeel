@@ -58,7 +58,15 @@ export type Action =
   | { kind: 'lookupCase'; cnr: string }
   | { kind: 'lookupSection'; query: string; charge: number }
   | { kind: 'searchPrecedents'; query: string; charge: number }
-  | { kind: 'nextPrecedentPage' };
+  | { kind: 'nextPrecedentPage' }
+  /**
+   * Hand the message to the classifier and let it decide.
+   *
+   * Carries no charge because the cost is not knowable here: small talk and
+   * menu navigation are free, a section lookup is not, and which one this is
+   * takes a model call that the router deliberately cannot make.
+   */
+  | { kind: 'freeform'; text: string };
 
 export interface Routed {
   actions: Action[];
@@ -269,10 +277,26 @@ function routeMenu(text: string, creditLine: string): Routed {
     case RETURN_KEY:
       return backToMenu(creditLine);
     default:
-      // A free-text question at the menu is not answered directly. The advocate
-      // has not said which of the three things they want, and guessing wrong
-      // spends credits on the wrong search.
-      return backToMenu(creditLine, Replies.NOT_UNDERSTOOD);
+      /*
+       * Free text is answered rather than refused.
+       *
+       * This used to return "I could not understand that", on the reasoning
+       * that the advocate had not said which of the three features they wanted
+       * and guessing wrong would spend a credit on the wrong search. The
+       * reasoning was sound and the conclusion was too strong: it is a guess
+       * only if nothing looks at the message, and IntentService does - regex
+       * first for a CNR or a section, then the router model, then a rule-based
+       * fallback.
+       *
+       * The numbered menu still works and still costs nothing to interpret.
+       * What changes is that somebody who types "what is IPC 420" - which is
+       * how people actually talk to a chat window - gets an answer instead of
+       * being told they are unintelligible.
+       */
+      return {
+        actions: [{ kind: 'freeform', text }],
+        nextState: SESSION_STATE.MAIN_MENU,
+      };
   }
 }
 
@@ -280,6 +304,22 @@ function routeCaseStatus(text: string, creditLine: string): Routed {
   if (text === RETURN_KEY) return backToMenu(creditLine);
 
   if (!isValidCnr(text)) {
+    /*
+     * A mistyped CNR and a change of subject need different answers.
+     *
+     * Somebody who picked "case status" and then asked "what is IPC 420" has
+     * moved on, and repeating INVALID_CNR at them traps them in a state they
+     * did not know they were in. Guarded by looksLikeQuestion so a genuine
+     * typo - which reads nothing like a question - still gets the CNR help
+     * rather than being sent to retrieval and charged for it.
+     */
+    if (looksLikeQuestion(text)) {
+      return {
+        actions: [{ kind: 'freeform', text }],
+        nextState: SESSION_STATE.MAIN_MENU,
+      };
+    }
+
     return {
       actions: [{ kind: 'reply', text: Replies.INVALID_CNR }],
       nextState: SESSION_STATE.CASE_STATUS,
