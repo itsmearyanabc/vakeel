@@ -135,6 +135,33 @@ export class InboundWorker implements OnModuleInit, OnModuleDestroy {
     attempts: number,
     maxAttempts: number,
   ): Promise<void> {
+    /*
+     * A second safety net under the single-attempt policy.
+     *
+     * maxAttempts=1 stops the two known replay paths, but both of them live in
+     * SQL functions and a queue table that other code can touch. This one is a
+     * single atomic INSERT that cannot be argued with: the first worker to
+     * claim the key answers the message, and any other - now, or after a
+     * redelivery, or from a second worker process - finds the key taken and
+     * stops.
+     *
+     * Claimed before the reply rather than after, because the failure it exists
+     * to prevent is a *duplicate answer*, and an answer that was half-sent when
+     * the process died is still an answer somebody received.
+     */
+    const firstAttempt = await this.messages
+      .claimWebhookEvent(`wa:answered:${data.waMessageId}`)
+      .catch(() => true);
+
+    if (!firstAttempt) {
+      this.logger.warn(
+        { from: maskPhone(data.from), waMessageId: data.waMessageId, attempts },
+        'Message was already answered - dropping the replay instead of answering twice',
+      );
+      await this.jobs.complete(jobId).catch(() => undefined);
+      return;
+    }
+
     try {
       await this.messages.updateStatus(data.waMessageId, 'PROCESSING');
       await this.conversation.handle(data);
