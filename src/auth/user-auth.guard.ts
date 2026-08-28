@@ -9,6 +9,7 @@ import type { FastifyRequest } from 'fastify';
 import { InjectEnv } from '../config/config.module';
 import { AppEnv } from '../config/env';
 import { UserRow, WebSessionRow } from '../database/types';
+import { SettingsService } from '../settings/settings.service';
 import { AuthService } from './auth.service';
 import { readCookie } from './cookies';
 
@@ -49,6 +50,7 @@ export type WebRequest = FastifyRequest & { principal?: WebPrincipal };
 export class UserAuthGuard implements CanActivate {
   constructor(
     private readonly auth: AuthService,
+    private readonly settings: SettingsService,
     @InjectEnv() private readonly env: AppEnv,
   ) {}
 
@@ -78,7 +80,12 @@ export class UserAuthGuard implements CanActivate {
       });
     }
 
-    if (!resolved.user.phone_verified_at && !isReachableUnverified(request.url)) {
+    const enforced = this.settings.getBoolean(
+      'PHONE_VERIFICATION_REQUIRED',
+      this.env.PHONE_VERIFICATION_REQUIRED,
+    );
+
+    if (enforced && !resolved.user.phone_verified_at && !isReachableUnverified(request.url)) {
       throw new ForbiddenException({
         code: 'PHONE_UNVERIFIED',
         message: 'Verify your WhatsApp number to continue.',

@@ -156,6 +156,17 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     help: 'Language code the template was approved under. `en` and `en_US` are different templates to Meta; using the wrong one fails the same way a wrong name does.',
   },
   {
+    key: 'PHONE_VERIFICATION_REQUIRED',
+    group: 'whatsapp',
+    label: 'Require a verified WhatsApp number',
+    type: 'select',
+    options: [
+      { value: 'true', label: 'Yes - unverified accounts cannot use the app' },
+      { value: 'false', label: 'No - verification is attempted but not enforced' },
+    ],
+    help: 'Turn this on only after a real code has reached a real handset. The gate and the template that opens it go live at different moments, and enforcing it in that window locks out every account with no way back in.',
+  },
+  {
     key: 'WHATSAPP_API_VERSION',
     group: 'whatsapp',
     label: 'Graph API version',

@@ -276,6 +276,23 @@ const envSchema = z.object({
    */
   PASSWORD_MIN_LENGTH: z.coerce.number().int().min(8).max(128).default(10),
 
+  /*
+   * Whether an unverified number blocks access.
+   *
+   * Exists because the gate and the thing that lifts it go live at different
+   * moments: the code ships when it is ready, and the WhatsApp template it
+   * depends on ships when Meta finishes reviewing it. Deploying the gate into
+   * that window locks out every existing account and every new signup, with no
+   * way through, because the codes that would open it cannot be sent yet.
+   *
+   * Defaults to on. It is a deployment sequencing tool, not a feature toggle -
+   * turn it on once a real code has arrived on a real handset.
+   */
+  PHONE_VERIFICATION_REQUIRED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+
   // --- Google sign-in -------------------------------------------------------
   // Both must be set for the button to appear. The flow is the server-side
   // authorization-code flow: the browser never sees the client secret, and the
