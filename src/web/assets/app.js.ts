@@ -947,21 +947,40 @@ function emptyState() {
   wrap.appendChild(el('p', null, 'Ask a legal question, look up a section, or check a case by its CNR.'));
 
   const suggestions = el('div', 'suggestions');
+
+  /*
+   * Each card shows a complete example and types back only its opening.
+   *
+   * Submitting the example outright, which is what these used to do, answers a
+   * question nobody asked - and spends a credit doing it. The example is worth
+   * showing because it teaches the shape of a good question; it is not worth
+   * sending, because the advocate has their own matter in mind and the card
+   * knows nothing about it.
+   *
+   * So the third field is where the sentence stops being generic. "What is
+   * section " is true of every section lookup; "420 IPC" is the part only the
+   * advocate can supply, and the cursor is left exactly there.
+   */
   const examples = [
-    ['Section lookup', 'What is section 420 IPC and is it bailable?'],
-    ['Case law', 'Recent Supreme Court judgments on anticipatory bail'],
-    ['Case status', 'Check the status of CNR DLCT010012342024'],
-    ['Drafting', 'Key points for a Section 138 NI Act legal notice'],
+    ['Section lookup', 'What is section 420 IPC and is it bailable?', 'What is section '],
+    ['Case law', 'Recent Supreme Court judgments on anticipatory bail', 'Judgments on '],
+    ['Case status', 'Check the status of CNR DLCT010012342024', 'Check the status of CNR '],
+    ['Drafting', 'Key points for a Section 138 NI Act legal notice', 'Key points for a '],
   ];
 
-  for (const [label, text] of examples) {
+  for (const [label, text, starter] of examples) {
     const button = el('button', 'suggestion');
     button.appendChild(el('b', null, label));
     button.appendChild(document.createTextNode(text));
     button.onclick = () => {
-      $('#composer').value = text;
+      const box = $('#composer');
+      box.value = starter;
       autoGrow();
-      submitQuestion();
+      // Focus before moving the caret: a textarea that is not focused reports a
+      // selection but does not show one, so the advocate would be typing into
+      // a box with no visible cursor.
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
     };
     suggestions.appendChild(button);
   }
