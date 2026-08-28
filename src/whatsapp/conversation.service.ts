@@ -109,6 +109,29 @@ export function spendReference(waMessageId: string): string {
 }
 
 /**
+ * WhatsApp's customer service window, less an hour of margin.
+ *
+ * Meta allows a free-form reply for 24 hours after the customer last wrote.
+ * The margin exists because the boundary is not ours to measure: their clock
+ * decides, the message may have queued, and a reply attempted at 23h59m loses
+ * the race often enough to matter. An hour of margin costs a handful of very
+ * old messages and removes a class of failure that is invisible until a real
+ * advocate is on the other end of it.
+ */
+const SERVICE_WINDOW_SECONDS = 23 * 60 * 60;
+
+/**
+ * Exported for tests: pure logic, and it guards two independent replay paths -
+ * Meta's webhook backlog and this queue's own stalled-job sweep.
+ */
+export function isStale(timestampSeconds: number): boolean {
+  // A missing or nonsensical timestamp is treated as fresh. Guessing "old" on
+  // bad data would silently drop live messages, which is the worse mistake.
+  if (!Number.isFinite(timestampSeconds) || timestampSeconds <= 0) return false;
+  return Math.floor(Date.now() / 1000) - timestampSeconds > SERVICE_WINDOW_SECONDS;
+}
+
+/**
  * The conversation state machine.
  *
  * This is where an inbound job becomes a reply. Ordering is deliberate:
@@ -161,7 +184,62 @@ export class ConversationService {
   ) {}
 
   async handle(job: InboundMessageJob): Promise<void> {
+    if (isStale(job.timestamp)) {
+      /*
+       * A message old enough that we are no longer allowed to answer it.
+       *
+       * Meta retries a webhook for hours and holds a backlog when an endpoint
+       * is unreachable, so changing the callback URL delivers everything that
+       * queued up in the meantime - all at once, all at the new address. Those
+       * messages are real but stale, and answering them is worse than dropping
+       * them in three separate ways: the reply is refused with error 131047
+       * once the 24-hour service window has closed, the advocate gets an answer
+       * to something they asked yesterday with no idea why, and the credit is
+       * spent either way because the charge happens before the send.
+       *
+       * Dropped before the user lookup so a backlog costs nothing but a log
+       * line.
+       */
+      this.logger.warn(
+        {
+          from: maskPhone(job.from),
+          waMessageId: job.waMessageId,
+          ageSeconds: Math.floor(Date.now() / 1000) - job.timestamp,
+        },
+        'Dropping an inbound message older than the service window',
+      );
+      return;
+    }
+
     const user = await this.users.resolveFromPhone(job.from, job.profileName);
+
+    /*
+     * Isolation invariant: this conversation may only ever reply to the handset
+     * it came from.
+     *
+     * Downstream is split - some paths send to `job.from`, others to
+     * `user.phone_number` - and the two are the same number by construction,
+     * because findOrCreate looks the row up *by* the number it was given. That
+     * is a fact about code somewhere else, though, and the failure if it ever
+     * stops being true is one advocate's legal research delivered to another
+     * advocate's phone. That is not a bug to discover from a support ticket.
+     *
+     * So it is checked rather than remembered, and corrected rather than
+     * thrown: a reply that goes to the right person while an alarm fires is
+     * strictly better than no reply at all, and better than a reply to the
+     * wrong person by an enormous margin.
+     */
+    if (user.phone_number !== job.from) {
+      this.logger.error(
+        {
+          userId: user.id,
+          rowNumber: maskPhone(user.phone_number ?? ''),
+          inboundNumber: maskPhone(job.from),
+        },
+        'Resolved account does not match the sending number - replying to the sender',
+      );
+      user.phone_number = job.from;
+    }
 
     if (user.is_blocked) {
       this.logger.debug({ userId: user.id }, 'Ignoring message from opted-out user');

@@ -1,4 +1,4 @@
-import { looksLikeCnrAttempt } from './conversation.service';
+import { isStale, looksLikeCnrAttempt } from './conversation.service';
 
 /**
  * Regression tests for the CNR state trap.
@@ -68,5 +68,54 @@ describe('looksLikeCnrAttempt', () => {
       // the right response either way.
       expect(looksLikeCnrAttempt('12345678901234')).toBe(true);
     });
+  });
+});
+
+/**
+ * Replay protection.
+ *
+ * Two independent things re-deliver an old message, and both were observed in
+ * production on the same afternoon: Meta held a webhook backlog while the
+ * callback URL pointed at a dead host and flushed it at the new one, and the
+ * queue's stalled-job sweep re-ran jobs stranded by a deploy. Either way an
+ * advocate gets an answer to something they asked yesterday, and once the
+ * 24-hour service window has closed the send is refused with error 131047
+ * *after* the credit has been spent.
+ */
+describe('isStale', () => {
+  const now = () => Math.floor(Date.now() / 1000);
+
+  it('accepts a message that just arrived', () => {
+    expect(isStale(now())).toBe(false);
+  });
+
+  it('accepts a message from an hour ago', () => {
+    expect(isStale(now() - 3600)).toBe(false);
+  });
+
+  it('accepts one at twenty-two hours, still inside the window', () => {
+    expect(isStale(now() - 22 * 3600)).toBe(false);
+  });
+
+  it('drops one at twenty-four hours, where the reply would be refused', () => {
+    expect(isStale(now() - 24 * 3600)).toBe(true);
+  });
+
+  it('drops a day-old backlog message', () => {
+    expect(isStale(now() - 48 * 3600)).toBe(true);
+  });
+
+  it('treats a missing or nonsensical timestamp as fresh', () => {
+    // Guessing "old" on bad data would silently drop live messages, which is
+    // the worse of the two mistakes: a duplicate reply annoys, a dropped one
+    // looks like the bot is broken.
+    expect(isStale(0)).toBe(false);
+    expect(isStale(NaN)).toBe(false);
+    expect(isStale(-1)).toBe(false);
+  });
+
+  it('does not drop a message dated slightly in the future', () => {
+    // Clock skew between Meta and this host must never eat a real message.
+    expect(isStale(now() + 120)).toBe(false);
   });
 });
