@@ -10,6 +10,7 @@ import { AppEnv } from '../config/env';
 import { CREDIT_COST } from '../credits/credits.service';
 import { SettingsService } from '../settings/settings.service';
 import { LANDING_CSS } from './assets/landing.css';
+import { renderPrivacy } from './assets/legal.html';
 import { LandingView, renderLanding } from './assets/landing.html';
 
 /**
@@ -83,6 +84,35 @@ export class LandingController {
     );
 
     return new RawResponse(renderLanding(this.buildView(principal), LANDING_CSS));
+  }
+
+
+  /**
+   * The privacy policy.
+   *
+   * Public, uncached-by-identity and cheap: it touches no database and varies
+   * for nobody, so unlike `/` it needs no cookie handling and can be cached
+   * outright. Meta fetches this URL before it will publish the app, and an
+   * unpublished app receives no production webhooks at all - which makes this
+   * page a dependency of the bot receiving messages.
+   */
+  @Get('/privacy')
+  @Header('content-type', 'text/html; charset=utf-8')
+  @Header('x-content-type-options', 'nosniff')
+  @Header('cache-control', 'public, max-age=3600')
+  privacy(): RawResponse<string> {
+    return new RawResponse(
+      renderPrivacy(
+        {
+          publicUrl: this.env.APP_PUBLIC_URL,
+          operator: this.env.LEGAL_OPERATOR_NAME,
+          contactEmail: this.env.LEGAL_CONTACT_EMAIL,
+          year: new Date().getFullYear(),
+          updated: new Date().toISOString().slice(0, 10),
+        },
+        LANDING_CSS,
+      ),
+    );
   }
 
   /**

@@ -107,6 +107,11 @@ export class WebUiController {
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
         `  <url><loc>${this.publicBase()}/</loc><changefreq>weekly</changefreq>` +
         '<priority>1.0</priority></url>\n' +
+        // Listed because it is a real public page, and because a policy nobody
+        // can find is not much of a policy. Low priority and yearly: it is not
+        // what anyone is searching for.
+        `  <url><loc>${this.publicBase()}/privacy</loc><changefreq>yearly</changefreq>` +
+        '<priority>0.3</priority></url>\n' +
         '</urlset>\n',
     );
   }

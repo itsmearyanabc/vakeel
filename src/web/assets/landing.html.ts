@@ -680,6 +680,7 @@ ${notice ?? ''}
               : '<li><a href="/app">Log in</a></li><li><a href="/app/signup">Sign up</a></li>'
           }
           <li><a href="#faq">Questions</a></li>
+          <li><a href="/privacy">Privacy</a></li>
           ${
             waDigits(view.whatsappNumber)
               ? `<li><a href="https://wa.me/${esc(waDigits(view.whatsappNumber))}" rel="noopener">WhatsApp</a></li>`

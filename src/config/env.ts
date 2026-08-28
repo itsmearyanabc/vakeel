@@ -277,6 +277,16 @@ const envSchema = z.object({
   PASSWORD_MIN_LENGTH: z.coerce.number().int().min(8).max(128).default(10),
 
   /*
+   * Who the privacy policy names as Data Fiduciary, and where data requests go.
+   *
+   * Left blank by default and rendered as a placeholder rather than invented.
+   * A policy that names the wrong entity is a dated, published, false statement
+   * about who is accountable under the DPDP Act.
+   */
+  LEGAL_OPERATOR_NAME: z.string().default(''),
+  LEGAL_CONTACT_EMAIL: z.string().default(''),
+
+  /*
    * Whether an unverified number blocks access.
    *
    * Exists because the gate and the thing that lifts it go live at different
