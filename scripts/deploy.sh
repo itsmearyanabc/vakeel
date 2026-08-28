@@ -74,11 +74,21 @@ grep -qE '^ENCRYPTION_KEY=[0-9a-fA-F]{64}$' .env || die "ENCRYPTION_KEY must be 
 # hand-edited .env, and it fails deep inside a library with `ERR_INVALID_URL`
 # and a stack trace that says nothing about which variable is at fault. Caught
 # here instead, by name.
-for var in DATABASE_URL DIRECT_URL APP_PUBLIC_URL OPENAI_API_KEY KANOON_API_KEY; do
+for var in DATABASE_URL DIRECT_URL APP_PUBLIC_URL OPENAI_API_KEY KANOON_API_KEY \
+           LEGAL_OPERATOR_NAME LEGAL_CONTACT_EMAIL WHATSAPP_DISPLAY_NUMBER; do
   if grep -qE "^${var}=.*[<>]" .env; then
     die "${var} still contains a <placeholder> from the template. Replace it, or delete the line if it is optional."
   fi
 done
+
+# The two legal fields are the ones a placeholder does the most damage to. The
+# others fail loudly at runtime - a bad DATABASE_URL cannot connect - while
+# these render straight onto a public page that Meta reads during app review,
+# and the deployment goes on looking perfectly healthy while doing it.
+if grep -qE '^WHATSAPP_DISPLAY_NUMBER=.*[^0-9=]' .env; then
+  warn "WHATSAPP_DISPLAY_NUMBER should be digits only (919876543210), with no +, spaces or brackets.
+   It is used to build wa.me links; anything else produces a link that opens nothing."
+fi
 
 # DIRECT_URL is only consulted by the migration runner, and only because the
 # Supabase transaction pooler (port 6543) cannot run DDL reliably. Pointing it
