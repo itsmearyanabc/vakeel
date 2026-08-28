@@ -82,6 +82,15 @@ export function route(
   context: SessionContext,
   user: SessionUser,
   creditLine: string,
+  /**
+   * Public URL of the web app, or '' where there is none.
+   *
+   * Passed in for the same reason `creditLine` is: this function does no I/O
+   * and reads no configuration, which is what lets the whole conversation be
+   * tested without a database or an environment. Defaulted so the existing
+   * callers and the twenty-one cases in the spec keep compiling unchanged.
+   */
+  site = '',
 ): Routed {
   const text = input.trim();
 
@@ -97,14 +106,16 @@ export function route(
   if (context.state === null) {
     if (!user.profileComplete) {
       return {
-        actions: [{ kind: 'reply', text: Replies.GREETING_NEW_USER }],
+        actions: [{ kind: 'reply', text: Replies.greetingNewUser(site) }],
         nextState: SESSION_STATE.AWAITING_PROFILE,
         contextPatch: {},
       };
     }
 
     return {
-      actions: [{ kind: 'reply', text: Replies.greetingReturning(user.fullName) }],
+      actions: [
+        { kind: 'reply', text: Replies.greetingReturning(user.fullName, creditLine, site) },
+      ],
       nextState: SESSION_STATE.AWAITING_LANGUAGE,
       contextPatch: {},
     };
@@ -112,7 +123,7 @@ export function route(
 
   switch (context.state) {
     case SESSION_STATE.AWAITING_PROFILE:
-      return routeProfile(text);
+      return routeProfile(text, site);
 
     case SESSION_STATE.AWAITING_LANGUAGE:
       return routeLanguage(text, user, creditLine);
@@ -134,6 +145,37 @@ export function route(
   }
 }
 
+/**
+ * Does this read as a question rather than a botched profile?
+ *
+ * A profile is four comma-separated fields. Anything asking for something is
+ * shaped differently, and the cheap signals are enough: a question mark, an
+ * interrogative opening, or the two things this bot is actually for - a
+ * statute reference or a CNR-shaped string.
+ *
+ * Deliberately generous. A false positive costs one clearer message; a false
+ * negative returns the reply that reads as a broken bot, which is the failure
+ * worth avoiding.
+ */
+function looksLikeQuestion(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (!t) return false;
+
+  // A real profile has commas and no question mark - check that first so a
+  // legitimate submission is never misread as a question.
+  if (t.includes(',') && !t.includes('?')) return false;
+
+  if (t.includes('?')) return true;
+  if (/^(what|who|whose|whom|how|why|when|where|which|can|could|is|are|do|does|did|tell|explain|kya|kaise|kyu|kyun)\b/.test(t)) {
+    return true;
+  }
+  // The statutes and identifiers this product exists to answer about.
+  if (/\b(ipc|bns|crpc|bnss|cpc|section|dhara)\b/.test(t)) return true;
+  if (/[A-Za-z]{4}\d{2}-?\d{6}-?\d{4}/i.test(text)) return true;
+
+  return false;
+}
+
 function backToMenu(creditLine: string, prefix?: string): Routed {
   const text = prefix
     ? `${prefix}\n\n${Replies.helpMenu(creditLine)}`
@@ -144,17 +186,28 @@ function backToMenu(creditLine: string, prefix?: string): Routed {
   };
 }
 
-function routeProfile(text: string): Routed {
+function routeProfile(text: string, site: string): Routed {
   const profile = parseProfile(text);
 
   if (!profile) {
-    // Re-send the whole greeting rather than a bare "invalid". The advocate
-    // needs the format again, and by now it has scrolled off a phone screen.
+    /*
+     * Two different failures wear the same clothes here.
+     *
+     * A mistyped profile needs the format again - re-sent in full rather than
+     * as a bare "invalid", because by now it has scrolled off a phone screen.
+     *
+     * A question - "what is IPC 420" - was understood perfectly and simply
+     * cannot be answered until the advocate is registered. Replying "I could
+     * not understand that" tells them the bot is broken when it is working as
+     * intended; they rephrase, get the same answer, and leave.
+     */
     return {
       actions: [
         {
           kind: 'reply',
-          text: `${Replies.NOT_UNDERSTOOD}\n\n${Replies.GREETING_NEW_USER}`,
+          text: looksLikeQuestion(text)
+            ? Replies.profileNeededFirst(site)
+            : `${Replies.NOT_UNDERSTOOD}\n\n${Replies.greetingNewUser(site)}`,
         },
       ],
       nextState: SESSION_STATE.AWAITING_PROFILE,

@@ -222,3 +222,88 @@ describe('"0" returns to the menu from every state', () => {
     );
   });
 });
+
+/**
+ * The website is half the product, and these two surfaces share one account.
+ *
+ * A bot-first advocate has no way of discovering the browser app unless the bot
+ * says so, and the link is the only thing in the greeting that cannot be
+ * inferred from the conversation itself.
+ */
+describe('the website link', () => {
+  const SITE = 'https://vakeelsaathi.in';
+
+  it('offers the site to a new user, before asking for the profile', () => {
+    const text = replies(route('hello', { state: null }, NEW_USER, CREDITS, SITE).actions);
+
+    expect(text).toContain(SITE);
+    // Ordering is the point: the last thing in a WhatsApp message is what
+    // people act on, and that has to be the question, not the link.
+    expect(text.indexOf(SITE)).toBeLessThan(text.indexOf('Name, Bar Council ID'));
+  });
+
+  it('shows a returning advocate their balance and the site', () => {
+    const text = replies(route('hi', { state: null }, KNOWN_USER, CREDITS, SITE).actions);
+
+    expect(text).toContain(CREDITS);
+    expect(text).toContain(SITE);
+    // The language prompt is the ask, so it stays last.
+    expect(text.indexOf(SITE)).toBeLessThan(text.indexOf('Select your language'));
+  });
+
+  it('says nothing at all when no public URL is configured', () => {
+    const text = replies(route('hello', { state: null }, NEW_USER, CREDITS).actions);
+
+    expect(text).not.toContain('Full app');
+    expect(text).not.toContain('http');
+    // Still a usable greeting without it.
+    expect(text).toContain('Name, Bar Council ID, City, State');
+  });
+});
+
+/**
+ * Asking a question before registering.
+ *
+ * This is the single most likely first message from somebody who found the
+ * number and has not read anything: they ask the thing they came to ask. The
+ * reply decides whether they register or conclude the bot is broken.
+ */
+describe('a question during onboarding', () => {
+  const AWAITING = { state: SESSION_STATE.AWAITING_PROFILE } as SessionContext;
+
+  it.each([
+    'what is ipc 420',
+    'What is IPC 420?',
+    'can you check a case status',
+    'section 302',
+    'kya hai dhara 420',
+  ])('answers %p with register-first, not "could not understand"', (question) => {
+    const text = replies(route(question, AWAITING, NEW_USER, CREDITS).actions);
+
+    expect(text).toContain('as soon as you are registered');
+    // The old reply told an advocate their perfectly clear question was
+    // gibberish, which reads as a broken bot rather than a missing step.
+    expect(text).not.toContain('could not understand');
+  });
+
+  it('still re-sends the format when the profile is merely mistyped', () => {
+    const text = replies(route('Ramesh Kumar D/1234/2015', AWAITING, NEW_USER, CREDITS).actions);
+
+    expect(text).toContain('could not understand');
+    expect(text).toContain('Name, Bar Council ID, City, State');
+  });
+
+  it('never mistakes a valid profile for a question', () => {
+    const out = route('Ramesh Kumar, D/1234/2015, Patna, Bihar', AWAITING, NEW_USER, CREDITS);
+
+    expect(out.actions.some((a) => a.kind === 'saveProfile')).toBe(true);
+  });
+
+  it('keeps the advocate in AWAITING_PROFILE either way', () => {
+    for (const input of ['what is ipc 420', 'nonsense here']) {
+      expect(route(input, AWAITING, NEW_USER, CREDITS).nextState).toBe(
+        SESSION_STATE.AWAITING_PROFILE,
+      );
+    }
+  });
+});

@@ -270,6 +270,7 @@ export class ConversationService {
         profileComplete: ConversationService.profileComplete(user),
       },
       this.credits.creditLine(balance),
+      this.env.APP_PUBLIC_URL,
     );
 
     // The router may replace the user we are acting on: submitting a bar

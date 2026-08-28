@@ -94,28 +94,84 @@ const CAPABILITIES = [
   '• Case Law / Precedents',
 ].join('\n');
 
-/** First contact: greet, list capabilities, and ask for the profile. */
-export const GREETING_NEW_USER = [
-  '*Jai Hind!*',
-  '',
-  'Welcome to *Vakeel Saathi*. I can help you with:',
-  CAPABILITIES,
-  '',
-  'Please send your *Name, Bar Council ID, City, State*',
-  '',
-  '_Example: Ramesh Kumar, D/1234/2015, Patna, Bihar_',
-].join('\n');
+/**
+ * The browser half of the product, mentioned where somebody wants it.
+ *
+ * WhatsApp linkifies a bare https:// URL, so it arrives tappable with no
+ * markup. Renders as nothing when the deployment has no public URL - a line
+ * reading "Full app:" above an empty space is worse than silence.
+ *
+ * Always placed *before* whatever the message asks for. The last line of a
+ * WhatsApp message is the one people act on, and that line should be the
+ * question, not a link that changes the subject.
+ */
+function siteLine(site: string, lead: string): string[] {
+  const url = site.trim().replace(/\/+$/, '');
+  return url ? ['', lead, url] : [];
+}
 
-/** A known advocate starting a new session. Straight to language. */
-export function greetingReturning(name: string | null): string {
+/**
+ * First contact: greet, list capabilities, point at the website, ask for the
+ * profile.
+ *
+ * The website is named here rather than after onboarding because this is the
+ * moment a new advocate decides whether the thing is real. It is also the
+ * honest framing - the two surfaces are one account, and somebody who starts
+ * on WhatsApp today can sign in on the site later with this same number and
+ * find their history waiting. PhoneVerificationService does that merge.
+ */
+export function greetingNewUser(site = ''): string {
+  return [
+    '*Jai Hind!*',
+    '',
+    'Welcome to *Vakeel Saathi*. I can help you with:',
+    CAPABILITIES,
+    ...siteLine(site, 'Full app in your browser — same account, same credits:'),
+    '',
+    'To get started here, please send your *Name, Bar Council ID, City, State*',
+    '',
+    '_Example: Ramesh Kumar, D/1234/2015, Patna, Bihar_',
+  ].join('\n');
+}
+
+/**
+ * A known advocate starting a new session.
+ *
+ * Carries the balance, because "how many credits do I have left" is the
+ * question every returning user has and the one they would otherwise spend a
+ * message asking.
+ */
+export function greetingReturning(name: string | null, credits = '', site = ''): string {
   const who = name ? ` ${name.split(',')[0].trim()}` : '';
   return [
     '*Jai Hind!*',
     '',
     `Welcome back${who} to *Vakeel Saathi*. I can help you with:`,
     CAPABILITIES,
+    ...(credits ? ['', `_${credits}_`] : []),
+    ...siteLine(site, 'Full app:'),
     '',
     LANGUAGE_PROMPT,
+  ].join('\n');
+}
+
+/**
+ * Somebody asked a real question before registering.
+ *
+ * Distinct from NOT_UNDERSTOOD deliberately. "I could not understand that" is
+ * true of a malformed profile and false of "what is IPC 420" - that was
+ * understood perfectly and simply cannot be answered yet. Telling an advocate
+ * their question was gibberish reads as a broken bot, and what they need is
+ * not to rephrase it but to register.
+ */
+export function profileNeededFirst(site = ''): string {
+  return [
+    'I can answer that as soon as you are registered.',
+    '',
+    'Please send your *Name, Bar Council ID, City, State* first.',
+    '',
+    '_Example: Ramesh Kumar, D/1234/2015, Patna, Bihar_',
+    ...siteLine(site, 'Or register in your browser:'),
   ].join('\n');
 }
 
