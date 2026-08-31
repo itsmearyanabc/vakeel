@@ -470,7 +470,6 @@ export class ConversationService {
           decision.balance.total,
           charge,
           decision.balance.monthlyAllowance,
-          decision.balance.resetsInDays,
         ),
       );
       return false;
@@ -1177,7 +1176,7 @@ export class ConversationService {
       await this.api.send(
         buttonMessage(
           job.from,
-          `You have *${balance.total}* ${balance.total === 1 ? 'credit' : 'credits'} left this month. Verified advocates get unlimited searches.`,
+          `You have *${balance.total}* ${balance.total === 1 ? 'credit' : 'credits'} left. Verified advocates get unlimited searches.`,
           [{ id: ACTION.VERIFY, title: 'Verify licence' }],
         ),
       );

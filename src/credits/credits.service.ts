@@ -57,26 +57,9 @@ const UNLIMITED: CreditBalance = Object.freeze({
   paid: 0,
   total: 0,
   monthlyAllowance: -1,
-  resetsInDays: 0,
   unlimited: true,
 });
 
-/**
- * Whole days until the free allowance refills.
- *
- * Computed in Asia/Kolkata, matching `credit_refresh_monthly()`. Doing it in
- * the server's local zone would tell an advocate in Delhi their credits reset
- * tomorrow when the database intends to reset them the day after - a small lie
- * that arrives on the last day of every month.
- */
-export function daysUntilNextMonth(now: Date = new Date()): number {
-  const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-
-  const firstOfNext = new Date(ist.getFullYear(), ist.getMonth() + 1, 1);
-  const startOfToday = new Date(ist.getFullYear(), ist.getMonth(), ist.getDate());
-
-  return Math.round((firstOfNext.getTime() - startOfToday.getTime()) / 86_400_000);
-}
 
 function normaliseQuery(value: string): string {
   return value
@@ -95,14 +78,15 @@ export interface CreditBalance {
   paid: number;
   /** What can actually be spent right now. */
   total: number;
-  /** The role's monthly allowance, or -1 when the role is unlimited. */
-  monthlyAllowance: number;
   /**
-   * Days until the free bucket refills, so the interface can say "resets in 9
-   * days" rather than leaving someone at zero with no idea when that changes.
-   * Zero for unlimited roles.
+   * The role's one-time free allowance, or -1 when the role is unlimited.
+   *
+   * Still named for the monthly cycle it came from. The cycle is gone as of
+   * migration 0014 - the allowance is granted once and never topped up - but
+   * the name reaches into env vars (CREDITS_FREE_MONTHLY) and a database
+   * function, and renaming half of a chain is worse than a stale name.
    */
-  resetsInDays: number;
+  monthlyAllowance: number;
   /**
    * True when this role bypasses the wallet entirely.
    *
@@ -138,17 +122,21 @@ export interface SpendDecision {
  *
  * This is a ledger. Every movement is a row, the balance is derived and also
  * cached on `users`, and the two are reconcilable. The behaviour an advocate
- * A guest gets 30 credits a month, verified advocates are unlimited, and a
- * failed delivery is always refunded.
+ * A guest gets a one-time free allowance, verified advocates are unlimited, and
+ * a failed delivery is always refunded.
  *
  * ## The two buckets
  *
- * Free credits are the monthly allowance and are *reset*, not accumulated. Paid
- * credits are durable. Spending draws down free first. The reasoning for all
- * three of those decisions is in migration 0010, and the move from a daily to a
- * monthly period is in 0012 - they are the parts of this design that are
- * expensive to change once real rows exist, so they are written down where the
- * schema is.
+ * Free credits are granted once, for the life of the account, and never refill.
+ * Paid credits are durable. Spending draws down free first, so the credits that
+ * cannot be replaced are the ones kept back.
+ *
+ * That allowance has changed period twice and the history is in the migrations
+ * rather than here, because it is expensive to change once real rows exist:
+ * daily in 0010, monthly in 0012, and once-for-life in 0014. `monthlyAllowance`
+ * and `CREDITS_FREE_MONTHLY` still carry the middle name - renaming them means
+ * moving an env var, a database function argument and every caller in one
+ * commit, which is a worse trade than a stale word.
  *
  * ## Idempotency is the caller's job
  *
@@ -211,7 +199,6 @@ export class CreditsService {
       paid,
       total: free + paid,
       monthlyAllowance: allowance,
-      resetsInDays: daysUntilNextMonth(),
       unlimited: false,
     };
   }
@@ -228,7 +215,6 @@ export class CreditsService {
       paid,
       total: free + paid,
       monthlyAllowance: allowance,
-      resetsInDays: daysUntilNextMonth(),
       unlimited: false,
     };
   }
@@ -273,7 +259,6 @@ export class CreditsService {
       paid: result.paid_left,
       total: result.free_left + result.paid_left,
       monthlyAllowance: allowance,
-      resetsInDays: daysUntilNextMonth(),
       unlimited: false,
     };
 
@@ -422,8 +407,8 @@ export class CreditsService {
   creditLine(balance: CreditBalance): string {
     if (balance.unlimited) return 'Credits: unlimited';
     if (balance.paid > 0) {
-      return `Credits: ${balance.total} left (${balance.free} free this month + ${balance.paid} purchased)`;
+      return `Credits: ${balance.total} left (${balance.free} free + ${balance.paid} purchased)`;
     }
-    return `Credits: ${balance.free} of ${balance.monthlyAllowance} left this month`;
+    return `Credits: ${balance.free} of ${balance.monthlyAllowance} left`;
   }
 }

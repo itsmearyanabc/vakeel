@@ -170,7 +170,10 @@ describe('the landing page', () => {
       // a search changes in CREDIT_COST, this page must move with it.
       const html = copy(render({ searchCost: 4, freeMonthlyCredits: 12 }));
       expect(html).toContain('4 credits');
-      expect(html).toContain('12 free credits every month');
+      // Not "every month": since migration 0014 the allowance is granted once
+      // for the life of the account, and the page must not promise a refill.
+      expect(html).toContain('12 free credits');
+      expect(html).not.toContain('every month');
       expect(html).not.toContain('>1 credit<');
     });
 

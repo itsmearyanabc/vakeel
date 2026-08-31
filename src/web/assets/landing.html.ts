@@ -137,9 +137,9 @@ const ICON = {
     '<circle cx="12" cy="12" r="9.2"/><path d="M12 11v5.5M12 7.6v.1"/></svg>',
 };
 
-/** "30 free credits a month", or the unmetered phrasing when the allowance is -1. */
+/** "30 free credits", or the unmetered phrasing when the allowance is -1. */
 function allowancePhrase(credits: number): string {
-  return credits < 0 ? 'an unmetered allowance' : `${credits} free credits every month`;
+  return credits < 0 ? 'an unmetered allowance' : `${credits} free credits`;
 }
 
 /**
@@ -302,10 +302,10 @@ function figures(view: LandingView): string {
     '<div class="figures">' +
     '<div class="figure">' +
     `<div class="n">${view.freeMonthlyCredits < 0 ? '&#8734;' : esc(view.freeMonthlyCredits)}</div>` +
-    '<div class="unit">free credits a month</div>' +
-    '<p>They reset on the 1st and do not roll over. A spend draws on them before ' +
-    'anything you have paid for, so a purchase is never burned while an allowance ' +
-    'expires beside it.</p>' +
+    '<div class="unit">free credits, once</div>' +
+    '<p>Yours for the life of the account, not a monthly allowance. A spend draws ' +
+    'on them before anything you have paid for, so the free ones go first and a ' +
+    'purchase is never spent while free credits sit unused beside it.</p>' +
     '</div>' +
     '<div class="figure">' +
     `<div class="n">${esc(view.searchCost)}</div>` +

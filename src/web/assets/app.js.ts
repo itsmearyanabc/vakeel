@@ -1300,7 +1300,7 @@ function renderCredits() {
     left.appendChild(el('div', 'label',
       state.credits.paid > 0
         ? state.credits.free + ' free + ' + state.credits.paid + ' purchased'
-        : 'credits left this month'));
+        : 'credits left'));
   }
 
   chip.appendChild(left);
@@ -1324,10 +1324,11 @@ async function openCredits() {
       const grid = el('div');
       grid.style.cssText = 'display:flex;gap:12px;margin-bottom:6px';
 
-      grid.appendChild(statBox(data.balance.free, 'free this month',
-        data.balance.resetsInDays === 1
-          ? 'Resets to ' + data.balance.monthlyAllowance + ' tomorrow'
-          : 'Resets to ' + data.balance.monthlyAllowance + ' in ' + data.balance.resetsInDays + ' days'));
+      // No reset line: the free allowance is granted once for the life of the
+      // account and never refills, so there is no date to promise. Saying one
+      // would have an advocate wait for credits that are not coming.
+      grid.appendChild(statBox(data.balance.free, 'free credits',
+        'Granted once — they do not refill'));
       grid.appendChild(statBox(data.balance.paid, 'purchased', 'Never expire'));
       summary.appendChild(grid);
 

@@ -63,7 +63,7 @@ export interface UserRow {
   last_web_login_at: Date | null;
 
   // --- Wallet (migrations 0010, 0012) ----------------------------------------
-  /** This month's free allowance remaining. Reset on the 1st, never accumulated. */
+  /** The one-time free allowance remaining. Granted once per account; never refilled. */
   free_credits: number;
   /** Superseded by `free_period` in migration 0012. No longer read or written. */
   free_credits_date: Date | null;

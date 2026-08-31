@@ -1022,7 +1022,8 @@ function viewCredits() {
       '<button class="btn secondary sm" onclick="exportCsv(CACHE.creditRows, \'credits.csv\')">Export CSV</button></div>' +
 
       '<div class="note">Every credit movement, newest first. This is the authoritative record — ' +
-      'the balances shown on the Users page are a cache of it. Free credits reset daily; ' +
+      'the balances shown on the Users page are a cache of it. Free credits are granted once ' +
+      'and never refill (migration 0014); ' +
       'purchased and granted credits never expire, and a spend draws down free first.</div>' +
 
       '<div class="grid kpis" style="margin-bottom:14px">' +

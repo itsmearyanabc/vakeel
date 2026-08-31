@@ -169,9 +169,11 @@ describe('CreditsService.spend', () => {
     expect(decision.allowed).toBe(false);
     expect(decision.charged).toBe(0);
     expect(decision.balance.total).toBe(0);
-    // The reset date travels with the refusal, because "you are out" without
-    // "until the 1st" leaves someone with no idea whether to wait or to pay.
-    expect(decision.balance.resetsInDays).toBeGreaterThan(0);
+    // No reset date travels with the refusal any more: since migration 0014 the
+    // free allowance is granted once for the life of the account, so there is
+    // no date to give and implying one would tell an advocate to wait for
+    // credits that are never coming.
+    expect(decision.balance).not.toHaveProperty('resetsInDays');
   });
 
   it('surfaces a replayed charge as allowed but free', async () => {
@@ -229,20 +231,24 @@ describe('CreditsService.creditLine', () => {
     expect(service.creditLine(balance)).toBe('Credits: unlimited');
   });
 
-  it('reports the monthly allowance when nothing has been purchased', async () => {
+  it('reports the allowance without promising a refill', async () => {
     const { service } = build();
     const balance = await service.balance('u1', 'GUEST_LAWYER');
-    expect(service.creditLine(balance)).toBe('Credits: 30 of 30 left this month');
+    // "this month" was true until migration 0014 and is now a promise the
+    // system does not keep: the free allowance is granted once and never
+    // topped up, so an advocate reading it would wait instead of buying.
+    expect(service.creditLine(balance)).toBe('Credits: 30 of 30 left');
   });
 
   it('separates free from purchased once there are both', async () => {
     // Collapsing these into one number is what the two buckets exist to avoid:
-    // "8 left" hides that 5 of them vanish at the end of the month and 3 do not.
+    // free credits are spent first, so "8 left" hides which 3 survive a
+    // spending spree and which 5 do not.
     const { service, repo } = build();
     repo.balance.mockResolvedValueOnce({ free: 5, paid: 3 });
 
     const balance = await service.balance('u1', 'GUEST_LAWYER');
-    expect(service.creditLine(balance)).toBe('Credits: 8 left (5 free this month + 3 purchased)');
+    expect(service.creditLine(balance)).toBe('Credits: 8 left (5 free + 3 purchased)');
   });
 });
 

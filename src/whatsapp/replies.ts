@@ -375,32 +375,28 @@ export const ECOURTS_UNAVAILABLE = [
 /**
  * Out of credits.
  *
- * Says when they come back, because with a monthly cycle that is genuinely not
- * obvious - "tomorrow" was self-evident and "the 1st" is not, especially to
- * someone who has just run out on the 3rd.
+ * It used to say when they came back, because on a monthly cycle "the 1st" is
+ * not obvious to somebody who ran out on the 3rd. Since migration 0014 the free
+ * allowance is granted once for the life of the account and never refills, so
+ * there is no date to give - and inventing one would be the more expensive
+ * mistake, since an advocate who believes credits return next month simply
+ * waits instead of buying more.
  */
 export function quotaExceeded(
   remaining: number,
   cost: number,
   monthlyAllowance: number,
-  resetsInDays: number,
 ): string {
   const shortfall =
     remaining > 0
       ? `That costs *${cost} credit${cost === 1 ? '' : 's'}* and you have *${remaining}* left.`
-      : `You have used all *${monthlyAllowance} free credits* for this month.`;
-
-  const resets =
-    resetsInDays <= 1
-      ? 'Your free credits reset tomorrow.'
-      : `Your free credits reset in *${resetsInDays} days*.`;
+      : `You have used all *${monthlyAllowance} free credits* on this account.`;
 
   return [
     shortfall,
     '',
     'Verified advocates get unlimited searches. Type *verify* to submit your bar council enrolment number — it takes under a minute.',
     '',
-    resets,
     'Checking a case by CNR is always free.',
   ].join('\n');
 }
