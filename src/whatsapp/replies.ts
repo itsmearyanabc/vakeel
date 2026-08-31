@@ -396,8 +396,6 @@ export function quotaExceeded(
     shortfall,
     '',
     'Verified advocates get unlimited searches. Type *verify* to submit your bar council enrolment number — it takes under a minute.',
-    '',
-    'Verified advocates get unlimited searches, including case status.',
   ].join('\n');
 }
 
