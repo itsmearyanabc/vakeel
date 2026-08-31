@@ -380,7 +380,7 @@ export class ConversationService {
           // Charged here rather than inside answerCaseStatus, which the
           // free-text path also reaches with its own charge already taken.
           if (await this.chargeOrExplain(acting, job, 'CASE_STATUS', action.charge)) {
-            await this.answerCaseStatus(acting, action.cnr, text);
+            await this.answerCaseStatus(acting, action.cnr, text, job);
           }
           break;
 
@@ -686,7 +686,10 @@ export class ConversationService {
         const cnr = extractCnr(text);
         if (cnr) {
           await this.conversations.clear(user.id);
-          await this.answerCaseStatus(user, cnr, text);
+          // This legacy flow takes no charge of its own, so the refund inside
+          // matches no ledger rows and is a no-op. `job` is threaded through so
+          // that stays true by construction rather than by remembering.
+          await this.answerCaseStatus(user, cnr, text, job);
           return true;
         }
 
@@ -888,7 +891,7 @@ export class ConversationService {
       case 'CASE_STATUS':
         if (intent.cnrNumber) {
           if (!(await this.chargeOrExplain(user, job, 'CASE_STATUS'))) return;
-          await this.answerCaseStatus(user, intent.cnrNumber, text);
+          await this.answerCaseStatus(user, intent.cnrNumber, text, job);
         } else {
           await this.conversations.set(user.id, STATE.AWAITING_CNR);
           await this.api.sendText(job.from, Replies.ASK_FOR_CNR);
@@ -917,7 +920,12 @@ export class ConversationService {
    * charges at all: there is no model call behind it, and it is the thing an
    * advocate does standing outside a courtroom.
    */
-  private async answerCaseStatus(user: WhatsAppUserRow, cnr: string, originalQuery: string): Promise<void> {
+  private async answerCaseStatus(
+    user: WhatsAppUserRow,
+    cnr: string,
+    originalQuery: string,
+    job: InboundMessageJob,
+  ): Promise<void> {
     const started = Date.now();
 
     try {
@@ -939,6 +947,29 @@ export class ConversationService {
         guardrailFlagged: false,
       });
     } catch (err) {
+      /*
+       * The credit goes back on every failure.
+       *
+       * This mattered less when a CNR lookup was free - the catch block simply
+       * apologised. Now that it is priced, an advocate who sends a valid CNR
+       * and gets "court records are unavailable" has paid for nothing, and the
+       * most likely cause of a run of those is our own misconfiguration rather
+       * than anything they did.
+       *
+       * `CnrNotFoundError` is refunded too, which is the arguable one. A case
+       * that genuinely does not exist did consume an upstream call - but the
+       * advocate cannot tell that outcome apart from a wrong base URL, and
+       * charging for "no such case" is how a typo becomes a complaint.
+       *
+       * Same reference the charge used, so the ledger returns each credit to
+       * the bucket it came from. A refund for a message that was never charged
+       * - a repeat lookup, an unlimited role - matches no rows and does
+       * nothing.
+       */
+      await this.credits
+        .refund(user.id, user.role, spendReference(job.waMessageId), 'Case status lookup failed')
+        .catch((refundErr) => this.logger.warn({ refundErr, cnr }, 'Could not refund a failed lookup'));
+
       if (err instanceof CnrNotFoundError) {
         await this.api.sendText(user.phone_number, Replies.CNR_NOT_FOUND);
         return;
