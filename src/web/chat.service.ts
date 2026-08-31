@@ -188,7 +188,7 @@ export class ChatService {
     // the classifier has no better information than the pattern does.
     const cnr = intent.cnrNumber ?? extractCnr(question);
     if (cnr) {
-      yield* this.answerCaseStatus({ user, threadId, question, cnr });
+      yield* this.answerCaseStatus({ user, threadId, question, cnr, reference });
       return;
     }
 
@@ -248,11 +248,40 @@ export class ChatService {
     threadId: string;
     question: string;
     cnr: string;
+    /** The idempotency key the charge and any refund share. */
+    reference: string;
   }): AsyncGenerator<ChatEvent> {
-    const { user, threadId, question, cnr } = input;
+    const { user, threadId, question, cnr, reference } = input;
     const started = Date.now();
 
     yield { type: 'stage', stage: 'looking-up' };
+
+    /*
+     * Priced like every other lookup, and priced the same here as on WhatsApp.
+     *
+     * This path used to record `creditsCharged: 0` and never call spend, which
+     * was correct while CASE_STATUS cost nothing. Leaving it after the price
+     * changed would mean one feature with two prices depending on which screen
+     * an advocate happened to open - the kind of difference nobody reports as a
+     * bug and everybody notices.
+     */
+    const decision = await this.credits.spend({
+      userId: user.id,
+      role: user.role,
+      cost: CREDIT_COST.CASE_STATUS,
+      action: 'CASE_STATUS',
+      reference,
+    });
+
+    if (!decision.allowed) {
+      yield {
+        type: 'error',
+        code: 'INSUFFICIENT_CREDITS',
+        message: `A case status lookup costs ${CREDIT_COST.CASE_STATUS} credit and you have ${decision.balance.total} left.`,
+        credits: decision.balance,
+      };
+      return;
+    }
 
     try {
       const status = await this.ecourts.lookup(cnr);
@@ -269,7 +298,7 @@ export class ChatService {
         // record.
         structured: { kind: 'caseStatus', ...status },
         latencyMs: Date.now() - started,
-        creditsCharged: 0,
+        creditsCharged: decision.charged,
       });
 
       await this.analytics.recordSearch({
@@ -305,9 +334,21 @@ export class ChatService {
         this.logger.error({ err, cnr }, 'CNR lookup failed');
       }
 
+      /*
+       * The credit goes back before the failure is reported.
+       *
+       * This block used to note that case status was free and therefore had
+       * nothing to refund. It is priced now, and because the error is recorded
+       * as a message rather than thrown, the outer catch that refunds every
+       * other failure never sees it - so the refund has to happen here or not
+       * at all.
+       */
+      await this.credits
+        .refund(user.id, user.role, reference, 'Case status lookup failed')
+        .catch((refundErr) => this.logger.warn({ refundErr, cnr }, 'Could not refund a failed lookup'));
+
       // Recorded as a message rather than thrown, so the advocate's question
-      // and the reason it failed stay together in the thread. Case status is
-      // free, so there is nothing to refund.
+      // and the reason it failed stay together in the thread.
       const message = await this.chats.appendMessage({
         threadId,
         userId: user.id,
