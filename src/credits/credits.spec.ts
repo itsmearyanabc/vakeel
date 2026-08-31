@@ -44,17 +44,26 @@ function build(overrides: Record<string, string> = {}) {
  * unlikely.
  */
 describe('credit costs', () => {
-  it('never charges for a case status lookup', () => {
-    // A court-record lookup with no model call behind it, done standing
-    // outside a courtroom. Charging for it would ration the cheapest feature.
-    expect(CREDIT_COST.CASE_STATUS).toBe(0);
+  it('charges for a case status lookup', () => {
+    // Free while eCourts was a mock and the call cost nothing to serve. It is
+    // a metered upstream API now, so it carries a price like everything else.
+    expect(CREDIT_COST.CASE_STATUS).toBe(1);
   });
 
-  it('charges one credit for any question', () => {
-    // One question, one credit, is a rule an advocate can hold in their head
-    // and predict. A cost table that needs explaining has already lost.
-    expect(CREDIT_COST.SECTION_LOOKUP).toBe(1);
-    expect(CREDIT_COST.PRECEDENT_SEARCH).toBe(1);
+  it('charges two credits for a research question', () => {
+    expect(CREDIT_COST.SECTION_LOOKUP).toBe(2);
+    expect(CREDIT_COST.PRECEDENT_SEARCH).toBe(2);
+  });
+
+  it('keeps every cost a small whole number', () => {
+    // The costs are quoted to advocates on the landing page and in the bot. A
+    // fractional or three-digit price is one nobody can hold in their head, and
+    // this is the assertion that notices before they see it.
+    for (const cost of Object.values(CREDIT_COST)) {
+      expect(Number.isInteger(cost)).toBe(true);
+      expect(cost).toBeGreaterThan(0);
+      expect(cost).toBeLessThanOrEqual(5);
+    }
   });
 });
 
@@ -111,10 +120,21 @@ describe('CreditsService.spend', () => {
     });
 
     expect(decision.allowed).toBe(true);
+    // Read from the constant rather than written out, so a price change moves
+    // this test with it instead of failing it. What is being asserted is that
+    // the wallet charges what the table says - not what the table says.
+    // `charged` is echoed from the database, not recomputed here - the stub
+    // returns 1 and that is what should surface. What this asserts is that the
+    // service reports what the ledger actually did, rather than what it asked
+    // for; the cost it *asked* for is checked against the table below.
     expect(decision.charged).toBe(1);
     expect(decision.balance.total).toBe(29);
     expect(repo.spend).toHaveBeenCalledWith(
-      expect.objectContaining({ cost: 1, reference: 'spend:web:msg-1', monthlyAllowance: 30 }),
+      expect.objectContaining({
+        cost: CREDIT_COST.PRECEDENT_SEARCH,
+        reference: 'spend:web:msg-1',
+        monthlyAllowance: 30,
+      }),
     );
   });
 
@@ -137,14 +157,16 @@ describe('CreditsService.spend', () => {
     expect(repo.spend).not.toHaveBeenCalled();
   });
 
-  it('never touches the ledger for a free action', async () => {
-    // Case status costs nothing - see CREDIT_COST for why.
+  it('never touches the ledger for a zero-cost action', async () => {
+    // No action is priced at zero today, but the wallet must still short-
+    // circuit one: a zero-cost spend that reached the ledger would write a
+    // meaningless row and burn the reference that a later real charge needs.
     const { service, repo } = build();
 
     const decision = await service.spend({
       userId: 'u1',
       role: 'GUEST_LAWYER',
-      cost: CREDIT_COST.CASE_STATUS,
+      cost: 0,
       action: 'CASE_STATUS',
       reference: 'spend:web:msg-3',
     });

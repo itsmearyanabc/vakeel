@@ -1333,7 +1333,7 @@ async function openCredits() {
       summary.appendChild(grid);
 
       const note = el('p', null,
-        'Every question costs 1 credit. Checking a case by CNR is always free. ' +
+        'A section lookup or case-law search costs 2 credits; a case status costs 1. ' +
         'Free credits are used before purchased ones.');
       note.style.cssText = 'font-size:12.5px;color:var(--muted);margin:12px 0 0;line-height:1.6';
       summary.appendChild(note);

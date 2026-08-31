@@ -319,6 +319,70 @@ export function synopsis(p: PrecedentRow, limit = 260): string {
 }
 
 /**
+ * The line under LEGAL PRINCIPLE, or nothing at all.
+ *
+ * ## Why this can return null
+ *
+ * The corpus supplies a headnote or a ratio for judgments we have ingested, and
+ * either is a real statement of what the case decided. Indian Kanoon supplies
+ * neither. What it gives is `headline` - a snippet with the query terms
+ * highlighted - and for a judgment where those terms appear only in the
+ * metadata, that snippet is the document's own header:
+ *
+ *   "The State Of Bihar vs Imteyaz Alam @ Ansari on 11 September, 2024
+ *    Author: Ashutosh Kumar"
+ *
+ * Printing that after the words LEGAL PRINCIPLE is worse than printing nothing.
+ * It is not wrong the way a hallucination is wrong - every word is true - but it
+ * claims to be the holding of the case and is actually the title, the date and
+ * the judge, all three of which are already on the card immediately above it.
+ * An advocate reads it, learns nothing, and concludes the product is broken.
+ *
+ * So: a real principle, or no line.
+ */
+export function legalPrinciple(p: PrecedentRow, limit = 200): string | null {
+  // Ingested judgments carry the real thing; none of the rescue below applies.
+  const authored = (p.ratio_decidendi || p.headnote || '').replace(/\s+/g, ' ').trim();
+  if (authored) return stripEllipsis(synopsis({ ...p, best_excerpt: authored }, limit));
+
+  const excerpt = (p.best_excerpt || '').replace(/\s+/g, ' ').trim();
+  if (!excerpt) return null;
+  if (isDocumentHeader(excerpt, p.case_title)) return null;
+
+  const trimmed = stripEllipsis(synopsis(p, limit));
+  // A handful of words is a fragment, not a principle. The threshold is low on
+  // purpose - the aim is to catch residue, not to judge brevity.
+  return trimmed.replace(/[^A-Za-z]/g, '').length >= 40 ? trimmed : null;
+}
+
+/**
+ * Is this snippet just the judgment's own header?
+ *
+ * Two independent signals, either sufficient, because Kanoon's header format
+ * varies with how much of the title it kept:
+ *
+ *   - the snippet opens with the case title it sits beneath, or
+ *   - stripping the "on <date>" and "Author: <name>" furniture leaves almost
+ *     nothing behind
+ */
+function isDocumentHeader(excerpt: string, caseTitle: string): boolean {
+  const norm = (v: string): string => v.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  const title = norm(stripEllipsis(caseTitle));
+  // 24 characters is enough to identify the case and short enough to survive
+  // Kanoon truncating long party names.
+  if (title.length >= 24 && norm(excerpt).startsWith(title.slice(0, 24))) return true;
+
+  const residue = excerpt
+    .replace(/on\s+\d{1,2}\s+\w+,?\s+\d{4}/gi, '')
+    .replace(/author\s*:\s*[^.,;]{0,60}/gi, '')
+    .replace(/bench\s*:\s*[^.,;]{0,60}/gi, '')
+    .replace(/[^A-Za-z]/g, '');
+
+  return residue.length < 40;
+}
+
+/**
  * Render one page of precedents as a WhatsApp message.
  *
  * WhatsApp hard-truncates around 4096 characters, so the list is paged rather
@@ -363,6 +427,23 @@ export function formatPrecedentPage(
   // with the data is far harder to read down a phone screen than one with a
   // predictable gap, and a missing label reads as an omission rather than as
   // an absence in the source.
+  /*
+   * A label is printed only when there is something behind it.
+   *
+   * The card used to print "Not available" so every result had the same seven
+   * lines in the same places - a predictable shape being easier to read down a
+   * phone screen. In practice Indian Kanoon supplies no neutral citation and no
+   * reporter citation for most judgments, so the predictable shape was three
+   * dead lines per result and fifteen per page, pushing the lines that do carry
+   * information off the screen. It reads as a broken product rather than a thin
+   * source.
+   *
+   * The title and the summary are always printed; everything between them is
+   * conditional, and this keeps that decision in one place instead of seven.
+   */
+  const line = (label: string, value: string | null | undefined): string[] =>
+    value && value !== NOT_AVAILABLE ? [`${label}: ${value}`] : [];
+
   const entries = page.map((p, i) => {
     const n = offset + i + 1;
     const { petitioner, respondent } = splitParties(p.case_title);
@@ -374,21 +455,24 @@ export function formatPrecedentPage(
           ? `${p.bench_strength}-judge bench`
           : NOT_AVAILABLE;
 
+    const principle = legalPrinciple(p);
+
     return [
       `*${n}. ${stripEllipsis(p.case_title)}*`,
-      `CASE NO.: ${p.neutral_citation ?? NOT_AVAILABLE}`,
-      `PETITIONER: ${petitioner ?? NOT_AVAILABLE}`,
-      `RESPONDENT: ${respondent ?? NOT_AVAILABLE}`,
-      `DATE OF JUDGMENT: ${fullDate(p.judgment_date) ?? NOT_AVAILABLE}`,
-      `BENCH: ${bench}`,
-      // Indian Kanoon exposes no citation of any kind. Saying "Not available"
-      // is the honest answer; inventing a citation-shaped string is the one
-      // failure this product exists to avoid, and the source link has been
-      // dropped from the card entirely.
-      `EQUIVALENT CITATIONS: ${bestCitation(p) ?? NOT_AVAILABLE}`,
-      `COURT: ${p.court_name ?? NOT_AVAILABLE}`,
-      '',
-      `LEGAL PRINCIPLE: ${stripEllipsis(synopsis(p, 200))}`,
+      ...line('CASE NO.', p.neutral_citation),
+      ...line('PETITIONER', petitioner),
+      ...line('RESPONDENT', respondent),
+      ...line('DATE OF JUDGMENT', fullDate(p.judgment_date)),
+      ...line('BENCH', bench),
+      // Omitted rather than marked absent when Kanoon has no citation of any
+      // kind, which is most judgments. Inventing a citation-shaped string is
+      // the one failure this product exists to avoid, so the absence is still
+      // real - it just no longer needs a line of its own to announce itself.
+      ...line('EQUIVALENT CITATIONS', bestCitation(p)),
+      ...line('COURT', p.court_name),
+      // Dropped entirely when the source states no principle, rather than
+      // printed with the document's own header standing in for one.
+      ...(principle ? ['', `LEGAL PRINCIPLE: ${principle}`] : []),
     ].join('\n');
   });
 

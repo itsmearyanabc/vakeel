@@ -377,7 +377,11 @@ export class ConversationService {
         }
 
         case 'lookupCase':
-          await this.answerCaseStatus(acting, action.cnr, text);
+          // Charged here rather than inside answerCaseStatus, which the
+          // free-text path also reaches with its own charge already taken.
+          if (await this.chargeOrExplain(acting, job, 'CASE_STATUS', action.charge)) {
+            await this.answerCaseStatus(acting, action.cnr, text);
+          }
           break;
 
         case 'lookupSection':
@@ -883,6 +887,7 @@ export class ConversationService {
 
       case 'CASE_STATUS':
         if (intent.cnrNumber) {
+          if (!(await this.chargeOrExplain(user, job, 'CASE_STATUS'))) return;
           await this.answerCaseStatus(user, intent.cnrNumber, text);
         } else {
           await this.conversations.set(user.id, STATE.AWAITING_CNR);

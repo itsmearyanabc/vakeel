@@ -24,9 +24,22 @@ import { CreditLedgerRow, UserRole } from '../database/types';
  * to be the only thing enforcing them.
  */
 export const CREDIT_COST = {
-  CASE_STATUS: 0,
-  SECTION_LOOKUP: 1,
-  PRECEDENT_SEARCH: 1,
+  /**
+   * A CNR lookup. Was free while eCourts was a mocked adapter and the call cost
+   * nothing to serve; it is a metered upstream API now, so it is priced.
+   */
+  CASE_STATUS: 1,
+  SECTION_LOOKUP: 2,
+  /**
+   * Charged per page of five, not per search.
+   *
+   * A precedent search that returns forty judgments does forty judgments' worth
+   * of work only if the advocate reads them, and each `more` is another page
+   * retrieved, summarised and sent. Pricing the search rather than the page
+   * meant the second through eighth pages were free, which is where the cost
+   * actually is.
+   */
+  PRECEDENT_SEARCH: 2,
 } as const;
 
 export type CreditAction = keyof typeof CREDIT_COST;

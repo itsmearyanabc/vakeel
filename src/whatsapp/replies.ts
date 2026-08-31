@@ -397,7 +397,7 @@ export function quotaExceeded(
     '',
     'Verified advocates get unlimited searches. Type *verify* to submit your bar council enrolment number — it takes under a minute.',
     '',
-    'Checking a case by CNR is always free.',
+    'Verified advocates get unlimited searches, including case status.',
   ].join('\n');
 }
 

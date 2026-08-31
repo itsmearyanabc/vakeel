@@ -156,18 +156,23 @@ describe('precedent formatting', () => {
       expect(out).toContain('RESPONDENT: Ram Kumar');
     });
 
-    it('prints "Not available" rather than dropping a field', () => {
-      // A card whose shape changes with the data is harder to read down a phone
-      // screen, and a missing label reads as an omission rather than an absence.
+    it('drops a field entirely rather than printing "Not available"', () => {
+      // The card used to keep a fixed shape by printing "Not available". Kanoon
+      // has no citation for most judgments, so that shape was three dead lines
+      // per result and fifteen per page, pushing the informative lines off the
+      // screen. An absent label now means absent.
       const out = formatPrecedentPage(
         [row({ neutral_citation: null, reporter_citations: [], judgment_date: null, bench: [], bench_strength: null })],
         0,
         5,
         'q',
       );
+      expect(out).not.toContain('Not available');
       for (const label of ['CASE NO.', 'DATE OF JUDGMENT', 'BENCH', 'EQUIVALENT CITATIONS']) {
-        expect(out).toContain(`${label}: Not available`);
+        expect(out).not.toContain(`${label}:`);
       }
+      // The title still anchors the card, so a result is never a blank block.
+      expect(out).toContain('1. ');
     });
 
     it('gives a useful empty state instead of a bare "nothing found"', () => {
@@ -195,7 +200,9 @@ describe('precedent formatting', () => {
 
     it('survives a judgment with no date', () => {
       const out = formatPrecedentPage([row({ judgment_date: null })], 0, 5, 'q');
-      expect(out).toContain('DATE OF JUDGMENT: Not available');
+      expect(out).not.toContain('DATE OF JUDGMENT');
+      // Still a usable card - the absence of one field must not blank the rest.
+      expect(out).toContain('COURT:');
     });
   });
 });

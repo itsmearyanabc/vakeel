@@ -1,3 +1,4 @@
+import { CREDIT_COST } from '../credits/credits.service';
 import { Action, route, SESSION_STATE, SessionContext, SessionUser } from './session.router';
 
 /**
@@ -149,7 +150,7 @@ describe('case status', () => {
   it('looks up a valid CNR and stays put', () => {
     const out = route('BRMG030000191989', ctx({ state: SESSION_STATE.CASE_STATUS }), KNOWN_USER, CREDITS);
 
-    expect(out.actions[0]).toEqual({ kind: 'lookupCase', cnr: 'BRMG030000191989' });
+    expect(out.actions[0]).toMatchObject({ kind: 'lookupCase', cnr: 'BRMG030000191989' });
     expect(out.nextState).toBe(SESSION_STATE.CASE_STATUS);
   });
 
@@ -160,16 +161,47 @@ describe('case status', () => {
     expect(out.actions.some((a) => a.kind === 'lookupCase')).toBe(false);
   });
 
-  it('never attaches a charge', () => {
-    const out = route('BRMG030000191989', ctx({ state: SESSION_STATE.CASE_STATUS }), KNOWN_USER, CREDITS);
-    expect(JSON.stringify(out.actions)).not.toContain('charge');
+  it('charges for a lookup, and only once per case', () => {
+    // Free while eCourts was a mock; a metered API now, so it is priced.
+    const first = route('BRMG030000191989', ctx({ state: SESSION_STATE.CASE_STATUS }), KNOWN_USER, CREDITS);
+    expect(first.actions[0]).toMatchObject({
+      kind: 'lookupCase',
+      charge: CREDIT_COST.CASE_STATUS,
+    });
+
+    // Re-reading the same record must not charge again. The credit buys the
+    // case, not the message - an advocate scrolling back and resending a CNR
+    // is not asking a second question.
+    const again = route(
+      'BRMG030000191989',
+      ctx({ state: SESSION_STATE.CASE_STATUS, lastChargedQuery: 'BRMG030000191989' }),
+      KNOWN_USER,
+      CREDITS,
+    );
+    expect(again.actions[0]).toMatchObject({ kind: 'lookupCase', charge: 0 });
+  });
+
+  it('charges again for a different case', () => {
+    const out = route(
+      'KAHC010001232024',
+      ctx({ state: SESSION_STATE.CASE_STATUS, lastChargedQuery: 'BRMG030000191989' }),
+      KNOWN_USER,
+      CREDITS,
+    );
+    expect(out.actions[0]).toMatchObject({ charge: CREDIT_COST.CASE_STATUS });
   });
 });
 
 describe('billing', () => {
   it('charges 1 for a new section lookup', () => {
     const out = route('IPC 420', ctx({ state: SESSION_STATE.SECTION_INFO }), KNOWN_USER, CREDITS);
-    expect(out.actions[0]).toMatchObject({ kind: 'lookupSection', charge: 1 });
+    expect(out.actions[0]).toMatchObject({
+      kind: 'lookupSection',
+      // Read from the table rather than restated, so a price change moves this
+      // test with it. What is asserted is that the router charges what the
+      // wallet says - not what the price happens to be today.
+      charge: CREDIT_COST.SECTION_LOOKUP,
+    });
     expect(out.contextPatch?.lastChargedQuery).toBe('IPC 420');
   });
 
@@ -190,7 +222,7 @@ describe('billing', () => {
       KNOWN_USER,
       CREDITS,
     );
-    expect(out.actions[0]).toMatchObject({ charge: 1 });
+    expect(out.actions[0]).toMatchObject({ charge: CREDIT_COST.SECTION_LOOKUP });
   });
 
   it('never charges for paging with "more"', () => {

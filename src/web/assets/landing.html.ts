@@ -481,7 +481,7 @@ ${notice ?? ''}
       <p class="hero-note rise d3">
         ${esc(allowancePhrase(view.freeMonthlyCredits))}${
           view.signupBonus > 0 ? `, plus ${esc(view.signupBonus)} to begin with` : ''
-        }. Case status never costs a credit.
+        }. Case status costs one credit; research costs two.
       </p>
 
       <div class="specimen rise d4" aria-label="An illustration of the answer format">
@@ -641,7 +641,7 @@ ${notice ?? ''}
           : esc(
               'No card, no sales call. ' +
                 allowancePhrase(view.freeMonthlyCredits).replace(/^an /, 'An ') +
-                ', and case status that never costs a credit.',
+                ', and case status at one credit a lookup.',
             )
       }</p>
       <div class="hero-cta">${doors}</div>

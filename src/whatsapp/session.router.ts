@@ -55,7 +55,7 @@ export interface SessionUser {
 export type Action =
   | { kind: 'reply'; text: string }
   | { kind: 'saveProfile'; profile: ParsedProfile }
-  | { kind: 'lookupCase'; cnr: string }
+  | { kind: 'lookupCase'; cnr: string; charge: number }
   | { kind: 'lookupSection'; query: string; charge: number }
   | { kind: 'searchPrecedents'; query: string; charge: number }
   | { kind: 'nextPrecedentPage' }
@@ -140,7 +140,7 @@ export function route(
       return routeMenu(text, creditLine);
 
     case SESSION_STATE.CASE_STATUS:
-      return routeCaseStatus(text, creditLine);
+      return routeCaseStatus(text, context, creditLine);
 
     case SESSION_STATE.SECTION_INFO:
       return routeSection(text, context, creditLine);
@@ -300,7 +300,7 @@ function routeMenu(text: string, creditLine: string): Routed {
   }
 }
 
-function routeCaseStatus(text: string, creditLine: string): Routed {
+function routeCaseStatus(text: string, context: SessionContext, creditLine: string): Routed {
   if (text === RETURN_KEY) return backToMenu(creditLine);
 
   if (!isValidCnr(text)) {
@@ -326,10 +326,21 @@ function routeCaseStatus(text: string, creditLine: string): Routed {
     };
   }
 
-  // Free, so no charge is threaded through - see CREDIT_COST.CASE_STATUS.
+  const cnr = normaliseCnr(text);
+
   return {
-    actions: [{ kind: 'lookupCase', cnr: normaliseCnr(text) }],
+    actions: [
+      {
+        kind: 'lookupCase',
+        cnr,
+        // Priced like the other lookups now that eCourts is a metered API. The
+        // same-context test is what stops an advocate re-reading one case from
+        // paying twice: the charge is for the record, not for the message.
+        charge: chargeFor(context.lastChargedQuery, cnr, CREDIT_COST.CASE_STATUS),
+      },
+    ],
     nextState: SESSION_STATE.CASE_STATUS,
+    contextPatch: { lastChargedQuery: cnr },
   };
 }
 
