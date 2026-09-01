@@ -393,8 +393,18 @@ export class AuthRepository {
    * redemptions of the same reset link cannot both succeed - the second matches
    * no rows. Checking first and updating after would let both through, which on
    * a password reset means two people setting the password.
+   *
+   * `userId` scopes the match to one account and must be passed for every
+   * six-digit code. Emailed tokens are long random strings and cannot collide;
+   * a numeric code can, and an unscoped UPDATE would let one account's guess
+   * burn another account's live code on the way past - a denial of service that
+   * leaves no trace beyond a code that mysteriously stopped working.
    */
-  async consumeToken(tokenHash: string, purpose: AuthTokenPurpose): Promise<AuthTokenRow | null> {
+  async consumeToken(
+    tokenHash: string,
+    purpose: AuthTokenPurpose,
+    userId?: string,
+  ): Promise<AuthTokenRow | null> {
     const [row] = await this.db.sql<AuthTokenRow[]>`
       UPDATE auth_tokens
          SET consumed_at = NOW()
@@ -402,9 +412,43 @@ export class AuthRepository {
          AND purpose     = ${purpose}
          AND consumed_at IS NULL
          AND expires_at  > NOW()
+         AND ${userId ? this.db.sql`user_id = ${userId}` : this.db.sql`TRUE`}
    RETURNING *
     `;
     return row ?? null;
+  }
+
+  /**
+   * Count a guess against the live phone-link code issued for a number.
+   *
+   * ## Why this is keyed on the number and not on a user
+   *
+   * A code redeemed over WhatsApp arrives with no session attached, so the only
+   * handle the caller has is the handset it came from. Counting the attempt
+   * through {@link recordTokenAttempt} means first finding the token, which
+   * means matching the digest - so a *wrong* guess found nothing, counted
+   * nothing, and the attempt ceiling never fired. Six digits with unlimited
+   * guesses is a few minutes of work.
+   *
+   * Keyed on `subject` instead, every guess against a number with an
+   * outstanding code is counted whether or not the digits were right.
+   *
+   * A return of 0 means there is no live code for this number at all, which is
+   * a different answer from "wrong code" and the caller needs to tell them
+   * apart: an unrelated six-digit message is an ordinary question ("420"), not
+   * a failed login.
+   */
+  async recordPhoneLinkAttempt(phoneNumber: string): Promise<number> {
+    const [row] = await this.db.sql<{ attempts: number }[]>`
+      UPDATE auth_tokens
+         SET attempts = attempts + 1
+       WHERE purpose = 'PHONE_LINK'
+         AND subject = ${phoneNumber}
+         AND consumed_at IS NULL
+         AND expires_at > NOW()
+   RETURNING attempts
+    `;
+    return row?.attempts ?? 0;
   }
 
   /**

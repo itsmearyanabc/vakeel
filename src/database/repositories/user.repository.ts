@@ -158,8 +158,26 @@ export class UserRepository {
   }
 
   /**
-   * Approve or reject a verification. Approval also promotes the role, unless
-   * the user already holds a higher one (an auditor or admin stays put).
+   * Approve or reject a verification, and move the role with it.
+   *
+   * Approval promotes a guest to VERIFIED_ADVOCATE, unless the account already
+   * holds a higher role - an auditor or admin stays put.
+   *
+   * ## Why withdrawal has to demote
+   *
+   * The role is what the wallet reads: VERIFIED_ADVOCATE is unlimited, and its
+   * spends are not written to the ledger at all because nothing moves. So a
+   * status change alone does not withdraw anything.
+   *
+   * This only promoted. Rejecting or resetting an advocate who had already been
+   * approved - which is what an administrator does on discovering the enrolment
+   * number was not theirs - left the role at VERIFIED_ADVOCATE. The panel
+   * showed REJECTED, the advocate kept unlimited searches, and the ledger had
+   * no rows to make that visible to anybody.
+   *
+   * The demotion is as narrow as the promotion: only VERIFIED_ADVOCATE goes
+   * back, and only to GUEST_LAWYER. An auditor or admin is a separate grant and
+   * is not something a verification decision should be able to take away.
    */
   async setVerification(
     userId: string,
@@ -174,6 +192,8 @@ export class UserRepository {
              role = CASE
                       WHEN ${status} = 'VERIFIED' AND role = 'GUEST_LAWYER'
                         THEN 'VERIFIED_ADVOCATE'::user_role
+                      WHEN ${status} <> 'VERIFIED' AND role = 'VERIFIED_ADVOCATE'
+                        THEN 'GUEST_LAWYER'::user_role
                       ELSE role
                     END
        WHERE id = ${userId}

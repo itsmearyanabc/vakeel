@@ -1,7 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { IntentService } from '../ai/intent.service';
 import { extractCnr } from '../ai/legal-patterns';
-import { PrecedentsService, prioritiseHomeCourt } from '../ai/precedents.service';
+import {
+  NOT_AVAILABLE,
+  PrecedentsService,
+  legalPrinciple,
+  prioritiseHomeCourt,
+  splitParties,
+  stripEllipsis,
+} from '../ai/precedents.service';
 import { ProviderRegistry } from '../ai/providers/provider.registry';
 import { RagService, RagStage } from '../ai/rag.service';
 import { CircuitOpenError } from '../common/circuit-breaker';
@@ -218,7 +225,14 @@ export class ChatService {
         message:
           decision.balance.total > 0
             ? `That search costs ${cost} credits and you have ${decision.balance.total} left.`
-            : 'You have used all your credits for today. They reset tomorrow.',
+            : // No date, because there is not one. The free allowance has been
+              // granted once for the life of the account since migration 0014;
+              // it does not reset daily, monthly or at all. Telling an advocate
+              // to come back tomorrow is the expensive version of this mistake -
+              // they wait for credits that are never coming instead of verifying
+              // their licence or buying more. Replies.quotaExceeded() on the
+              // WhatsApp side has said the right thing since 0014 landed.
+              'You have used all the free credits on this account.',
         credits: decision.balance,
       };
       return;
@@ -320,7 +334,10 @@ export class ChatService {
         type: 'answer',
         message: toPublic(message),
         credits: await this.credits.peek(user.id, user.role),
-        charged: 0,
+        // What this actually cost. It reported 0 from the day the lookup was
+        // priced - left over from when it was free - which contradicted the
+        // creditsCharged stored on the message beside it.
+        charged: decision.charged,
       };
     } catch (err) {
       const reason =
@@ -657,26 +674,59 @@ function toPublic(row: ChatMessageRow): PublicChatMessage {
 /**
  * One judgment, as the browser receives it.
  *
- * An explicit projection rather than the row: `PrecedentRow` carries retrieval
- * internals - fusion scores, ranks, the total match count - which are useful for
- * debugging and meaningless to an advocate, and which would otherwise be shipped
- * to every client forever because nobody noticed they were there.
+ * ## Why the fields are computed here and not in the browser
+ *
+ * This used to ship the row's raw columns and let the client decide how to
+ * present them, and the client decided differently: WhatsApp rendered the seven
+ * labelled fields the output format requires, while the web app rendered a
+ * title, three pills and a paragraph of excerpt. Same query, same pipeline, two
+ * different answers depending on which screen an advocate happened to open.
+ *
+ * The fields the format names are therefore assembled once, on the server, by
+ * the same functions the WhatsApp card uses - `splitParties`, `legalPrinciple`,
+ * the equivalent-citation filter. The two surfaces can now differ in styling,
+ * which is what a renderer is for, and not in content, which is what a
+ * requirement is for.
+ *
+ * Still an explicit projection rather than the row: `PrecedentRow` carries
+ * retrieval internals - fusion scores, ranks, the total match count - which are
+ * useful for debugging and meaningless to an advocate, and which would otherwise
+ * be shipped to every client forever because nobody noticed they were there.
  */
-function toPublicPrecedent(row: PrecedentRow) {
+export function toPublicPrecedent(row: PrecedentRow) {
+  const { petitioner, respondent } = splitParties(row.case_title);
+
+  const bench = row.bench?.length
+    ? row.bench.join(', ')
+    : row.bench_strength && row.bench_strength > 1
+      ? `${row.bench_strength}-judge bench`
+      : null;
+
+  // The equivalents are the *other* citations. CASE NO. already carries the
+  // neutral one, and printing it twice was how this read on WhatsApp for months.
+  const equivalents = (row.reporter_citations ?? []).filter(
+    (citation) => citation && citation !== row.neutral_citation,
+  );
+
   return {
     id: row.judgment_id,
-    title: row.case_title,
-    citation: row.neutral_citation ?? row.reporter_citations?.[0] ?? null,
-    otherCitations: row.reporter_citations ?? [],
+    title: stripEllipsis(row.case_title),
+
+    // The seven required fields, in the order the format names them. Null means
+    // the source has nothing; the client prints the same "Not available" the
+    // WhatsApp card does rather than dropping the row.
+    caseNo: row.neutral_citation,
+    petitioner,
+    respondent,
+    date: row.judgment_date,
+    bench,
+    equivalentCitations: equivalents,
+    legalPrinciple: legalPrinciple(row),
+    notAvailable: NOT_AVAILABLE,
+
     court: row.court_name,
     courtType: row.court_type,
-    date: row.judgment_date,
-    bench: row.bench ?? [],
-    benchStrength: row.bench_strength,
     sections: row.act_sections ?? [],
-    holding: row.ratio_decidendi ?? row.headnote ?? null,
-    excerpt: row.best_excerpt,
-    paragraph: row.para_number,
     disposition: row.disposition,
     sourceUrl: row.source_url,
   };

@@ -1125,42 +1125,71 @@ function renderPrecedents(data, message) {
 
   for (const item of data.items) wrap.appendChild(renderPrecedentCard(item));
 
+  // The closing caveat the output format requires, in italics, once per page -
+  // the same sentence the WhatsApp card ends with.
+  //
+  // What used to sit here instead was a line naming where the results came from
+  // ("Results from Indian Kanoon..."). Removed: which index answered is an
+  // implementation detail of this deployment, it changes with a setting, and an
+  // advocate reading a list of authorities has no use for it.
   if (data.items.length) {
-    const source = el('div', 'caveat');
-    source.textContent = data.source === 'kanoon'
-      ? 'Results from Indian Kanoon. Verify each citation against the official reporter.'
-      : 'Results from the ingested judgment corpus. Verify each citation against the official reporter.';
-    wrap.appendChild(source);
+    wrap.appendChild(precedentCaveat());
   }
 
   return wrap;
 }
 
+/** The required closing line. Italic, and worded identically on both channels. */
+function precedentCaveat() {
+  const note = el('div', 'caveat');
+  const em = el('em', null,
+    'This is a research aid. Verify from original sources before court use. Not legal advice.');
+  note.appendChild(em);
+  return note;
+}
+
+/**
+ * One judgment, in the format the requirement names.
+ *
+ * The same seven fields, in the same order, with the same wording as the
+ * WhatsApp card - because they answer the same question and an advocate who
+ * checks a result on their phone and then on the web should be reading one
+ * thing. This card used to be a title, a row of pills and a paragraph of
+ * excerpt, which was a different answer to the same query.
+ *
+ * The server does the deriving (see toPublicPrecedent) so the two renderers
+ * cannot drift again: this function only lays out what it is given, and a field
+ * with nothing behind it prints "Not available" rather than vanishing.
+ */
 function renderPrecedentCard(item) {
   const card = el('div', 'precedent');
   card.appendChild(el('div', 'case-title', item.title));
 
-  const meta = el('div', 'case-meta');
-  if (item.citation) meta.appendChild(el('span', 'pill good', item.citation));
-  if (item.court) meta.appendChild(el('span', 'pill', item.court));
-  if (item.date) meta.appendChild(el('span', 'pill', formatDate(item.date)));
-  if (item.benchStrength > 1) {
-    meta.appendChild(el('span', 'pill', item.benchStrength + '-judge bench'));
-  }
-  if (item.disposition) meta.appendChild(el('span', 'pill', item.disposition));
-  card.appendChild(meta);
+  const absent = item.notAvailable || 'Not available';
+  const value = (v) => (v && String(v).trim() ? String(v).trim() : absent);
 
-  if (item.holding) {
-    const holding = el('div', 'holding');
-    holding.innerHTML = '<b>Holding:</b> ' + esc(item.holding);
-    card.appendChild(holding);
-  }
+  const rows = el('dl', 'case-rows');
+  const field = (label, text) => {
+    rows.appendChild(el('dt', null, label));
+    rows.appendChild(el('dd', null, text));
+  };
 
-  if (item.excerpt && item.excerpt !== item.holding) {
-    const excerpt = el('div', 'excerpt', item.excerpt);
-    if (item.paragraph) excerpt.title = 'Paragraph ' + item.paragraph;
-    card.appendChild(excerpt);
-  }
+  field('CASE NO.', value(item.caseNo));
+  field('PETITIONER', value(item.petitioner));
+  field('RESPONDENT', value(item.respondent));
+  field('DATE OF JUDGMENT', item.date ? formatDate(item.date) : absent);
+  field('BENCH', value(item.bench));
+  field('EQUIVALENT CITATIONS',
+    item.equivalentCitations && item.equivalentCitations.length
+      ? item.equivalentCitations.join('; ')
+      : absent);
+  field('COURT', value(item.court));
+  card.appendChild(rows);
+
+  const principle = el('div', 'holding');
+  principle.appendChild(el('b', null, 'LEGAL PRINCIPLE: '));
+  principle.appendChild(document.createTextNode(value(item.legalPrinciple)));
+  card.appendChild(principle);
 
   if (item.sections && item.sections.length) {
     const sections = el('div', 'sections');
@@ -1419,6 +1448,10 @@ function openAccount() {
     bar.style.cssText = 'padding:0;margin:-4px 0 18px';
     const panel = el('div');
 
+    // Incremented on every draw; see the note in draw() on why an async tab
+    // needs to know whether it is still the one on screen.
+    let renderToken = 0;
+
     const draw = () => {
       bar.innerHTML = '';
       for (const name of tabs) {
@@ -1428,9 +1461,27 @@ function openAccount() {
       }
 
       panel.innerHTML = '';
+
+      /*
+       * Only the tab that is still open may append to the panel.
+       *
+       * Both of the async tabs fetch before they render - phone status, session
+       * list - and then append. Clearing innerHTML at the top of this function
+       * does not cancel a fetch that is already in flight, so switching tabs
+       * while one was loading appended its content into whatever tab had
+       * replaced it: the WhatsApp linking form showed up above Signed-in
+       * devices, on the Security tab, with a working "Get a code" button.
+       *
+       * The token is captured per draw and checked after every await, so a
+       * superseded render finishes its work and throws the result away.
+       */
+      renderToken += 1;
+      const token = renderToken;
+      const live = () => token === renderToken;
+
       if (active === 'Profile') renderProfileTab(panel, close);
-      if (active === 'WhatsApp') void renderWhatsAppTab(panel);
-      if (active === 'Security') void renderSecurityTab(panel);
+      if (active === 'WhatsApp') void renderWhatsAppTab(panel, live);
+      if (active === 'Security') void renderSecurityTab(panel, live);
     };
 
     body.appendChild(bar);
@@ -1469,9 +1520,12 @@ function renderProfileTab(panel, close) {
   if (user.verificationStatus !== 'VERIFIED') {
     const note = el('div', 'alert info');
     note.style.marginTop = '18px';
+    // No promise of unlimited searches. Usage is credit-based, and a benefit
+    // named here that the wallet does not actually grant is the kind of claim
+    // an advocate verifies their licence for and then goes looking for.
     note.textContent =
-      'Verified advocates get unlimited searches. Send "verify" to the bot on WhatsApp ' +
-      'with your Bar Council enrolment number to start.';
+      'Send "verify" to the bot on WhatsApp with your Bar Council enrolment number ' +
+      'to verify your licence.';
     panel.appendChild(note);
   }
 
@@ -1494,8 +1548,9 @@ function infoRow(label, value, badge, badgeBad) {
   return row;
 }
 
-async function renderWhatsAppTab(panel) {
+async function renderWhatsAppTab(panel, live = () => true) {
   const status = await api('/api/auth/phone/status');
+  if (!live()) return;
 
   if (status.linked) {
     const done = el('div', 'alert info');
@@ -1609,7 +1664,7 @@ function pollPhoneLink(container) {
   }, 3000);
 }
 
-async function renderSecurityTab(panel) {
+async function renderSecurityTab(panel, live = () => true) {
   const change = el('div', 'modal-section');
   change.appendChild(el('h3', null, 'Password'));
 
@@ -1651,6 +1706,8 @@ async function renderSecurityTab(panel) {
   devices.appendChild(el('h3', null, 'Signed-in devices'));
 
   const sessions = await api('/api/auth/sessions');
+  if (!live()) return;
+
   for (const session of sessions) {
     const row = el('div', 'row');
     const grow = el('div', 'grow');

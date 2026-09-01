@@ -150,41 +150,90 @@ export class EcourtsService {
   /**
    * Map a provider payload onto {@link CaseStatus}.
    *
-   * Field names vary between providers, so this reads several plausible keys
-   * for each value. When you subscribe to one, replace the guesswork with its
-   * documented field names.
+   * ## The envelope
+   *
+   * eCourtsIndia answers `GET /api/partner/case/{cnr}` with
+   * `{ data: { courtCaseData, files, judgmentOrders, entityInfo }, meta }`, so
+   * the case fields are two levels down. Unwrapping only `data` - which is what
+   * this did - reached an object whose keys are all containers, matched nothing,
+   * and produced a card of "Not available" from a request that returned 200.
+   *
+   * The other shapes are kept because this is still an adapter: a deployment
+   * pointed at a different provider, or at a gateway that re-wraps the payload,
+   * should not need a code change to be read.
+   *
+   * ## Why the key names are still a list
+   *
+   * Providers disagree on casing and on whether a hearing date is `next_date`
+   * or `nextHearingDate`, and the leaf names here are not confirmed against a
+   * live response. Reading several plausible spellings costs nothing and is the
+   * difference between a working card and an empty one; {@link mappedAnything}
+   * is what stops a total miss passing silently.
    */
   private mapProviderResponse(cnr: string, payload: Record<string, unknown>): CaseStatus {
-    const data = (payload.data ?? payload.result ?? payload) as Record<string, unknown>;
+    const envelope = (payload.data ?? payload.result ?? payload) as Record<string, unknown>;
+    const data = (envelope.courtCaseData ?? envelope.caseDetails ?? envelope) as Record<string, unknown>;
+
     const pick = (...keys: string[]): string | null => {
       for (const key of keys) {
         const value = data[key];
         if (typeof value === 'string' && value.trim()) return value.trim();
+        if (typeof value === 'number') return String(value);
       }
       return null;
     };
 
-    const stage = pick('case_stage', 'stage', 'caseStage');
-    const nextHearing = pick('next_hearing_date', 'nextHearingDate', 'next_date');
+    const stage = pick('case_stage', 'stage', 'caseStage', 'caseStatus', 'status');
+    const nextHearing = pick(
+      'next_hearing_date',
+      'nextHearingDate',
+      'next_date',
+      'nextDate',
+      'nextHearing',
+    );
 
-    return {
+    const mapped: CaseStatus = {
       cnr,
-      caseNumber: pick('case_number', 'caseNumber', 'case_no'),
-      caseType: pick('case_type', 'caseType'),
-      filingDate: pick('filing_date', 'filingDate'),
-      registrationDate: pick('registration_date', 'registrationDate'),
-      court: pick('court_name', 'courtName', 'court'),
-      judge: pick('judge', 'judge_name', 'coram'),
-      petitioner: pick('petitioner', 'petitioner_name', 'plaintiff'),
-      respondent: pick('respondent', 'respondent_name', 'defendant'),
-      petitionerAdvocate: pick('petitioner_advocate', 'petitionerAdvocate'),
-      respondentAdvocate: pick('respondent_advocate', 'respondentAdvocate'),
+      caseNumber: pick('case_number', 'caseNumber', 'case_no', 'caseNo', 'registrationNumber'),
+      caseType: pick('case_type', 'caseType', 'type'),
+      filingDate: pick('filing_date', 'filingDate', 'dateOfFiling'),
+      registrationDate: pick('registration_date', 'registrationDate', 'dateOfRegistration'),
+      court: pick('court_name', 'courtName', 'court', 'courtEstablishment', 'district'),
+      judge: pick('judge', 'judge_name', 'judgeName', 'coram', 'bench'),
+      petitioner: pick('petitioner', 'petitioner_name', 'petitionerName', 'plaintiff'),
+      respondent: pick('respondent', 'respondent_name', 'respondentName', 'defendant'),
+      petitionerAdvocate: pick('petitioner_advocate', 'petitionerAdvocate', 'petitionerAdv'),
+      respondentAdvocate: pick('respondent_advocate', 'respondentAdvocate', 'respondentAdv'),
       stage,
       nextHearingDate: nextHearing,
-      lastHearingDate: pick('last_hearing_date', 'lastHearingDate'),
+      lastHearingDate: pick('last_hearing_date', 'lastHearingDate', 'previousDate', 'lastDate'),
       status: /dispos/i.test(stage ?? '') ? 'DISPOSED' : nextHearing ? 'PENDING' : 'UNKNOWN',
       mocked: false,
     };
+
+    /*
+     * A 200 that mapped to nothing is a bug here, not an empty court record.
+     *
+     * Without this the advocate pays a credit and receives a card whose every
+     * line reads "Not available", which is indistinguishable from a case the
+     * court has no data for - so nobody reports it, and the log says the lookup
+     * succeeded. Throwing routes it through the caller's existing refund path
+     * and prints the keys the provider actually sent, which is the one thing
+     * needed to correct the names above.
+     */
+    if (!mappedAnything(mapped)) {
+      this.logger.error(
+        {
+          cnr,
+          envelopeKeys: Object.keys(envelope).slice(0, 30),
+          caseKeys: Object.keys(data).slice(0, 40),
+        },
+        'eCourts returned a case but no field could be mapped - the provider field names differ from mapProviderResponse()',
+      );
+      throw new Error('eCourts response could not be mapped to a case record');
+    }
+
+    return mapped;
   }
 
   /**
@@ -238,6 +287,17 @@ export class EcourtsService {
       mocked: true,
     };
   }
+}
+
+/**
+ * Did the mapping find anything an advocate can read?
+ *
+ * `cnr` and `mocked` are set by us, not by the provider, so they are excluded -
+ * counting them would make every failed mapping look partially successful.
+ */
+function mappedAnything(status: CaseStatus): boolean {
+  const { cnr: _cnr, mocked: _mocked, status: _status, ...fromProvider } = status;
+  return Object.values(fromProvider).some((value) => value !== null && value !== '');
 }
 
 export { CircuitOpenError };

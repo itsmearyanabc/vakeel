@@ -147,6 +147,19 @@ export class ProviderRegistry {
   }
 
   /**
+   * True when the cheap task is a placeholder.
+   *
+   * Read by callers whose feature is *better off skipped* than mocked. The mock
+   * provider returns a fixed placeholder string, which is right for an answer
+   * the reply can label as a placeholder, and wrong for a field rendered inside
+   * a list of real judgments - there the placeholder reads as a finding about
+   * the case in front of it.
+   */
+  get isRouterMocked(): boolean {
+    return this.router.name === 'mock';
+  }
+
+  /**
    * Run a completion, falling back to the mock provider if the live one fails.
    *
    * Errors are logged with the provider name; the user-visible result is a mock

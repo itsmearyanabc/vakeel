@@ -286,8 +286,13 @@ button { cursor:pointer; }
   border:1px solid var(--border); border-radius:var(--radius); background:var(--surface);
   padding:15px 17px; margin-bottom:11px;
 }
-.precedent .case-title { font-weight:650; font-size:14.5px; margin-bottom:5px; letter-spacing:-.1px; }
+.precedent .case-title { font-weight:650; font-size:14.5px; margin-bottom:9px; letter-spacing:-.1px; }
 .precedent .case-meta { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:9px; }
+/* The seven required fields, as a label/value grid. Shares the case-status
+   layout so a court record and a judgment read the same way down the page. */
+.precedent .case-rows { margin:0 0 11px; }
+.precedent .case-rows dt { padding:6px 0; font-size:11.5px; letter-spacing:.03em; }
+.precedent .case-rows dd { padding:6px 0 6px 14px; font-size:13px; }
 .precedent .holding { font-size:13.5px; color:var(--muted); line-height:1.6; }
 .precedent .holding b { color:var(--text); font-weight:600; }
 .precedent .excerpt {

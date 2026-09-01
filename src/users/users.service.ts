@@ -214,6 +214,21 @@ export class UsersService {
     await this.users.setLanguage(userId, language);
   }
 
+  /**
+   * Opt an advocate out of, or back into, messages from the bot.
+   *
+   * The row is what the inbound handler checks before it answers anything, and
+   * `opted_out_at` is what a DPDP request is answered from - so this is the one
+   * write that has to happen when somebody sends *stop*. It had no caller at
+   * all: the conversation handler set the user's language to the value it
+   * already held, told them they would hear nothing further, and carried on
+   * replying.
+   */
+  async setBlocked(userId: string, blocked: boolean): Promise<void> {
+    await this.users.setBlocked(userId, blocked);
+    this.logger.info({ userId, blocked }, blocked ? 'Advocate opted out' : 'Advocate opted back in');
+  }
+
   async listPending(limit = 50): Promise<UserRow[]> {
     return this.users.listPendingVerifications(limit);
   }

@@ -36,6 +36,26 @@ interface InvokableChatModel {
 }
 
 /**
+ * Does this model accept `output_config.effort`?
+ *
+ * The parameter arrived with the 4.6 generation. Every model before it - Haiku
+ * 4.5 included, which is the default router model - rejects it outright with a
+ * 400, and a 400 on the synthesis path is not a degraded answer, it is no
+ * answer at all.
+ *
+ * So this is an allow-list rather than a deny-list, and the failure mode is
+ * chosen deliberately. An unrecognised model does not get the parameter and
+ * answers at the provider's own default: slower than the operator asked for,
+ * but working. A deny-list would make the next unknown model id an outage.
+ */
+export function acceptsEffort(modelId: string): boolean {
+  // The generation number must end here or be followed by a separator, so
+  // "claude-opus-5" and "claude-opus-5-20260101" both qualify while a future
+  // "claude-opus-54" is not assumed to.
+  return /^claude-(?:opus|sonnet|haiku|fable)-(?:[5-9](?![0-9])|4-[6-9])/.test(modelId.trim());
+}
+
+/**
  * Every chat provider, behind LangChain.
  *
  * ## Why LangChain sits here and nowhere else
@@ -47,7 +67,7 @@ interface InvokableChatModel {
  * is the whole reason the dependency is here.
  *
  * It deliberately does NOT reach further into the app. Retrieval stays in
- * Postgres (see the RAG service), and conversation memory is our own Redis
+ * Postgres (see the RAG service), and conversation memory is our own
  * implementation rather than a LangChain memory class - both for reasons noted
  * at their definitions. Keeping the framework at this one boundary means the
  * `LlmProvider` interface is unchanged, so nothing upstream knows or cares that
@@ -102,7 +122,27 @@ export class LangChainProvider implements LlmProvider {
 
     switch (this.provider) {
       case 'anthropic':
-        return new ChatAnthropic({ ...common, apiKey: this.env.ANTHROPIC_API_KEY });
+        return new ChatAnthropic({
+          ...common,
+          apiKey: this.env.ANTHROPIC_API_KEY,
+          /*
+           * The latency dial, finally connected to something.
+           *
+           * ANTHROPIC_SYNTHESIS_EFFORT is validated at boot, documented in
+           * .env.example and named in the README as *the* control for the
+           * spec's <2.5s p95 target - and nothing read it. Setting it to `low`
+           * changed the environment and nothing else, which is the worst kind
+           * of knob: it invites you to tune and then conclude the tuning had
+           * no effect.
+           *
+           * Synthesis only. The router model is chosen for being cheap and
+           * fast, and spending thinking budget on classifying "hi" is the
+           * opposite of what this variable is for.
+           */
+          ...(this.task === 'synthesis' && acceptsEffort(this.modelId)
+            ? { outputConfig: { effort: this.env.ANTHROPIC_SYNTHESIS_EFFORT } }
+            : {}),
+        });
 
       case 'google':
         return new ChatGoogleGenerativeAI({ ...common, apiKey: this.env.GOOGLE_API_KEY });

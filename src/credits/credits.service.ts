@@ -8,16 +8,11 @@ import { CreditLedgerRow, UserRole } from '../database/types';
 /**
  * What each action costs.
  *
- * One credit per question, with one exception: case status is free. It is a
- * lookup against a court record with no model call behind it, it is the thing
- * an advocate does standing outside a courtroom, and charging for it would make
- * the cheapest feature feel like the most rationed one. It is also the reason
- * to open the app on a day you have nothing to research.
- *
- * Research used to cost two, on the reasoning that it is two LLM calls plus a
- * billed Kanoon search. That is true and it is the wrong thing to price on:
- * "one question, one credit" is a rule an advocate can hold in their head and
- * predict, and a pricing page that needs a table of costs has already lost.
+ * Two credits for the two features with a model or a billed search behind them,
+ * one for the court-record lookup that has neither. Nothing here is free any
+ * more, and the header of this block used to say the opposite - "one credit per
+ * question, with one exception: case status is free" - describing a price list
+ * that had already been replaced twice underneath it.
  *
  * Moved here from quota.service.ts, which now imports it back. The costs belong
  * next to the wallet that applies them, not next to the rate limiter that used
@@ -31,13 +26,12 @@ export const CREDIT_COST = {
   CASE_STATUS: 1,
   SECTION_LOOKUP: 2,
   /**
-   * Charged per page of five, not per search.
+   * Charged per search, not per page.
    *
-   * A precedent search that returns forty judgments does forty judgments' worth
-   * of work only if the advocate reads them, and each `more` is another page
-   * retrieved, summarised and sent. Pricing the search rather than the page
-   * meant the second through eighth pages were free, which is where the cost
-   * actually is.
+   * Pricing the page was considered and is not what the code does: `more` reads
+   * from the result set already retrieved and held in the conversation, so a
+   * second page costs no retrieval, no embedding call and no upstream search.
+   * Charging for it would bill the advocate for scrolling.
    */
   PRECEDENT_SEARCH: 2,
 } as const;
@@ -85,7 +79,14 @@ function normaliseQuery(value: string): string {
 }
 
 export interface CreditBalance {
-  /** This month's allowance remaining. Resets on the 1st, in Asia/Kolkata. */
+  /**
+   * The free allowance remaining.
+   *
+   * Granted once for the life of the account since migration 0014, and never
+   * topped up. This comment used to promise a reset on the 1st in Asia/Kolkata,
+   * which is the one thing about credits an advocate acts on - so getting it
+   * wrong here is how the wrong sentence reaches the interface.
+   */
   free: number;
   /** Durable credits: purchased, bonus or granted. Never expire. */
   paid: number;
@@ -134,9 +135,9 @@ export interface SpendDecision {
  * a counter has no history, only a current value.
  *
  * This is a ledger. Every movement is a row, the balance is derived and also
- * cached on `users`, and the two are reconcilable. The behaviour an advocate
- * A guest gets a one-time free allowance, verified advocates are unlimited, and
- * a failed delivery is always refunded.
+ * cached on `users`, and the two are reconcilable. What an advocate experiences
+ * is unchanged: a guest gets a one-time free allowance, verified advocates are
+ * unlimited, and a failed delivery is always refunded.
  *
  * ## The two buckets
  *
@@ -169,12 +170,14 @@ export class CreditsService {
   ) {}
 
   /**
-   * The daily allowance for a role. Negative means unlimited.
+   * The free allowance for a role. Negative means unlimited.
    *
-   * Renamed from the daily equivalent in migration 0012. The variables were
-   * renamed with it rather than reinterpreted, because a value called
-   * QUOTA_GUEST_DAILY holding a monthly figure would outlive everyone who
-   * remembered the change.
+   * Granted once, not per period, since migration 0014. The method and the env
+   * vars still carry the name of the monthly cycle they were written for -
+   * renaming them means moving an env var, a SQL function argument and every
+   * caller in one commit, which is a worse trade than a stale word. The first
+   * line of this comment said "daily", which is two cycles out of date and the
+   * kind of stale word that is not worth keeping.
    */
   monthlyAllowance(role: UserRole): number {
     switch (role) {
@@ -195,11 +198,12 @@ export class CreditsService {
   }
 
   /**
-   * Current balance, rolling the monthly allowance over first if it is stale.
+   * Current balance, granting the free allowance first if it has never been
+   * given.
    *
-   * The rollover happens on a read and not only on a spend, so the number shown
-   * at one minute past midnight on the 1st is the new month's allowance rather
-   * than last month's remainder waiting to be corrected by the next action.
+   * Runs on a read and not only on a spend, so a brand new account reports the
+   * allowance it has rather than zero until its first question. There is no
+   * longer any period to roll over - see migration 0014.
    */
   async balance(userId: string, role: UserRole): Promise<CreditBalance> {
     const allowance = this.monthlyAllowance(role);
@@ -414,8 +418,9 @@ export class CreditsService {
    * The balance line shown with every WhatsApp help menu.
    *
    * Phrased in credits rather than "questions left" because they are not quite
-   * the same number: a case status costs nothing, so an advocate with 3 credits
-   * can ask an unbounded number of those and exactly 3 of anything else.
+   * the same number: a case status costs one and a search costs two, so an
+   * advocate with 3 credits has either three lookups or one search left,
+   * depending on what they ask.
    */
   creditLine(balance: CreditBalance): string {
     if (balance.unlimited) return 'Credits: unlimited';

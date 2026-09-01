@@ -12,6 +12,12 @@ import { CAVEAT, RETURN_TO_MENU } from '../whatsapp/replies';
 import { EmbeddingService } from './embedding.service';
 import { ClassifiedIntent } from './intent.service';
 import { expandQuery } from './legal-patterns';
+import { buildPrincipleSummaryPrompt } from './prompts';
+import { parseJsonLoose } from './providers/llm-provider.interface';
+import { ProviderRegistry } from './providers/provider.registry';
+
+/** Named so the extract builder below reads as prose rather than escapes. */
+const NEWLINE = '\n';
 
 export interface PrecedentSearchResult {
   /** Already sorted newest-first, whichever source produced them. */
@@ -59,6 +65,7 @@ export class PrecedentsService {
     private readonly embeddings: EmbeddingService,
     private readonly kanoon: KanoonService,
     private readonly settings: SettingsService,
+    private readonly registry: ProviderRegistry,
     @InjectEnv() private readonly env: AppEnv,
   ) {}
 
@@ -88,7 +95,7 @@ export class PrecedentsService {
       try {
         const precedents = await this.kanoon.search(intent.searchQuery, this.maxResults);
         return {
-          precedents,
+          precedents: await this.withPrinciples(precedents),
           totalMatches: precedents[0]?.total_matches ?? precedents.length,
           // Kanoon runs its own relevance ranking; the local dense/lexical
           // distinction does not apply, so this is never a degraded state.
@@ -138,12 +145,99 @@ export class PrecedentsService {
     );
 
     return {
-      precedents,
+      precedents: await this.withPrinciples(precedents),
       totalMatches: precedents[0]?.total_matches ?? precedents.length,
       lexicalOnly: !embedding,
       source: 'local',
       latencyMs: Date.now() - started,
     };
+  }
+
+  /**
+   * Fill in the LEGAL PRINCIPLE line for rows that have no authored one.
+   *
+   * ## Why this exists
+   *
+   * The output format requires a principle on every card. Ingested judgments
+   * carry a headnote or a ratio and need nothing from a model. Indian Kanoon -
+   * which is where most deployments' results actually come from - carries
+   * neither, so those cards printed no principle at all, which is the field an
+   * advocate scanning ten results reads first.
+   *
+   * ## Why the whole feature does not depend on it
+   *
+   * Everything else on the card is assembled from retrieved rows, and that is
+   * deliberate: it is what makes a fabricated citation structurally impossible.
+   * This step is the one exception, so it is bounded on every side. It runs on
+   * the cheap router model, in one call for the whole page. It is skipped
+   * entirely when that model is a mock, because a placeholder string printed
+   * under LEGAL PRINCIPLE reads as a finding about the case above it. And it
+   * never throws: a failure leaves `generated_principle` unset and the card
+   * falls back to whatever the row itself states.
+   *
+   * Rows that already carry a headnote or ratio are not sent at all - there is
+   * nothing a model can add to the court's own words, and it would be a chance
+   * to contradict them.
+   */
+  private async withPrinciples(rows: PrecedentRow[]): Promise<PrecedentRow[]> {
+    if (rows.length === 0 || this.registry.isRouterMocked) return rows;
+
+    const needed = rows
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => !(row.ratio_decidendi || row.headnote || '').trim())
+      .filter(({ row }) => (row.best_excerpt || '').trim().length > 0);
+
+    if (needed.length === 0) return rows;
+
+    try {
+      const extracts = needed
+        .map(({ row }, n) =>
+          [
+            `${n + 1}. ${row.case_title}`,
+            row.court_name ? `Court: ${row.court_name}` : '',
+            `Extract: ${(row.best_excerpt || '').replace(/\s+/g, ' ').slice(0, 900)}`,
+          ]
+            .filter(Boolean)
+            .join(NEWLINE),
+        )
+        .join(NEWLINE + NEWLINE);
+
+      const result = await this.registry.complete({
+        task: 'router',
+        system: buildPrincipleSummaryPrompt(),
+        messages: [{ role: 'user', content: extracts }],
+        json: true,
+        maxTokens: 900,
+      });
+
+      const parsed = parseJsonLoose<{ principles?: { n?: number; principle?: string }[] }>(result.text);
+      const byNumber = new Map<number, string>();
+      for (const entry of parsed?.principles ?? []) {
+        const n = Number(entry?.n);
+        const principle = String(entry?.principle ?? '').trim();
+        // "NONE" is the model doing the right thing on an extract that states
+        // nothing, so it is dropped here rather than printed.
+        if (Number.isInteger(n) && principle && principle.toUpperCase() !== 'NONE') {
+          byNumber.set(n, principle);
+        }
+      }
+
+      const filled = [...rows];
+      needed.forEach(({ index }, n) => {
+        const principle = byNumber.get(n + 1);
+        if (principle) filled[index] = { ...filled[index], generated_principle: principle };
+      });
+
+      this.logger.debug(
+        { asked: needed.length, written: byNumber.size },
+        'Legal principles summarised',
+      );
+
+      return filled;
+    } catch (err) {
+      this.logger.warn({ err }, 'Could not summarise legal principles - cards fall back to the row');
+      return rows;
+    }
   }
 
   /** Direct citation fetch: "pull up 2024 INSC 452". */
@@ -345,6 +439,12 @@ export function legalPrinciple(p: PrecedentRow, limit = 200): string | null {
   const authored = (p.ratio_decidendi || p.headnote || '').replace(/\s+/g, ' ').trim();
   if (authored) return stripEllipsis(synopsis({ ...p, best_excerpt: authored }, limit));
 
+  // Written by the model from this row's own extract, and only where the row
+  // states no principle of its own - see PrecedentsService.withPrinciples().
+  // Ranked below the court's words and above our own salvage attempt.
+  const generated = (p.generated_principle || '').replace(/\s+/g, ' ').trim();
+  if (generated) return stripEllipsis(synopsis({ ...p, best_excerpt: generated }, limit));
+
   const excerpt = (p.best_excerpt || '').replace(/\s+/g, ' ').trim();
   if (!excerpt) return null;
   if (isDocumentHeader(excerpt, p.case_title)) return null;
@@ -422,27 +522,24 @@ export function formatPrecedentPage(
     header.push('_Note: semantic search is off, so these are keyword matches only._');
   }
 
-  // Every card carries the same seven labels in the same order, and prints
-  // "Not available" rather than dropping a line. A card whose shape changes
-  // with the data is far harder to read down a phone screen than one with a
-  // predictable gap, and a missing label reads as an omission rather than as
-  // an absence in the source.
   /*
-   * A label is printed only when there is something behind it.
+   * Every label, on every card, in the order the output format names them.
    *
-   * The card used to print "Not available" so every result had the same seven
-   * lines in the same places - a predictable shape being easier to read down a
-   * phone screen. In practice Indian Kanoon supplies no neutral citation and no
-   * reporter citation for most judgments, so the predictable shape was three
-   * dead lines per result and fifteen per page, pushing the lines that do carry
-   * information off the screen. It reads as a broken product rather than a thin
-   * source.
+   * This dropped empty labels for a while, on the reasoning that Indian Kanoon
+   * supplies no citation for most judgments and three dead lines per result push
+   * the informative ones off a phone screen. That pressure is real and it lost
+   * to the requirement: the format names seven fields and says each precedent
+   * must include them, so a card that silently omits three is not a tidier card,
+   * it is a different one. An advocate scanning for EQUIVALENT CITATIONS cannot
+   * tell "this judgment has none" from "this build stopped printing them".
    *
-   * The title and the summary are always printed; everything between them is
-   * conditional, and this keeps that decision in one place instead of seven.
+   * The pressure is answered where it belongs instead. LEGAL PRINCIPLE - the
+   * line carrying most of the information on a card - is now written from the
+   * judgment's own extract rather than left blank, so the fields that stay
+   * empty are the ones that are genuinely empty at the source.
    */
-  const line = (label: string, value: string | null | undefined): string[] =>
-    value && value !== NOT_AVAILABLE ? [`${label}: ${value}`] : [];
+  const line = (label: string, value: string | null | undefined): string =>
+    `${label}: ${value && value.trim() ? value.trim() : NOT_AVAILABLE}`;
 
   const entries = page.map((p, i) => {
     const n = offset + i + 1;
@@ -457,23 +554,34 @@ export function formatPrecedentPage(
 
     const principle = legalPrinciple(p);
 
+    /*
+     * The equivalents are the *other* citations, not the best one.
+     *
+     * This line used to print bestCitation(), which prefers the neutral
+     * citation - the same string CASE NO. had already printed one line above.
+     * So a judgment with both kinds showed its neutral citation twice and its
+     * reporter citation not at all, which is the one an advocate needs to pull
+     * the judgment out of a law report.
+     */
+    const equivalents = (p.reporter_citations ?? []).filter(
+      (citation) => citation && citation !== p.neutral_citation,
+    );
+
     return [
       `*${n}. ${stripEllipsis(p.case_title)}*`,
-      ...line('CASE NO.', p.neutral_citation),
-      ...line('PETITIONER', petitioner),
-      ...line('RESPONDENT', respondent),
-      ...line('DATE OF JUDGMENT', fullDate(p.judgment_date)),
-      ...line('BENCH', bench),
-      // Omitted rather than marked absent when Kanoon has no citation of any
-      // kind, which is most judgments. Inventing a citation-shaped string is
-      // the one failure this product exists to avoid, so the absence is still
-      // real - it just no longer needs a line of its own to announce itself.
-      ...line('EQUIVALENT CITATIONS', bestCitation(p)),
-      ...line('COURT', p.court_name),
-      // Dropped entirely when the source states no principle, rather than
-      // printed with the document's own header standing in for one.
-      ...(principle ? ['', `LEGAL PRINCIPLE: ${principle}`] : []),
-    ].join('\n');
+      line('CASE NO.', p.neutral_citation),
+      line('PETITIONER', petitioner),
+      line('RESPONDENT', respondent),
+      line('DATE OF JUDGMENT', fullDate(p.judgment_date)),
+      line('BENCH', bench),
+      line('EQUIVALENT CITATIONS', equivalents.join('; ')),
+      line('COURT', p.court_name),
+      '',
+      // "Not available" rather than the document's own header standing in for a
+      // holding. Every word of that header is true and it is not what the case
+      // decided, which is the one thing this line claims to be.
+      line('LEGAL PRINCIPLE', principle),
+    ].join(NEWLINE);
   });
 
   const footer: string[] = [];

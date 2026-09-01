@@ -325,7 +325,7 @@ export const ASK_FOR_SECTION = [
 export const ASK_FOR_BAR_COUNCIL_ID = [
   '*Verify your licence*',
   '',
-  'Verified advocates get unlimited daily queries.',
+  'Verification confirms your licence on the account.',
   '',
   'Send your *bar council enrolment number*, for example: `D/1234/2015` or `MAH/12345/2010`',
   '',
@@ -395,7 +395,7 @@ export function quotaExceeded(
   return [
     shortfall,
     '',
-    'Verified advocates get unlimited searches. Type *verify* to submit your bar council enrolment number — it takes under a minute.',
+    'Top up to keep searching. Type *verify* to confirm your licence on the account — it takes under a minute.',
   ].join('\n');
 }
 
@@ -412,7 +412,10 @@ export function usageSummary(
     `Status: ${status}`,
     creditLine,
     `Searches today: ${searchesToday}`,
-    verified ? '' : '\nType *verify* to remove the daily limit.',
+    // Neither "the daily limit" nor "unlimited searches": there is no reset
+    // (migration 0014) and no unmetered tier - usage is credits, for everyone.
+    // Both promises sent advocates looking for something that is not there.
+    verified ? '' : '\nType *verify* to confirm your licence on this account.',
   ]
     .filter(Boolean)
     .join('\n');
@@ -434,6 +437,28 @@ export const PROCESSING_ERROR = [
   'Something went wrong while processing that.',
   '',
   'Please try again. If it keeps happening, type *menu* to start over.',
+].join('\n');
+
+/**
+ * The two halves of opting out.
+ *
+ * The words offered as the way back are listed literally in the goodbye, and
+ * `RESUME_WORDS` is what the handler matches, so the promise and the check
+ * cannot drift apart. They used to: the goodbye said "send *start* to resume"
+ * and nothing anywhere handled the word.
+ */
+export const RESUME_WORDS = ['start', 'resume', 'unstop'] as const;
+
+export const UNSUBSCRIBED = [
+  'You will not receive further messages from Vakeel Saathi.',
+  '',
+  'Our conversation history has been cleared. Send *start* whenever you want to use the service again.',
+].join('\n');
+
+export const RESUBSCRIBED = [
+  '*Welcome back.*',
+  '',
+  'You will receive messages here again. Send your question, or type *menu* to see what I can do.',
 ].join('\n');
 
 export const MOCK_MODE_NOTICE =

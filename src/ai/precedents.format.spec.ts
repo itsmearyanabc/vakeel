@@ -156,21 +156,30 @@ describe('precedent formatting', () => {
       expect(out).toContain('RESPONDENT: Ram Kumar');
     });
 
-    it('drops a field entirely rather than printing "Not available"', () => {
-      // The card used to keep a fixed shape by printing "Not available". Kanoon
-      // has no citation for most judgments, so that shape was three dead lines
-      // per result and fifteen per page, pushing the informative lines off the
-      // screen. An absent label now means absent.
+    it('prints every required label even when the source has nothing for it', () => {
+      // Dropping empty labels was tried, to stop Kanoon's missing citations
+      // costing three dead lines per result. The output format names seven
+      // fields and requires all seven, and an absent label cannot be told apart
+      // from a build that stopped printing it - so the shape is fixed and the
+      // gap is stated.
       const out = formatPrecedentPage(
         [row({ neutral_citation: null, reporter_citations: [], judgment_date: null, bench: [], bench_strength: null })],
         0,
         5,
         'q',
       );
-      expect(out).not.toContain('Not available');
-      for (const label of ['CASE NO.', 'DATE OF JUDGMENT', 'BENCH', 'EQUIVALENT CITATIONS']) {
-        expect(out).not.toContain(`${label}:`);
+      for (const label of [
+        'CASE NO.',
+        'PETITIONER',
+        'RESPONDENT',
+        'DATE OF JUDGMENT',
+        'BENCH',
+        'EQUIVALENT CITATIONS',
+        'LEGAL PRINCIPLE',
+      ]) {
+        expect(out).toContain(`${label}:`);
       }
+      expect(out).toContain('Not available');
       // The title still anchors the card, so a result is never a blank block.
       expect(out).toContain('1. ');
     });
@@ -183,9 +192,24 @@ describe('precedent formatting', () => {
 
     it('includes the citation, bench and court for each entry', () => {
       const out = formatPrecedentPage([row()], 0, 5, 'q');
-      expect(out).toContain('EQUIVALENT CITATIONS: 2024 INSC 452');
+      expect(out).toContain('CASE NO.: 2024 INSC 452');
       expect(out).toContain('COURT: Supreme Court of India');
       expect(out).toMatch(/BENCH: .+/);
+    });
+
+    it('prints the reporter citations as the equivalents, not the neutral one again', () => {
+      // EQUIVALENT CITATIONS used to render bestCitation(), which prefers the
+      // neutral citation - the string CASE NO. has already printed. The card
+      // showed one citation twice and dropped the reporter citation entirely.
+      const out = formatPrecedentPage([row()], 0, 5, 'q');
+      expect(out).toContain('EQUIVALENT CITATIONS: AIR 2024 SC 100');
+      expect(out.match(/2024 INSC 452/g)).toHaveLength(1);
+    });
+
+    it('promotes the reporter citation when there is no neutral citation', () => {
+      const out = formatPrecedentPage([row({ neutral_citation: null })], 0, 5, 'q');
+      expect(out).toContain('CASE NO.: Not available');
+      expect(out).toContain('EQUIVALENT CITATIONS: AIR 2024 SC 100');
     });
 
     it('names the judges when Kanoon supplied them', () => {
@@ -200,9 +224,57 @@ describe('precedent formatting', () => {
 
     it('survives a judgment with no date', () => {
       const out = formatPrecedentPage([row({ judgment_date: null })], 0, 5, 'q');
-      expect(out).not.toContain('DATE OF JUDGMENT');
+      expect(out).toContain('DATE OF JUDGMENT: Not available');
       // Still a usable card - the absence of one field must not blank the rest.
       expect(out).toContain('COURT:');
+    });
+
+    it('prints the model-written principle when the row states none', () => {
+      // Kanoon supplies no headnote and no ratio, so without this the field an
+      // advocate reads first was empty on every result it returned.
+      const out = formatPrecedentPage(
+        [
+          row({
+            ratio_decidendi: null,
+            headnote: null,
+            best_excerpt: '',
+            generated_principle:
+              'Bail cannot be refused solely because the offence carries a long sentence.',
+          }),
+        ],
+        0,
+        5,
+        'q',
+      );
+      expect(out).toContain('LEGAL PRINCIPLE: Bail cannot be refused solely because');
+    });
+
+    it("prefers the court's own words over anything written for it", () => {
+      const out = formatPrecedentPage(
+        [row({ generated_principle: 'A summary that must not win.' })],
+        0,
+        5,
+        'q',
+      );
+      expect(out).toContain('LEGAL PRINCIPLE: Bail may be granted where the accused has no antecedents.');
+      expect(out).not.toContain('must not win');
+    });
+
+    it('says so plainly when no principle can be stated at all', () => {
+      const out = formatPrecedentPage(
+        [row({ ratio_decidendi: null, headnote: null, best_excerpt: '' })],
+        0,
+        5,
+        'q',
+      );
+      expect(out).toContain('LEGAL PRINCIPLE: Not available');
+    });
+
+    it('closes the page with the caveat, in italics', () => {
+      const out = formatPrecedentPage([row()], 0, 5, 'q');
+      expect(out).toContain(
+        '_This is a research aid. Verify from original sources before court use. Not legal advice._',
+      );
     });
   });
 });

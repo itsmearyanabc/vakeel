@@ -16,9 +16,9 @@ Built from `Vakeel_Saathi_Enterprise_Architecture.pdf`, adapted to
 
 | Area | State |
 |---|---|
-| Type check (`tsc --noEmit`) | ✅ clean |
+| Type check (`npm run typecheck`) | ✅ clean |
 | Build (`npm run build`) | ✅ emits `dist/main.js`, `dist/worker.js` |
-| Tests (`npm test`) | ✅ 403 passing |
+| Tests (`npm test`) | ✅ 523 passing |
 | Migrations applied to live Supabase | ✅ through `0011` |
 | Web app verified end to end | ✅ signup, sign-in, session cookie, live answer, credits charged and refunded |
 | WhatsApp bot | ✅ running on the Meta test number |
@@ -57,7 +57,7 @@ not in what it does.
  └─────────────────────────────────────────────────────────────┘
            │ enqueue                             │ direct
            ▼                                     │
-    Redis (BullMQ)                               │
+   job_queue (Postgres)                          │
            │                                     │
            ▼                                     │
     worker service                               │
@@ -67,7 +67,7 @@ not in what it does.
       ┌───────────────────┼───────────────────┐
       ▼                   ▼                   ▼
  intent router     hybrid retrieval     eCourts adapter
- (cheap model)            │             (CNR lookup, free)
+ (cheap model)            │             (case status by CNR)
                           │
             ┌─────────────┴─────────────┐
             ▼                           ▼
@@ -225,18 +225,18 @@ recipient.
 
 ## 3. Railway
 
-Two services from **this one repository**, plus Redis.
+Two services from **this one repository**. No Redis, and no other managed
+service: migration 0013 moved the queue, the caches, the distributed locks and
+the rate limiters into Postgres, so Supabase is the only backing store. There is
+no `REDIS_URL` — setting one does nothing.
 
-**a. Redis** — New → Database → Redis.
-
-**b. Web service** — New → GitHub Repo → this repo.
+**a. Web service** — New → GitHub Repo → this repo.
 
 - Variables → add everything from `.env.example`
-- `REDIS_URL` = `${{Redis.REDIS_URL}}` (Railway substitutes the private URL)
 - Settings → Config-as-code → `railway.web.json`
 - Settings → Networking → Generate Domain, then set `APP_PUBLIC_URL` to it
 
-**c. Worker service** — New → GitHub Repo → **the same repo again**.
+**b. Worker service** — New → GitHub Repo → **the same repo again**.
 
 - Same variables (use a Railway shared variable group so there is one copy)
 - Settings → Config-as-code → `railway.worker.json`
@@ -262,7 +262,7 @@ curl https://<your-domain>/health/queue
 ## 4. Local development
 
 ```bash
-docker compose up -d          # Postgres 5433, Redis 6380 — non-default ports
+docker compose up -d          # Postgres on 5433 — a non-default port
 cp .env.example .env
 ```
 
@@ -272,7 +272,6 @@ Point `.env` at the local containers:
 DATABASE_URL=postgresql://vakeel:vakeel@localhost:5433/vakeel_saathi
 DIRECT_URL=postgresql://vakeel:vakeel@localhost:5433/vakeel_saathi
 DATABASE_SSL=disable
-REDIS_URL=redis://localhost:6380
 ```
 
 Then:
@@ -284,8 +283,8 @@ npm run dev          # terminal 1 — web
 npm run dev:worker   # terminal 2 — worker
 ```
 
-Ports are deliberately off the defaults so this project cannot collide with
-another Postgres or Redis you already run.
+The port is deliberately off the default so this project cannot collide with
+another Postgres you already run.
 
 **Without any API keys**, everything works: `mock` providers give deterministic
 answers, `ECOURTS_MODE=mock` gives deterministic case data, and outbound
@@ -337,9 +336,12 @@ OPENAI_API_KEY=sk-...
 to mock.
 
 Defaults are `claude-opus-5` for synthesis and `claude-haiku-4-5` for routing.
-Note `src/ai/providers/anthropic.provider.ts` detects model capability: Haiku 4.5
-rejects `thinking: adaptive` and `output_config.effort` (those are 4.6+), so they
-are only sent to models that accept them.
+Every vendor goes through `src/ai/providers/langchain.provider.ts`; there is no
+per-vendor provider file. `acceptsEffort()` there is the capability check:
+`output_config.effort` arrived with the 4.6 generation and Haiku 4.5 rejects it
+outright, so it is sent only to models on the allow-list and only on the
+synthesis task. An unrecognised model id answers at the provider's default
+rather than erroring.
 
 A provider selected without its key falls back to mock with a warning rather
 than crashing — a misconfigured key should not take the webhook offline and get
@@ -397,18 +399,23 @@ see the deviations table.
 
 ### Credits, in one paragraph
 
-Two buckets. **Free** credits are the daily allowance (`QUOTA_GUEST_DAILY`),
-reset each day and never accumulated. **Durable** credits — purchased, granted
-or the signup bonus — never expire. A spend draws down free first, so a purchase
-is never burned while an allowance expires beside it. Every movement is a row in
+Two buckets. **Free** credits are a one-time allowance (`CREDITS_FREE_MONTHLY`),
+granted once for the life of the account and never topped up — the daily and
+monthly cycles this went through are in migrations 0010 and 0012, and 0014 is
+where they stopped. **Durable** credits — purchased, granted or the signup bonus
+— never expire. A spend draws down free first, so a purchase is never burned
+while an allowance sits unused beside it. Every movement is a row in
 `credit_ledger` with an idempotency key the database enforces, so a redelivered
 webhook or a double-clicked button collides on an index instead of charging
 twice. Refunds reverse the original entries rather than crediting a flat amount,
 because a spend can straddle both buckets and both ways of guessing cost someone
 real money.
 
-Case status is free. Section lookups and case-law searches cost 2. A search that
-returns no authorities is refunded automatically.
+A case status costs 1; section lookups and case-law searches cost 2. Both
+channels charge the same — see `CREDIT_COST` in `src/credits/credits.service.ts`,
+which the pricing on the landing page is rendered from so the two cannot
+disagree. A search that returns no authorities is refunded automatically, as is
+a case status lookup that fails.
 
 ### Linking a WhatsApp number
 
@@ -458,8 +465,8 @@ easier to live with once you know which is which.
 **1. One service, not two.** Render's free tier has no background-worker type,
 so the blueprint's web + worker split is not available. The deployed shape is a
 single web service running `npm run start:all`, which supervises both processes
-in one container. The consequence: when the container sleeps, the BullMQ
-consumer sleeps with it. Inbound webhooks are still accepted and queued — the
+in one container. The consequence: when the container sleeps, the queue consumer
+sleeps with it. Inbound webhooks are still accepted and queued — the
 web half wakes to serve them — but queued jobs are not drained until something
 wakes the container, so a WhatsApp reply can arrive minutes late or on the next
 message. A paid always-on plan is the fix; nothing in the code can work around
@@ -539,10 +546,12 @@ npm test
 npm run test:cov
 ```
 
-403 tests, no database or network required. They concentrate on the parts where
+523 tests, no database or network required. They concentrate on the parts where
 a silent bug is expensive: the citation guardrail, webhook signature
-verification, PII encryption, WhatsApp field limits, and the legal-text
-patterns.
+verification, PII encryption, WhatsApp field limits, the legal-text patterns,
+and — since they turned out to be the failures that look most like success —
+the conversation flows that reply as though they worked. See
+`src/whatsapp/conversation.flow.spec.ts` and `src/auth/phone-link.spec.ts`.
 
 They earned their keep — writing them surfaced four real bugs, including a
 section-number regex that parsed `"section 302 IPC"` as section `302I`, and
@@ -565,12 +574,12 @@ src/
 ├── config/                 zod-validated environment, fails fast at boot
 ├── common/                 logger, response envelope, error filter, circuit breaker
 ├── database/               postgres.js pool + repositories
-├── redis/                  connection, distributed lock, atomic quota, BullMQ
 ├── security/               AES-256-GCM, blind index, webhook HMAC
 ├── ai/                     providers, embeddings, intent, RAG, guardrails, prompts
 ├── whatsapp/               webhook, Meta client, message builders, state machine
 ├── ecourts/                CNR adapter with circuit breaker
-├── users/  quota/  admin/  jobs/
+├── jobs/                   the Postgres queue: producer, worker loop, retention
+├── settings/  users/  admin/  health/  kanoon/
 supabase/migrations/        the schema — plain SQL, paste-able
 scripts/                    migrate, ingest
 data/samples/               fictional corpus for pipeline testing

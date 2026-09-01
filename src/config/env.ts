@@ -119,11 +119,18 @@ const envSchema = z.object({
    * persisted, so a reply typed the next morning was read as an answer to a
    * question asked the previous evening.
    *
-   * Set deliberately short (2 minutes) so the flow can be exercised end to end
-   * without waiting. Raise it to something humane - 900 or 1800 - before real
-   * advocates use this, or they will be re-onboarded mid-thought.
+   * Was 2 minutes, to make the flow quick to exercise end to end, with a note
+   * saying to raise it before real advocates used this. They do, the note was
+   * the only thing standing between them and it, and nothing overrides the
+   * default in `.env.example` or `render.yaml` - so the deployed bot re-greeted
+   * anybody who took two minutes to read an answer, asked their language again,
+   * and dropped whatever flow they were in.
+   *
+   * Thirty minutes is long enough to read five judgments and follow up, short
+   * enough that tomorrow's message starts cleanly. Set SESSION_TTL_SECONDS=120
+   * to get the old behaviour back while testing.
    */
-  SESSION_TTL_SECONDS: z.coerce.number().int().min(30).max(86_400).default(120),
+  SESSION_TTL_SECONDS: z.coerce.number().int().min(30).max(86_400).default(1800),
 
   // Admin panel sign-in. Both must be set for the login form to work; if either
   // is blank the panel falls back to accepting JWT_SECRET as a bearer token,

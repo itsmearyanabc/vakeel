@@ -14,7 +14,7 @@
     "start:all": "node scripts/start-all.js",
     "dev": "nest start --watch",
     "dev:worker": "nest start --watch --entryFile worker",
-    "lint": "eslint \"src/**/*.ts\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\"",
     "test": "jest",
     "test:watch": "jest --watch",

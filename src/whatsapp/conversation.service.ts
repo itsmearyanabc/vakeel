@@ -20,20 +20,27 @@ import { InboundMessageJob } from '../jobs/queue.constants';
 import { UsersService } from '../users/users.service';
 import { buttonMessage, listMessage } from './message-builder';
 import * as Replies from './replies';
-import { route, SessionContext, SessionState } from './session.router';
+import { CLEARED_PRECEDENTS, route, SESSION_STATE, SessionContext, SessionState } from './session.router';
 import { ACTION } from './replies';
 import { WhatsAppApiService } from './whatsapp-api.service';
 
-/** Conversation states. Persisted so a half-finished flow survives a restart. */
+/**
+ * States reached from the interactive list menu and the verification flow.
+ *
+ * Distinct from the router's SESSION_STATE, which covers the typed
+ * conversation. Both are persisted to the same row, and runSession() decides
+ * which machine a stored value belongs to - see isRouterState().
+ *
+ * SHOWING_PRECEDENTS used to live here, holding the result set "more" pages
+ * through. It is part of the router's context now: two machines writing one row
+ * is what made paging lose its rows in the first place.
+ */
 const STATE = {
-  IDLE: 'IDLE',
   AWAITING_CNR: 'AWAITING_CNR',
   AWAITING_QUERY: 'AWAITING_QUERY',
   AWAITING_SECTION: 'AWAITING_SECTION',
   AWAITING_BAR_ID: 'AWAITING_BAR_ID',
   AWAITING_ID_CARD: 'AWAITING_ID_CARD',
-  /** Holding a precedent result set so "more" can page through it. */
-  SHOWING_PRECEDENTS: 'SHOWING_PRECEDENTS',
 } as const;
 
 /**
@@ -41,8 +48,40 @@ const STATE = {
  *
  * Long enough that an advocate can read five judgments and ask for more; short
  * enough that "more" tomorrow does not silently continue yesterday's research.
+ *
+ * Applied as a floor on the session TTL while a result set is held, rather than
+ * as a separate row's lifetime. Reading five judgments takes longer than the
+ * ordinary session timeout allows for, and expiring the row underneath somebody
+ * mid-page is the same bug as losing the rows outright.
  */
 const PRECEDENT_SESSION_TTL_SECONDS = 3600;
+
+/**
+ * What answering a free-text message wants done to the conversation state.
+ *
+ * `patch` is merged into the router's context and written once, at the end of
+ * the message. `ownsState` says the answer started a flow of its own and has
+ * already written the row - the trailing write must then leave it alone, or the
+ * "send me a CNR" prompt is immediately overwritten with the main menu and the
+ * advocate's CNR is answered by asking for a CNR again.
+ */
+interface AnswerOutcome {
+  patch?: Partial<SessionContext>;
+  ownsState?: boolean;
+}
+
+/**
+ * Is this a state the router understands?
+ *
+ * Two state machines write to `conversation_states`: this file's STATE, reached
+ * from the interactive list menu and the verification flow, and the router's
+ * SESSION_STATE, reached from typed messages. The router's switch falls through
+ * to "back to the menu" on anything it does not recognise, so a STATE value
+ * handed to it silently discards whatever flow the advocate was in.
+ */
+function isRouterState(state: string): state is SessionState {
+  return Object.prototype.hasOwnProperty.call(SESSION_STATE, state);
+}
 
 /**
  * Did the advocate try to send a CNR, or change the subject?
@@ -242,6 +281,27 @@ export class ConversationService {
     }
 
     if (user.is_blocked) {
+      /*
+       * The one message an opted-out account is still allowed to send.
+       *
+       * The goodbye tells them to send *start* to come back, and until now
+       * nothing acted on it: this early return sits above every text handler,
+       * so the word could never reach one. An opt-out with no way back is a
+       * one-way door we invited people through.
+       *
+       * Matched against the raw job text rather than after resolveText,
+       * because everything that method does - downloading media, transcribing
+       * a voice note, replying that a type is unsupported - is exactly the
+       * contact that opting out asked us to stop.
+       */
+      const said = (job.text ?? '').trim().toLowerCase().replace(/[!.]+$/, '');
+      if ((Replies.RESUME_WORDS as readonly string[]).includes(said)) {
+        await this.users.setBlocked(user.id, false);
+        user.is_blocked = false;
+        await this.api.sendText(job.from, Replies.RESUBSCRIBED);
+        return;
+      }
+
       this.logger.debug({ userId: user.id }, 'Ignoring message from opted-out user');
       return;
     }
@@ -287,10 +347,24 @@ export class ConversationService {
       // router send them through onboarding.
     }
     if (['stop', 'unsubscribe'].includes(lower)) {
-      await this.users.setLanguage(user.id, user.preferred_language);
-      // Opting out must also drop retained context, not just stop replies.
+      /*
+       * This is what actually stops the messages.
+       *
+       * It used to call setLanguage() with the language the row already held -
+       * a write that changed nothing - and then promise the advocate they
+       * would hear nothing further. `is_blocked` stayed false, the guard at
+       * the top of this method kept letting their messages through, and the
+       * bot kept answering. An opt-out that does not opt anybody out is worse
+       * than no opt-out at all, because the person stops looking for one.
+       *
+       * The reply goes out before the block, since afterwards the guard would
+       * refuse it - and a goodbye nobody receives leaves them typing *stop*
+       * again.
+       */
       await this.memory.clear(user.id);
-      await this.api.sendText(job.from, 'You will not receive further messages. Send *start* to resume.');
+      await this.conversations.clear(user.id);
+      await this.api.sendText(job.from, Replies.UNSUBSCRIBED);
+      await this.users.setBlocked(user.id, true);
       return;
     }
 
@@ -331,7 +405,31 @@ export class ConversationService {
     // A row past its expires_at reads as null, which is exactly what the router
     // treats as "start a new session". The TTL is therefore the whole of the
     // session-expiry mechanism; there is no separate sweep.
-    const stored = await this.conversations.get(user.id);
+    let stored = await this.conversations.get(user.id);
+
+    /*
+     * A flow started from the interactive menu, not from the router.
+     *
+     * handleAction() and beginVerification() write this file's STATE values -
+     * AWAITING_CNR, AWAITING_BAR_ID, AWAITING_ID_CARD - and handleStatefulInput()
+     * exists to consume them. Nothing called it. So every one of those flows
+     * asked a question and then routed the answer through the router, whose
+     * switch does not know those states and returns the main menu: tapping
+     * "Case status" and sending a CNR bounced back to the menu, and *verify*
+     * asked for a bar council enrolment number that could never be recorded.
+     *
+     * When the flow releases the message - a change of subject rather than the
+     * answer it asked for - it clears its own state and returns false, and the
+     * message continues as if the advocate were at the menu. Not as a new
+     * session: re-greeting somebody mid-conversation, and re-asking for a
+     * language they already chose, is its own bug.
+     */
+    if (stored && !isRouterState(stored.state)) {
+      const consumed = await this.handleStatefulInput(user, stored.state, text, job);
+      if (consumed) return;
+      stored = { ...stored, state: SESSION_STATE.MAIN_MENU, context: {} };
+    }
+
     const context: SessionContext = stored
       ? { ...(stored.context as Partial<SessionContext>), state: stored.state as SessionState }
       : { state: null };
@@ -356,6 +454,9 @@ export class ConversationService {
     // everything afterwards - credits, state - belongs to that account.
     let acting: WhatsAppUserRow = user;
     let nextContext: SessionContext = { ...context, ...(routed.contextPatch ?? {}) };
+    // Set when an answer started a flow of its own and wrote the row itself.
+    // See AnswerOutcome.
+    let stateOwnedByAnswer = false;
 
     for (const action of routed.actions) {
       switch (action.kind) {
@@ -389,17 +490,28 @@ export class ConversationService {
           break;
 
         case 'searchPrecedents':
-          await this.answerSearch(acting, action.query, action.charge, job, 'PRECEDENT');
-          nextContext = { ...nextContext, precedentOffset: 0 };
+          // The patch carries the result set the next "more" pages through. It
+          // is merged rather than written here so the whole message produces
+          // one state write - see answerPrecedents().
+          nextContext = {
+            ...nextContext,
+            ...(await this.answerSearch(acting, action.query, action.charge, job, 'PRECEDENT')),
+          };
           break;
 
         case 'nextPrecedentPage':
-          await this.sendNextPrecedentPage(acting, job);
+          nextContext = {
+            ...nextContext,
+            ...(await this.sendNextPrecedentPage(acting, job, nextContext)),
+          };
           break;
 
-        case 'freeform':
-          await this.handleFreeformQuery(acting, action.text, job);
+        case 'freeform': {
+          const outcome = await this.handleFreeformQuery(acting, action.text, job);
+          nextContext = { ...nextContext, ...(outcome.patch ?? {}) };
+          if (outcome.ownsState) stateOwnedByAnswer = true;
           break;
+        }
 
         default: {
           // Exhaustiveness: adding an Action variant without handling it here
@@ -410,14 +522,26 @@ export class ConversationService {
       }
     }
 
+    if (stateOwnedByAnswer) return;
+
     if (routed.nextState === null) {
       await this.conversations.clear(acting.id);
-    } else if (routed.nextState) {
+    } else if (routed.nextState ?? context.state) {
       await this.conversations.set(
         acting.id,
-        routed.nextState,
+        // An omitted nextState means "leave the state where it is", which is not
+        // the same as "write nothing": the context still has to be saved, or an
+        // action's patch - the advanced paging offset, most of all - is computed,
+        // used to render a reply, and then thrown away.
+        (routed.nextState ?? context.state) as SessionState,
         nextContext as unknown as Record<string, unknown>,
-        this.env.SESSION_TTL_SECONDS,
+        // A held result set outlives the ordinary session timeout: reading five
+        // judgments takes longer than two minutes, and letting the row expire
+        // underneath somebody halfway through loses the same rows the write
+        // above exists to keep.
+        nextContext.precedentRows?.length
+          ? Math.max(this.env.SESSION_TTL_SECONDS, PRECEDENT_SESSION_TTL_SECONDS)
+          : this.env.SESSION_TTL_SECONDS,
       );
     }
   }
@@ -482,20 +606,27 @@ export class ConversationService {
     return true;
   }
 
+  /**
+   * Returns whatever the answer wants remembered for the next message - the
+   * precedent result set, when there was one. Nothing else carries state.
+   */
   private async answerSearch(
     user: WhatsAppUserRow,
     query: string,
     charge: number,
     job: InboundMessageJob,
     kind: 'SECTION' | 'PRECEDENT',
-  ): Promise<void> {
+  ): Promise<Partial<SessionContext>> {
     const paid = await this.chargeOrExplain(
       user,
       job,
       kind === 'PRECEDENT' ? 'PRECEDENT_SEARCH' : 'SECTION_LOOKUP',
       charge,
     );
-    if (!paid) return;
+    // Nothing ran, so nothing was retrieved; whatever was pageable before is
+    // still pageable, and clearing it here would punish being out of credits
+    // by also throwing away the search that was already paid for.
+    if (!paid) return {};
 
     // Classification still runs: it extracts the section number and act code
     // the retrieval layer needs, and detects the language. What it no longer
@@ -505,11 +636,11 @@ export class ConversationService {
     const intent = await this.intents.classify(query);
 
     if (kind === 'PRECEDENT') {
-      await this.answerPrecedents(user, { ...intent, intent: 'PRECEDENT_SEARCH' }, query, job);
-      return;
+      return this.answerPrecedents(user, { ...intent, intent: 'PRECEDENT_SEARCH' }, query, job);
     }
 
     await this.answerWithRag(user, { ...intent, intent: 'SECTION_LOOKUP' }, query, job);
+    return {};
   }
 
   // ---------------------------------------------------------------------------
@@ -686,10 +817,23 @@ export class ConversationService {
         const cnr = extractCnr(text);
         if (cnr) {
           await this.conversations.clear(user.id);
-          // This legacy flow takes no charge of its own, so the refund inside
-          // matches no ledger rows and is a no-op. `job` is threaded through so
-          // that stays true by construction rather than by remembering.
-          await this.answerCaseStatus(user, cnr, text, job);
+          /*
+           * Charged, like every other route to the same lookup.
+           *
+           * This used to note that the flow took no charge of its own, so the
+           * refund inside answerCaseStatus matched no ledger rows and did
+           * nothing. That was accurate and it made this the free door: tapping
+           * "Case status" in the list menu and sending a CNR cost nothing,
+           * while typing the same CNR cost a credit. One feature with two
+           * prices depending on how you reached it is the exact difference
+           * nobody reports as a bug and everybody notices.
+           *
+           * With the charge here, the refund on a failed lookup has rows to
+           * reverse - which is the other half of what was quietly missing.
+           */
+          if (await this.chargeOrExplain(user, job, 'CASE_STATUS')) {
+            await this.answerCaseStatus(user, cnr, text, job);
+          }
           return true;
         }
 
@@ -732,18 +876,6 @@ export class ConversationService {
         // and treat it as a normal query rather than nagging.
         await this.conversations.clear(user.id);
         return false;
-
-      case STATE.SHOWING_PRECEDENTS: {
-        // Only "more" continues the list. Anything else is a new question, so
-        // fall through - an advocate who follows up with a different query
-        // should not have to escape a paging mode first.
-        if (!/^(more|next|aur|और|continue|\d+)$/i.test(text.trim())) {
-          await this.conversations.clear(user.id);
-          return false;
-        }
-        await this.sendNextPrecedentPage(user, job);
-        return true;
-      }
 
       case STATE.AWAITING_QUERY:
       case STATE.AWAITING_SECTION:
@@ -811,7 +943,7 @@ export class ConversationService {
 
   private async beginVerification(user: WhatsAppUserRow): Promise<void> {
     if (user.verification_status === 'VERIFIED') {
-      await this.api.sendText(user.phone_number, 'Your account is already verified. You have unlimited queries.');
+      await this.api.sendText(user.phone_number, 'Your account is already verified.');
       return;
     }
     if (user.verification_status === 'SUBMITTED') {
@@ -843,7 +975,16 @@ export class ConversationService {
   // Answering
   // ---------------------------------------------------------------------------
 
-  private async handleFreeformQuery(user: WhatsAppUserRow, text: string, job: InboundMessageJob): Promise<void> {
+  /**
+   * Returns what the answer wants remembered, on the same contract as
+   * {@link answerSearch}: a precedent search hands back the result set so
+   * "more" can page it, and everything else hands back nothing.
+   */
+  private async handleFreeformQuery(
+    user: WhatsAppUserRow,
+    text: string,
+    job: InboundMessageJob,
+  ): Promise<AnswerOutcome> {
     const intent = await this.intents.classify(text);
 
     // Track the user's language automatically so replies match how they write,
@@ -867,58 +1008,62 @@ export class ConversationService {
           if (reply) {
             await this.api.sendText(job.from, reply);
             await this.memory.append(user.id, text, reply);
-            return;
+            return {};
           }
         } catch (err) {
           this.logger.warn({ err }, 'Small talk generation failed - using the fixed greeting');
         }
         // Fallback only. A greeting is never worth failing a message over.
         await this.api.sendText(job.from, 'Namaste. What can I help you with?');
-        return;
+        return {};
       }
 
       case 'MENU_NAVIGATION':
         await this.sendMainMenu(user);
-        return;
+        return {};
 
       case 'UNSUPPORTED':
         await this.api.sendText(
           job.from,
           'I only handle questions about Indian law. Type *menu* to see what I can do.',
         );
-        return;
+        return {};
 
       case 'CASE_STATUS':
         if (intent.cnrNumber) {
-          if (!(await this.chargeOrExplain(user, job, 'CASE_STATUS'))) return;
+          if (!(await this.chargeOrExplain(user, job, 'CASE_STATUS'))) return {};
           await this.answerCaseStatus(user, intent.cnrNumber, text, job);
         } else {
           await this.conversations.set(user.id, STATE.AWAITING_CNR);
           await this.api.sendText(job.from, Replies.ASK_FOR_CNR);
+          // The prompt owns the state now, so the router's trailing write must
+          // not put MAIN_MENU back over the top of it.
+          return { ownsState: true };
         }
-        return;
+        return {};
 
       case 'PRECEDENT_SEARCH':
         // Billed here rather than inside answerPrecedents, which is also
         // reached from the menu path where answerSearch has already charged.
-        if (!(await this.chargeOrExplain(user, job, 'PRECEDENT_SEARCH'))) return;
-        await this.answerPrecedents(user, intent, text, job);
-        return;
+        if (!(await this.chargeOrExplain(user, job, 'PRECEDENT_SEARCH'))) return {};
+        return { patch: await this.answerPrecedents(user, intent, text, job) };
 
       default:
         // SECTION_LOOKUP, GENERAL_LEGAL and DRAFTING_HELP all end in retrieval
         // and all cost the same, so they share one charge.
-        if (!(await this.chargeOrExplain(user, job, 'SECTION_LOOKUP'))) return;
+        if (!(await this.chargeOrExplain(user, job, 'SECTION_LOOKUP'))) return {};
         await this.answerWithRag(user, intent, text, job);
+        return {};
     }
   }
 
   /**
-   * Case status. Free - see CREDIT_COST.CASE_STATUS for why.
+   * Case status.
    *
-   * This used to claim a unit of quota like any other answer. It no longer
-   * charges at all: there is no model call behind it, and it is the thing an
-   * advocate does standing outside a courtroom.
+   * Charged - one credit, see CREDIT_COST.CASE_STATUS - by the caller, before
+   * this runs. It was free while eCourts was a mocked adapter, and this comment
+   * still said so long after the price changed. The charge is refunded here on
+   * every failure; see the catch block.
    */
   private async answerCaseStatus(
     user: WhatsAppUserRow,
@@ -1001,7 +1146,7 @@ export class ConversationService {
     intent: Awaited<ReturnType<IntentService['classify']>>,
     originalText: string,
     job: InboundMessageJob,
-  ): Promise<void> {
+  ): Promise<Partial<SessionContext>> {
     // Billing happens once, upstream in answerSearch(), which knows whether
     // this is a new question or the same one being pressed on. Claiming again
     // here charged twice for one search.
@@ -1021,17 +1166,28 @@ export class ConversationService {
     });
     await this.api.sendText(job.from, body);
 
-    // Keep the set only when there is a second page to serve.
-    if (result.precedents.length > pageSize) {
-      await this.conversations.set(
-        user.id,
-        STATE.SHOWING_PRECEDENTS,
-        { query: intent.searchQuery, offset: pageSize, lexicalOnly: result.lexicalOnly, source: result.source, rows: result.precedents },
-        PRECEDENT_SESSION_TTL_SECONDS,
-      );
-    } else {
-      await this.conversations.clear(user.id);
-    }
+    /*
+     * The result set is handed back, not written.
+     *
+     * It used to be written here, as a state of its own, and then runSession()
+     * wrote the router's state over the top of it a few lines later - one row,
+     * two writers, last one wins. The rows were gone before the advocate could
+     * type "more", so paging answered "that was the last result" on every
+     * search that had a second page.
+     *
+     * Returning a patch puts the whole message's state in one write, at the end,
+     * where the router's own decision already lands.
+     */
+    const paging: Partial<SessionContext> =
+      result.precedents.length > pageSize
+        ? {
+            precedentQuery: intent.searchQuery,
+            precedentOffset: pageSize,
+            precedentRows: result.precedents,
+            precedentLexicalOnly: result.lexicalOnly,
+            precedentSource: result.source,
+          }
+        : CLEARED_PRECEDENTS;
 
     await this.analytics.recordSearch({
       userId: user.id,
@@ -1061,51 +1217,47 @@ export class ConversationService {
       },
       'Precedent search answered',
     );
+
+    return paging;
   }
 
-  /** Serve the next page of a stored precedent result set. */
-  private async sendNextPrecedentPage(user: WhatsAppUserRow, job: InboundMessageJob): Promise<void> {
-    const state = await this.conversations.get(user.id);
-    const context = (state?.context ?? {}) as {
-      query?: string;
-      offset?: number;
-      lexicalOnly?: boolean;
-      source?: 'local' | 'kanoon';
-      rows?: PrecedentRow[];
-    };
-
-    const rows = context.rows ?? [];
-    const offset = context.offset ?? 0;
+  /**
+   * Serve the next page of the stored precedent result set.
+   *
+   * Reads the set from the context it was given rather than from the database,
+   * because runSession() is holding the only authoritative copy - it has not
+   * been written yet, and re-reading the row would return whatever the previous
+   * message left there.
+   */
+  private async sendNextPrecedentPage(
+    user: WhatsAppUserRow,
+    job: InboundMessageJob,
+    context: SessionContext,
+  ): Promise<Partial<SessionContext>> {
+    const rows = (context.precedentRows ?? []) as PrecedentRow[];
+    const offset = context.precedentOffset ?? 0;
 
     if (rows.length === 0 || offset >= rows.length) {
-      await this.conversations.clear(user.id);
       await this.api.sendText(
         job.from,
         'That was the last result. Send another research question, or type *menu* for options.',
       );
-      return;
+      return CLEARED_PRECEDENTS;
     }
 
     const pageSize = this.precedents.pageSize;
     await this.api.sendText(
       job.from,
-      formatPrecedentPage(rows, offset, pageSize, context.query ?? 'your search', {
-        lexicalOnly: context.lexicalOnly,
-        source: context.source,
+      formatPrecedentPage(rows, offset, pageSize, context.precedentQuery ?? 'your search', {
+        lexicalOnly: context.precedentLexicalOnly,
+        source: context.precedentSource,
       }),
     );
 
     const nextOffset = offset + pageSize;
-    if (nextOffset < rows.length) {
-      await this.conversations.set(
-        user.id,
-        STATE.SHOWING_PRECEDENTS,
-        { ...context, offset: nextOffset },
-        PRECEDENT_SESSION_TTL_SECONDS,
-      );
-    } else {
-      await this.conversations.clear(user.id);
-    }
+    return nextOffset < rows.length
+      ? { precedentOffset: nextOffset }
+      : CLEARED_PRECEDENTS;
   }
 
   private async answerWithRag(
@@ -1212,7 +1364,7 @@ export class ConversationService {
       await this.api.send(
         buttonMessage(
           job.from,
-          `You have *${balance.total}* ${balance.total === 1 ? 'credit' : 'credits'} left. Verified advocates get unlimited searches.`,
+          `You have *${balance.total}* ${balance.total === 1 ? 'credit' : 'credits'} left.`,
           [{ id: ACTION.VERIFY, title: 'Verify licence' }],
         ),
       );

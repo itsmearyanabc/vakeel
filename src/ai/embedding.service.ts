@@ -30,7 +30,7 @@ export class EmbeddingService {
   }
 
   /**
-   * Embed a search query, with a Redis cache.
+   * Embed a search query, cached in memory and in Postgres.
    *
    * Legal queries repeat heavily - "bail in NDPS case", "302 IPC punishment" -
    * and an embedding call sits directly in the user's latency path, so this is

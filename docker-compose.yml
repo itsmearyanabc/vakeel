@@ -4,10 +4,15 @@
 # Supabase project. It ships pgvector so the migrations in supabase/migrations
 # apply cleanly. Point DATABASE_URL at Supabase when you want the real thing.
 #
-# Ports are deliberately NOT the defaults (5433 instead of 5432, 6380 instead
-# of 6379) so this project cannot collide with another Postgres or Redis you
-# already run locally. The project name, container names and volumes are all
-# prefixed too, so `docker compose down -v` here touches nothing else.
+# The port is deliberately NOT the default (5433 instead of 5432) so this
+# project cannot collide with another Postgres you already run locally. The
+# project name, container names and volumes are all prefixed too, so
+# `docker compose down -v` here touches nothing else.
+#
+# There is no Redis service. There was, and migration 0013 removed the need for
+# it: the job queue, the caches, the distributed locks and the rate limiters all
+# moved into Postgres. Leaving the container defined meant every developer ran
+# an empty Redis, and left `REDIS_URL` looking like configuration that mattered.
 
 name: vakeel-saathi
 
@@ -31,20 +36,5 @@ services:
       timeout: 5s
       retries: 10
 
-  redis:
-    image: redis:7.2-alpine
-    container_name: vakeel-redis
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction
-    ports:
-      - '6380:6379'
-    volumes:
-      - redisdata:/data
-    healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
 volumes:
   pgdata:
-  redisdata:

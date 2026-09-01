@@ -178,8 +178,24 @@ export class PhoneVerificationService {
       return { status: 'TOO_MANY_ATTEMPTS' };
     }
 
-    const consumed = await this.auth.consumeToken(hashToken(code.trim()), 'PHONE_VERIFY');
-    if (!consumed) return { status: 'WRONG_CODE', remaining: Math.max(0, MAX_ATTEMPTS - attempts) };
+    /*
+     * Scoped to this account, in the UPDATE itself.
+     *
+     * The call used to match on the digest and the purpose alone. A six-digit
+     * code that collided with any *other* account's live code therefore
+     * verified this one - the guesser's claimed number was attached - and burnt
+     * the stranger's code on the way past. With N codes outstanding that is N
+     * chances per guess rather than one, and a denial of service on N-1 people
+     * who see a code stop working for no reason.
+     *
+     * Rejecting the row after the fact would close the first hole and not the
+     * second, because the UPDATE has already consumed it. The predicate belongs
+     * in the statement.
+     */
+    const consumed = await this.auth.consumeToken(hashToken(code.trim()), 'PHONE_VERIFY', user.id);
+    if (!consumed) {
+      return { status: 'WRONG_CODE', remaining: Math.max(0, MAX_ATTEMPTS - attempts) };
+    }
 
     // Re-checked after the code is proven, not only at start(). The two calls
     // are minutes apart and the number could have been claimed in between; the
@@ -236,8 +252,8 @@ export class PhoneVerificationService {
       return null;
     }
 
-    const consumed = await this.auth.consumeToken(hashToken(code.trim()), 'PHONE_RESET');
-    if (!consumed || consumed.user_id !== owner.id) return null;
+    const consumed = await this.auth.consumeToken(hashToken(code.trim()), 'PHONE_RESET', owner.id);
+    if (!consumed) return null;
 
     this.logger.info({ userId: owner.id, phone: maskPhone(phoneNumber) }, 'Reset code accepted');
     return owner;

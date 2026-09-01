@@ -29,7 +29,21 @@ export const SESSION_STATE = {
 
 export type SessionState = (typeof SESSION_STATE)[keyof typeof SESSION_STATE];
 
-/** What the router knows about the conversation it is routing. */
+/**
+ * What the router knows about the conversation it is routing.
+ *
+ * ## Why the precedent result set lives here
+ *
+ * It used to be written straight to `conversation_states` by the code that ran
+ * the search, under a state of its own. That row is also where the router's
+ * context is persisted, and ConversationService writes it once at the end of
+ * every message - so the trailing write replaced the row the search had just
+ * made, `rows` was gone before the advocate could type "more", and paging
+ * answered "that was the last result" on every search that had a second page.
+ *
+ * One row, one writer. Everything the next message needs is part of the context
+ * the router already carries.
+ */
 export interface SessionContext {
   /** null when the session has expired or never existed. */
   state: SessionState | null;
@@ -40,6 +54,24 @@ export interface SessionContext {
   lastChargedQuery?: string;
   /** How many precedents have already been shown in this result set. */
   precedentOffset?: number;
+  /** The query those precedents answer, reprinted on each page. */
+  precedentQuery?: string;
+  /**
+   * The result set "more" pages through.
+   *
+   * Held whole so a second page costs no retrieval and no embedding call - the
+   * advocate has already paid for this search, and running it again would also
+   * risk returning a different set.
+   *
+   * Typed loosely on purpose: the router never looks inside, and naming the
+   * database row type here would give a pure function a dependency on the
+   * schema for the sake of a field it only carries.
+   */
+  precedentRows?: unknown[];
+  /** Retrieval ran keyword-only. Repeated on every page, not just the first. */
+  precedentLexicalOnly?: boolean;
+  /** Which backend answered. Repeated for the same reason. */
+  precedentSource?: 'local' | 'kanoon';
 }
 
 export interface SessionUser {
@@ -76,8 +108,40 @@ export interface Routed {
   contextPatch?: Partial<SessionContext>;
 }
 
+/**
+ * Forget the stored result set.
+ *
+ * Spread into a patch rather than written out at each site, so a field added to
+ * the paging state cannot be left behind in one of them - which is how a "more"
+ * ends up continuing a result set from a query two questions ago.
+ *
+ * Exported because ConversationService needs the same reset from the other
+ * side: the router clears it when a new query arrives, and the answer clears it
+ * when the set runs out. Two copies of this list is one copy too many.
+ */
+export const CLEARED_PRECEDENTS: Partial<SessionContext> = {
+  precedentOffset: 0,
+  precedentQuery: undefined,
+  precedentRows: undefined,
+  precedentLexicalOnly: undefined,
+  precedentSource: undefined,
+};
+
 /** "0" always means "take me back to the menu", from every state. */
 const RETURN_KEY = '0';
+
+/**
+ * Is the advocate asking for the next page?
+ *
+ * The English word is what the footer tells them to send, and the others are
+ * what people send anyway - "next" from anyone who has used a search engine,
+ * "aur" and "और" from anyone typing Hindi. Deliberately not a bare number:
+ * "2" and "3" are menu choices, and reading one as a page request would send
+ * somebody to case law when they asked for a section.
+ */
+function isMoreRequest(text: string): boolean {
+  return /^(more|next|aur|और|continue)$/i.test(text.trim());
+}
 
 /**
  * Route one inbound message.
@@ -127,6 +191,30 @@ export function route(
       nextState: SESSION_STATE.AWAITING_LANGUAGE,
       contextPatch: {},
     };
+  }
+
+  /*
+   * "more" continues a held result set from wherever the advocate is standing.
+   *
+   * It used to be handled only inside the PRECEDENT_SEARCH state, which is the
+   * state reached by picking 3 from the menu. Most searches do not go that way:
+   * typing "case law on anticipatory bail" at the menu is answered by the
+   * classifier and leaves the conversation at MAIN_MENU, so the very next
+   * "more" - which the page footer has just invited, in bold - fell through to
+   * the classifier as a fresh question and came back "I only handle questions
+   * about Indian law."
+   *
+   * Keyed on the result set rather than on the state, because the result set is
+   * the thing that decides whether there is anything to continue. Checked before
+   * the state switch so it works from every state, and after the new-session
+   * block because an expired session holds no rows to page.
+   */
+  if (context.precedentRows?.length && isMoreRequest(text)) {
+    // Named rather than omitted. Paging does not move the advocate, and the
+    // caller persists the context under whatever state this returns - so
+    // leaving it out would drop the advanced offset with it and serve the same
+    // page again on the next "more".
+    return { actions: [{ kind: 'nextPrecedentPage' }], nextState: context.state };
   }
 
   switch (context.state) {
@@ -272,7 +360,7 @@ function routeMenu(text: string, creditLine: string): Routed {
         actions: [{ kind: 'reply', text: Replies.ASK_FOR_QUERY }],
         nextState: SESSION_STATE.PRECEDENT_SEARCH,
         // A new search: nothing has been shown or charged for yet.
-        contextPatch: { precedentOffset: 0, lastChargedQuery: undefined },
+        contextPatch: { ...CLEARED_PRECEDENTS, lastChargedQuery: undefined },
       };
     case RETURN_KEY:
       return backToMenu(creditLine);
@@ -360,9 +448,17 @@ function routeSection(text: string, context: SessionContext, creditLine: string)
 function routePrecedents(text: string, context: SessionContext, creditLine: string): Routed {
   if (text === RETURN_KEY) return backToMenu(creditLine);
 
-  // Paging is never charged. "more" continues a result set the advocate has
-  // already paid for; billing it again would charge twice for one search.
-  if (/^more$/i.test(text)) {
+  /*
+   * Paging is never charged: "more" continues a result set the advocate has
+   * already paid for, and billing it again would charge twice for one search.
+   *
+   * A held set is caught earlier, by route(), from any state. This branch is
+   * what is left: "more" typed here with nothing to page - a set that expired,
+   * or a search that returned a single page. It goes to the same action, which
+   * answers "that was the last result" rather than sending the word off to the
+   * classifier to come back as an unsupported question.
+   */
+  if (isMoreRequest(text)) {
     return { actions: [{ kind: 'nextPrecedentPage' }], nextState: SESSION_STATE.PRECEDENT_SEARCH };
   }
 
@@ -374,8 +470,9 @@ function routePrecedents(text: string, context: SessionContext, creditLine: stri
     actions: [{ kind: 'searchPrecedents', query: text, charge }],
     nextState: SESSION_STATE.PRECEDENT_SEARCH,
     // A new query always resets paging, whether or not it was charged for -
-    // otherwise "more" would continue the previous result set.
-    contextPatch: charge > 0 ? { lastChargedQuery: text, precedentOffset: 0 } : { precedentOffset: 0 },
+    // otherwise "more" would continue the previous result set. The rows go with
+    // the offset: a search that then fails must not leave the last one pageable.
+    contextPatch: charge > 0 ? { lastChargedQuery: text, ...CLEARED_PRECEDENTS } : { ...CLEARED_PRECEDENTS },
   };
 }
 

@@ -178,11 +178,11 @@ export class ChatRepository {
   /**
    * The last few turns of a thread, oldest first, for model context.
    *
-   * Read from Postgres rather than from the Redis chat memory the WhatsApp side
-   * uses. On WhatsApp the conversation has no durable home, so Redis is the
-   * only record; here the thread *is* the record, and reading history from a
-   * cache that can expire would mean a thread the advocate can see on screen
-   * while the model has forgotten it.
+   * Read from `chat_messages` rather than from the expiring `chat_memory` the
+   * WhatsApp side uses. On WhatsApp the conversation has no durable home, so
+   * that TTL'd row is the only record; here the thread *is* the record, and
+   * reading history from something that can expire would mean a thread the
+   * advocate can still see on screen while the model has forgotten it.
    */
   async recentTurns(threadId: string, limit = 10): Promise<{ role: ChatRole; content: string }[]> {
     const rows = await this.db.sql<{ role: ChatRole; content: string }[]>`

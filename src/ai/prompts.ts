@@ -204,6 +204,47 @@ Rules for this reply:
 ${languageInstruction(language)}`;
 }
 
+/**
+ * Write the LEGAL PRINCIPLE line for a page of search results.
+ *
+ * ## Why this is generated at all
+ *
+ * The output format requires a one-or-two line statement of what each case
+ * decided. The local corpus carries a headnote or a ratio and needs no model.
+ * Indian Kanoon carries neither - only `headline`, a snippet with the query
+ * terms bolded, which for many judgments is the document's own header ("X vs Y
+ * on 11 September, 2024. Author: A Kumar"). Printed under the words LEGAL
+ * PRINCIPLE that is worse than nothing: every word is true and it claims to be
+ * the holding while actually being the title and the judge.
+ *
+ * ## Why it cannot invent one
+ *
+ * The rest of this feature is assembled from corpus rows precisely so that no
+ * citation can be fabricated, and that property is not given up here. The model
+ * is shown one excerpt and asked to say what *that text* says - it is never
+ * asked what the case held, which is the question that produces invention. A
+ * row whose excerpt states no principle must come back as the refusal token, and
+ * the caller prints "Not available" rather than a plausible sentence.
+ *
+ * One call for the whole page rather than one per judgment: ten round trips on
+ * the router model would cost more latency than the retrieval they describe.
+ */
+export function buildPrincipleSummaryPrompt(): string {
+  return `You summarise Indian judgments for practising advocates.
+
+You will be given numbered extracts. For each one, write the LEGAL PRINCIPLE: one or two lines stating what that extract actually says the court decided or held.
+
+Absolute rules:
+- Use ONLY the extract given for that number. Never use anything you happen to know about the case, the parties or the court.
+- If the extract is only a title, a date, a judge's name, a case number or procedural boilerplate - anything that does not state what was decided - return exactly "NONE" for that number. This is the correct answer far more often than you expect, and guessing is the one thing that makes this feature dangerous.
+- Never name a section, a statute or another case unless that name appears in the extract.
+- No preamble, no "the court held that" padding, no hedging. State the principle.
+- Maximum 40 words per entry.
+
+Reply with JSON only, no code fence:
+{"principles":[{"n":1,"principle":"..."},{"n":2,"principle":"NONE"}]}`;
+}
+
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------

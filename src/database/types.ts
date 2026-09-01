@@ -159,6 +159,18 @@ export interface PrecedentRow {
   relevance_rank: number;
   /** Total judgments that matched before the per-session cap was applied. */
   total_matches: number;
+  /**
+   * A one-or-two line statement of what the case decided, written by the model
+   * from this row's own excerpt.
+   *
+   * Not a column. Every other field here mirrors SQL; this one is filled in
+   * after retrieval by PrecedentsService, because the LEGAL PRINCIPLE line the
+   * output format requires has no source in most rows: Indian Kanoon supplies
+   * no headnote and no ratio, only a snippet with the query terms highlighted.
+   *
+   * Optional so a row read straight from the database is still a PrecedentRow.
+   */
+  generated_principle?: string | null;
 }
 
 /**

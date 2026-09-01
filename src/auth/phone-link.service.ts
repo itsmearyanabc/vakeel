@@ -110,23 +110,38 @@ export class PhoneLinkService {
    */
   async redeemCode(fromPhone: string, code: string): Promise<LinkOutcome> {
     const phoneNumber = normalisePhone(fromPhone);
-    const pending = await this.auth.findPhoneLinkByCode(hashToken(code), phoneNumber);
 
-    if (!pending) return { status: 'NO_PENDING_CODE' };
+    /*
+     * The guess is counted before the digits are compared.
+     *
+     * It used to be counted after a successful match, which meant only correct
+     * codes were ever counted and MAX_ATTEMPTS could not fire: a wrong code
+     * found no token, returned NO_PENDING_CODE, and left the counter where it
+     * was. Six digits are only safe because of the ceiling, so the ceiling has
+     * to see the failures.
+     *
+     * Zero means no code is outstanding for this number at all. That is not a
+     * failed attempt - "420" and "302" are section numbers advocates genuinely
+     * type - so it falls through to be answered as an ordinary question.
+     */
+    const attempts = await this.auth.recordPhoneLinkAttempt(phoneNumber);
+    if (attempts === 0) return { status: 'NO_PENDING_CODE' };
 
-    const attempts = await this.auth.recordTokenAttempt(pending.user_id, 'PHONE_LINK');
     if (attempts > MAX_ATTEMPTS) {
       this.logger.warn(
-        { userId: pending.user_id, attempts },
+        { phone: maskPhone(phoneNumber), attempts },
         'Phone link code exceeded its attempt limit',
       );
       return { status: 'TOO_MANY_ATTEMPTS' };
     }
 
+    const pending = await this.auth.findPhoneLinkByCode(hashToken(code), phoneNumber);
+    if (!pending) return { status: 'NO_PENDING_CODE' };
+
     // Consumed before the merge. If the merge then fails, the advocate requests
     // a new code and tries again - which is a far better failure than a code
     // that stays live after it has been used once.
-    const consumed = await this.auth.consumeToken(hashToken(code), 'PHONE_LINK');
+    const consumed = await this.auth.consumeToken(hashToken(code), 'PHONE_LINK', pending.user_id);
     if (!consumed) return { status: 'NO_PENDING_CODE' };
 
     return this.attachOrMerge(pending.user_id, phoneNumber);

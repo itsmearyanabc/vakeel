@@ -200,7 +200,7 @@ export class AdminController {
     if (user.phone_number) {
       await this.whatsapp.sendText(
         user.phone_number,
-        '*Your account is verified.*\n\nYou now have unlimited daily searches. Ask me anything about Indian law.',
+        '*Your account is verified.*\n\nYour licence is confirmed on this account. Ask me anything about Indian law.',
       );
     }
 

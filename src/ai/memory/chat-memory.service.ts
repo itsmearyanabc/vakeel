@@ -26,32 +26,33 @@ export interface MemoryTurn {
  *
  * ## Why this is not a LangChain memory class
  *
- * `@langchain/redis` would work, but it is built on `node-redis` while this
- * service already runs a tuned `ioredis` connection (TLS to Upstash, retry
- * strategy, BullMQ-compatible settings). Adding a second Redis client library
- * to the runtime for one feature is a poor trade, and the trimming policy below
- * - bounded by turns *and* characters - is more specific than the stock window
- * memory offers anyway.
+ * The stock window memories are bounded by turns alone. The trimming policy
+ * below is bounded by turns *and* characters, because either budget on its own
+ * fails in a way this product hits regularly - see {@link trim}. That is the
+ * whole of the class, so there is nothing left for a dependency to carry.
  *
- * ## Why Redis rather than Postgres
+ * ## Where this lives
  *
- * This is working state, not a record. The durable audit trail already exists in
- * `whatsapp_messages`. Redis gives TTL for free, which means idle conversations
- * expire on their own - useful operationally and a genuine data-minimisation
- * measure under the DPDP Act, since nothing retains an advocate's questions
- * beyond the window they are useful in.
+ * `chat_memory`, in Postgres, with an `expires_at` - not Redis. It was Redis,
+ * and this comment argued at length for it; migration 0013 removed Redis from
+ * the deployment entirely and MemoryRepository took over. The reasoning that
+ * survives the move is that this is working state rather than a record: the
+ * durable audit trail is `whatsapp_messages`, and an idle conversation expiring
+ * on its own is a genuine data-minimisation measure under the DPDP Act. The
+ * row's TTL is enforced on read and reclaimed by the nightly retention sweep.
  *
  * ## Concurrency
  *
  * Safe with many workers and many replicas:
  *
- *  - Different advocates touch different keys, so parallelism is free.
- *  - Two rapid messages from the *same* advocate are serialised upstream by the
- *    per-user distributed lock in the inbound processor, so the read-modify-write
- *    below cannot interleave with itself.
- *  - The write is a single `SET` of the trimmed list, not a read-modify-write
- *    spread over multiple round trips, so even without that lock the worst case
- *    is a lost turn rather than a corrupted history.
+ *  - Different advocates touch different rows, so parallelism is free.
+ *  - Two rapid messages from the *same* advocate are serialised upstream by
+ *    `job_claim`'s lock key, which will not hand out a second job for a number
+ *    whose first is still in flight - so the read-modify-write below cannot
+ *    interleave with itself.
+ *  - The write is a single upsert of the trimmed list, so even without that
+ *    serialisation the worst case is a lost turn rather than a corrupted
+ *    history.
  */
 @Injectable()
 export class ChatMemoryService {

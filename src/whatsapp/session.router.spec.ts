@@ -246,6 +246,102 @@ describe('billing', () => {
     );
     expect(out.contextPatch?.precedentOffset).toBe(0);
   });
+
+  it('drops the held result set on a new query, not just the offset', () => {
+    // The offset alone is not enough. If the new search then fails, the rows
+    // from the previous one are still sitting in the context, and "more" pages
+    // through results for a question the advocate has moved on from.
+    const out = route(
+      'anticipatory bail NDPS',
+      ctx({
+        state: SESSION_STATE.PRECEDENT_SEARCH,
+        lastChargedQuery: 'bail',
+        precedentOffset: 5,
+        precedentQuery: 'bail',
+        precedentRows: [{ judgment_id: 'j1' }],
+        precedentSource: 'kanoon',
+      }),
+      KNOWN_USER,
+      CREDITS,
+    );
+
+    expect(out.contextPatch?.precedentRows).toBeUndefined();
+    expect(out.contextPatch?.precedentQuery).toBeUndefined();
+    expect(out.contextPatch?.precedentSource).toBeUndefined();
+  });
+
+  it('drops the held result set when the menu starts a fresh search', () => {
+    const out = route(
+      '3',
+      ctx({ state: SESSION_STATE.MAIN_MENU, precedentOffset: 5, precedentRows: [{ judgment_id: 'j1' }] }),
+      KNOWN_USER,
+      CREDITS,
+    );
+
+    expect(out.nextState).toBe(SESSION_STATE.PRECEDENT_SEARCH);
+    expect(out.contextPatch?.precedentOffset).toBe(0);
+    expect(out.contextPatch?.precedentRows).toBeUndefined();
+  });
+
+  it.each(['more', 'MORE', 'next', 'aur', 'और', ' more '])(
+    'pages a held result set on %p from the main menu',
+    (word) => {
+      // The common path: a case-law question typed at the menu is answered by
+      // the classifier and leaves the conversation at MAIN_MENU. "more" used to
+      // be read only inside PRECEDENT_SEARCH, so the word the page footer had
+      // just asked for went to the classifier and came back "I only handle
+      // questions about Indian law."
+      const out = route(
+        word,
+        ctx({
+          state: SESSION_STATE.MAIN_MENU,
+          precedentOffset: 5,
+          precedentRows: [{ judgment_id: 'j1' }],
+        }),
+        KNOWN_USER,
+        CREDITS,
+      );
+
+      expect(out.actions).toEqual([{ kind: 'nextPrecedentPage' }]);
+    },
+  );
+
+  it('still treats "more" as an ordinary message when nothing is held', () => {
+    // Nothing to continue, so it must not hijack the word from the classifier
+    // anywhere except the state that was explicitly showing precedents.
+    const out = route('more', ctx({ state: SESSION_STATE.MAIN_MENU }), KNOWN_USER, CREDITS);
+    expect(out.actions).toEqual([{ kind: 'freeform', text: 'more' }]);
+  });
+
+  it.each(['1', '2', '3', '0'])('never reads %p as a page request', (key) => {
+    const out = route(
+      key,
+      ctx({ state: SESSION_STATE.MAIN_MENU, precedentRows: [{ judgment_id: 'j1' }], precedentOffset: 5 }),
+      KNOWN_USER,
+      CREDITS,
+    );
+    expect(out.actions.some((a) => a.kind === 'nextPrecedentPage')).toBe(false);
+  });
+
+  it('carries the held result set forward when "more" is asked for', () => {
+    // The router only decides; ConversationService reads the rows out of the
+    // context it was given. What matters here is that the router does not clear
+    // them on the way past - which is what a paging action doing a reset would
+    // do, and is the shape of the bug this whole arrangement replaced.
+    const out = route(
+      'more',
+      ctx({
+        state: SESSION_STATE.PRECEDENT_SEARCH,
+        precedentOffset: 5,
+        precedentRows: [{ judgment_id: 'j1' }],
+      }),
+      KNOWN_USER,
+      CREDITS,
+    );
+
+    expect(out.actions).toEqual([{ kind: 'nextPrecedentPage' }]);
+    expect(out.contextPatch).toBeUndefined();
+  });
 });
 
 describe('"0" returns to the menu from every state', () => {

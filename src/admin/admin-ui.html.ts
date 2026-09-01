@@ -851,7 +851,12 @@ function viewSystem() {
         '<div class="card"><h3>Dependencies</h3><p class="hint">Live connectivity from this process.</p>' +
         '<table><tbody>' +
           row('PostgreSQL (Supabase)', dep.database, dep.database ? 'reachable' : 'UNREACHABLE') +
-          row('Redis', dep.redis, dep.redis ? 'reachable' : 'UNREACHABLE') +
+          // No Redis row. There is no Redis: migration 0013 moved the queue,
+          // the caches, the locks and the rate limiters into Postgres, and
+          // /admin/system stopped reporting on it. The row stayed, read an
+          // undefined field, and rendered a permanent red "Redis UNREACHABLE"
+          // on the dashboard - an operator's first stop when the bot is quiet,
+          // pointing at a service that was never going to answer.
           row('WhatsApp credentials', c.whatsappConfigured, c.whatsappPhoneNumberId || 'not configured') +
         '</tbody></table></div>' +
 
@@ -883,7 +888,7 @@ function viewVerifications() {
     document.getElementById('main').innerHTML =
       '<div class="head"><h2>Verification queue</h2></div>' +
       '<div class="note">Advocates submit a bar council number and ID card from WhatsApp. ' +
-      'Approving grants <strong>unlimited daily queries</strong> and notifies them immediately.</div>' +
+      'Approving marks the licence <strong>verified</strong> and notifies them immediately.</div>' +
       '<div class="card">' +
       (rows.length
         ? '<div class="scroll"><table><thead><tr><th>Name</th><th>Phone</th><th>Bar council ID</th>' +

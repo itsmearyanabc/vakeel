@@ -1,4 +1,5 @@
 import { parseJsonLoose } from './llm-provider.interface';
+import { acceptsEffort } from './langchain.provider';
 
 /**
  * Models wrap JSON in prose and code fences often enough that a bare
@@ -45,5 +46,33 @@ describe('parseJsonLoose', () => {
     expect(parseJsonLoose('no json here at all')).toBeNull();
     expect(parseJsonLoose('')).toBeNull();
     expect(parseJsonLoose('{"broken": ')).toBeNull();
+  });
+});
+
+/**
+ * The effort dial only reaches models that accept it.
+ *
+ * `output_config.effort` arrived with the 4.6 generation. Sending it to Haiku
+ * 4.5 - the default router model - is a 400, and a 400 on the synthesis path is
+ * not a slower answer, it is no answer. So the check is an allow-list: anything
+ * unrecognised silently answers at the provider's default rather than failing.
+ */
+describe('acceptsEffort', () => {
+  it.each(['claude-opus-5', 'claude-sonnet-5', 'claude-fable-5', 'claude-sonnet-4-6'])(
+    'sends effort to %s',
+    (model) => {
+      expect(acceptsEffort(model)).toBe(true);
+    },
+  );
+
+  it.each([
+    'claude-haiku-4-5',
+    'claude-haiku-4-5-20251001',
+    'claude-sonnet-4-20250514',
+    'claude-3-5-sonnet-latest',
+    'gpt-4o',
+    '',
+  ])('withholds effort from %p', (model) => {
+    expect(acceptsEffort(model)).toBe(false);
   });
 });
