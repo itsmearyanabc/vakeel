@@ -60,7 +60,10 @@ export class PaymentsController {
         pricePaise: pack.price_paise,
         currency: pack.currency,
         billingPeriod: pack.billing_period,
-        featured: pack.is_featured,
+        // "Most popular", "Best value" - the operator's own words, printed as
+        // given. Purely presentational, which is why it is a string and not a
+        // flag the client has to know how to render.
+        badge: pack.badge,
       })),
     };
   }

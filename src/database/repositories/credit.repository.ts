@@ -248,6 +248,8 @@ export class CreditRepository {
     receipt: string;
     credits: number;
     packCode: string;
+    /** The plan row this was bought under. See migration 0012. */
+    planId?: string | null;
     amountPaise: number;
     basePaise: number;
     taxPaise: number;
@@ -255,8 +257,10 @@ export class CreditRepository {
   }): Promise<CreditOrderRow> {
     const [row] = await this.db.sql<CreditOrderRow[]>`
       INSERT INTO credit_orders
-             (user_id, receipt, credits, pack_code, amount_paise, base_paise, tax_paise, tax_rate_bps)
+             (user_id, receipt, credits, pack_code, plan_id,
+              amount_paise, base_paise, tax_paise, tax_rate_bps)
       VALUES (${input.userId}, ${input.receipt}, ${input.credits}, ${input.packCode},
+              ${input.planId ?? null},
               ${input.amountPaise}, ${input.basePaise}, ${input.taxPaise}, ${input.taxRateBps})
       ON CONFLICT (receipt) DO UPDATE SET updated_at = NOW()
       RETURNING *

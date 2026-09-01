@@ -1166,81 +1166,87 @@ function openDeduct() {
 
    The one screen in this panel that writes. Settings are environment-only and
    SettingsService refuses every write; a price list is not configuration. It is
-   data with identity, an active flag and orders that resolve against it months
+   data with identity, an archive flag and orders resolving against it months
    later, so changing a price is a business action of the same kind as granting
    credits - which this panel has always been allowed to do.
 
-   Packs are retired, never deleted: credit_orders.pack_code is what an invoice
-   resolves against, and a code that stops resolving is a hole in the financial
-   record.
+   Plans are archived, never deleted: credit_orders.plan_id has to keep
+   explaining what somebody paid for two years from now.
    ------------------------------------------------------------------------- */
 function viewPricing() {
-  return api('/packs').then(function (data) {
-    CACHE.packs = data.packs;
+  return api('/plans').then(function (data) {
+    CACHE.plans = data.plans;
 
     var gst = (data.gateway.gstRateBps / 100).toFixed(0);
 
     document.getElementById('main').innerHTML =
       '<div class="head"><h2>Pricing</h2><div class="grow"></div>' +
-      '<button class="btn sm" onclick="openPackForm()">New pack</button></div>' +
+      '<button class="btn sm" onclick="openPlanForm()">New plan</button></div>' +
 
       (data.gateway.configured
         ? ''
-        : '<div class="err" style="margin-bottom:14px">Razorpay is not configured, so nothing here can ' +
-          'actually be bought. Set RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET and RAZORPAY_WEBHOOK_SECRET ' +
-          'in the environment and redeploy.</div>') +
+        : '<div class="err" style="margin-bottom:14px">Razorpay is not configured, so nothing here ' +
+          'can actually be bought. Set RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET and ' +
+          'RAZORPAY_WEBHOOK_SECRET in the environment and redeploy.</div>') +
 
-      '<div class="note">What credits can be bought for. Prices are what the advocate pays, ' +
+      '<div class="note">What credits can be bought for. The price is what the advocate pays, ' +
       'GST included at ' + gst + '% and broken out onto the invoice at order time. ' +
-      'Retiring a pack stops it being sold without breaking the orders that bought it.</div>' +
+      'Archiving stops a plan being sold without breaking the orders that bought it, and ' +
+      'changing a price never rewrites history - an order keeps the amount it was charged.</div>' +
 
       '<div class="card">' +
-      (data.packs.length
+      (data.plans.length
         ? '<div class="scroll"><table><thead><tr><th>Code</th><th>Name</th>' +
           '<th style="text-align:right">Credits</th><th style="text-align:right">Price</th>' +
           '<th>Period</th><th>Status</th><th></th></tr></thead><tbody>' +
-          data.packs.map(function (pack) {
+          data.plans.map(function (plan) {
+            var status = plan.archived_at ? 'archived' : (plan.is_active ? 'on sale' : 'paused');
+            var pill = plan.archived_at ? 'neutral' : (plan.is_active ? 'ok' : 'warn');
             return '<tr>' +
-              '<td class="mono">' + esc(pack.code) + '</td>' +
-              '<td>' + esc(pack.name) +
-                (pack.is_featured ? ' <span class="pill good">featured</span>' : '') + '</td>' +
-              '<td style="text-align:right">' + num(pack.credits) + '</td>' +
-              '<td style="text-align:right">' + rupees(pack.price_paise) + '</td>' +
+              '<td class="mono">' + esc(plan.code) + '</td>' +
+              '<td>' + esc(plan.name) +
+                (plan.badge ? ' <span class="pill good">' + esc(plan.badge) + '</span>' : '') + '</td>' +
+              '<td style="text-align:right">' + num(plan.credits) + '</td>' +
+              '<td style="text-align:right">' + rupees(plan.price_paise) + '</td>' +
               '<td class="mono" style="font-size:11px">' +
-                esc(String(pack.billing_period).toLowerCase()) + '</td>' +
-              '<td><span class="pill ' + (pack.is_active ? 'ok' : 'neutral') + '">' +
-                (pack.is_active ? 'on sale' : 'retired') + '</span></td>' +
+                esc(String(plan.billing_period || 'ONE_TIME').toLowerCase()) + '</td>' +
+              '<td><span class="pill ' + pill + '">' + status + '</span></td>' +
               '<td style="text-align:right;white-space:nowrap">' +
-                '<button class="btn secondary sm" onclick="openPackForm(\'' + esc(pack.code) + '\')">Edit</button> ' +
-                (pack.is_active
-                  ? '<button class="btn secondary sm" onclick="retirePack(\'' + esc(pack.code) + '\')">Retire</button>'
-                  : '') +
+                '<button class="btn secondary sm" onclick="openPlanForm(\'' + esc(plan.code) + '\')">Edit</button> ' +
+                (plan.archived_at
+                  ? ''
+                  : '<button class="btn secondary sm" onclick="archivePlan(\'' + esc(plan.id) + '\', \'' +
+                    esc(plan.name) + '\')">Archive</button>') +
               '</td></tr>';
           }).join('') + '</tbody></table></div>'
-        : empty('No credit packs yet',
-                'Create one and it appears on the advocate\'s Buy credits screen immediately.')) +
+        : empty('No plans yet',
+                'Create one and it appears on the Buy credits screen immediately.')) +
       '</div>';
   });
 }
 
 /**
- * Create or edit a pack.
+ * Create or edit a plan.
  *
- * The code is asked for once and never again: it is the join between an order
- * and what that order bought, so rewriting it would re-point every historical
- * order at a pack nobody purchased. Editing an existing pack skips the prompt
- * entirely rather than showing a field that silently does nothing.
+ * The code identifies the plan and is asked for once: PlanRepository upserts on
+ * it, so re-saving an existing code edits that plan rather than making a second
+ * one. Editing skips the prompt entirely instead of offering a field that would
+ * quietly create a duplicate.
+ *
+ * Only the gross price is asked for. credit_plans constrains base + tax = price,
+ * so a form with three money fields would reject a sensible set of numbers for
+ * being a paisa out and leave the operator guessing which to change.
  */
-function openPackForm(code) {
+function openPlanForm(code) {
   var existing = code
-    ? (CACHE.packs || []).filter(function (p) { return p.code === code; })[0]
+    ? (CACHE.plans || []).filter(function (p) { return p.code === code; })[0]
     : null;
 
-  var packCode = code;
-  if (!packCode) {
-    packCode = prompt('Code (permanent — lowercase letters, numbers and hyphens):', '');
-    if (!packCode) return;
-    packCode = packCode.trim().toLowerCase();
+  var planCode = code;
+  if (!planCode) {
+    planCode = prompt('Code (permanent - lowercase letters, numbers and hyphens):', '');
+    if (!planCode) return;
+    planCode = planCode.trim().toLowerCase();
   }
 
   var name = prompt('Name shown to the advocate:', existing ? existing.name : '');
@@ -1253,41 +1259,43 @@ function openPackForm(code) {
                      existing ? (existing.price_paise / 100).toFixed(2) : '499');
   if (price === null) return;
 
-  var period = prompt('Billing period — ONE_TIME, MONTHLY or ANNUAL:',
-                      existing ? existing.billing_period : 'ONE_TIME');
+  var period = prompt('Billing period - ONE_TIME, MONTHLY or ANNUAL:',
+                      existing ? (existing.billing_period || 'ONE_TIME') : 'ONE_TIME');
   if (period === null) return;
 
   var description = prompt('One line of description (optional):',
                            existing && existing.description ? existing.description : '');
   if (description === null) return;
 
-  var body = {
-    code: packCode,
-    name: name,
-    credits: Number(credits),
-    priceRupees: Number(price),
-    billingPeriod: period,
-    description: description,
-    sortOrder: existing ? existing.sort_order : (CACHE.packs || []).length * 10 + 10,
-    isFeatured: existing ? existing.is_featured : false,
-    isActive: existing ? existing.is_active : true
-  };
+  var badge = prompt('Badge, e.g. "Most popular" (optional):',
+                     existing && existing.badge ? existing.badge : '');
+  if (badge === null) return;
 
-  api(existing ? '/packs/' + encodeURIComponent(packCode) : '/packs',
-      { method: 'POST', body: body })
-    .then(function () {
-      toast(existing ? 'Pack updated.' : 'Pack created.');
-      go('pricing');
-    })
-    .catch(function (e) { toast(e.message, true); });
+  api('/plans', {
+    method: 'POST',
+    body: {
+      code: planCode,
+      name: name,
+      credits: Number(credits),
+      priceRupees: Number(price),
+      billingPeriod: period,
+      description: description,
+      badge: badge,
+      sortOrder: existing ? existing.sort_order : (CACHE.plans || []).length * 10 + 10,
+      isActive: existing ? existing.is_active : true
+    }
+  }).then(function () {
+    toast(existing ? 'Plan updated.' : 'Plan created.');
+    go('pricing');
+  }).catch(function (e) { toast(e.message, true); });
 }
 
-function retirePack(code) {
-  if (!confirm('Stop selling "' + code + '"?\n\nThe pack is kept so past orders still resolve ' +
-               'against it — this only removes it from the Buy credits screen.')) return;
+function archivePlan(id, name) {
+  if (!confirm('Stop selling "' + name + '"?\n\nThe plan is kept so past orders still resolve ' +
+               'against it - this only removes it from the Buy credits screen.')) return;
 
-  api('/packs/' + encodeURIComponent(code), { method: 'DELETE' })
-    .then(function () { toast('Retired.'); go('pricing'); })
+  api('/plans/' + encodeURIComponent(id), { method: 'DELETE' })
+    .then(function () { toast('Archived.'); go('pricing'); })
     .catch(function (e) { toast(e.message, true); });
 }
 

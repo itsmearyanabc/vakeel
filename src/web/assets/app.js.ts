@@ -1475,7 +1475,7 @@ async function openPacks() {
 
 function packCard(pack, feedback, close) {
   const card = el('div', 'precedent');
-  if (pack.featured) card.style.borderColor = 'var(--accent)';
+  if (pack.badge) card.style.borderColor = 'var(--accent)';
 
   const head = el('div', 'case-title', pack.name);
   card.appendChild(head);
@@ -1486,7 +1486,10 @@ function packCard(pack, feedback, close) {
   if (pack.billingPeriod && pack.billingPeriod !== 'ONE_TIME') {
     meta.appendChild(el('span', 'pill', pack.billingPeriod.toLowerCase()));
   }
-  if (pack.featured) meta.appendChild(el('span', 'pill good', 'Popular'));
+  // The operator's own words - "Most popular", "Best value" - printed as given
+  // rather than mapped to a fixed label here, which would mean the panel lets
+  // you type something the page then ignores.
+  if (pack.badge) meta.appendChild(el('span', 'pill good', pack.badge));
   card.appendChild(meta);
 
   if (pack.description) card.appendChild(el('div', 'holding', pack.description));

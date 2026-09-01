@@ -3,15 +3,15 @@ import { randomBytes } from 'node:crypto';
 import { getLogger } from '../common/logger';
 import { CreditsService } from '../credits/credits.service';
 import { CreditRepository } from '../database/repositories/credit.repository';
-import { PackRepository } from '../database/repositories/pack.repository';
-import { CreditPackRow, UserRow } from '../database/types';
+import { PlanRepository } from '../database/repositories/plan.repository';
+import { CreditPlanRow, UserRow } from '../database/types';
 import { SettingsService } from '../settings/settings.service';
 import { GatewayNotConfiguredError, RazorpayService } from './razorpay.service';
 
-/** Raised when a checkout names a pack that is not on sale. */
+/** Raised when a checkout names a plan that is not on sale. */
 export class UnknownPackError extends Error {
   constructor(code: string) {
-    super(`No pack on sale with code ${code}`);
+    super(`No plan on sale with code ${code}`);
     this.name = 'UnknownPackError';
   }
 }
@@ -59,7 +59,7 @@ export class PaymentsService {
   private readonly logger = getLogger().child({ module: 'payments' });
 
   constructor(
-    private readonly packs: PackRepository,
+    private readonly plans: PlanRepository,
     private readonly orders: CreditRepository,
     private readonly credits: CreditsService,
     private readonly razorpay: RazorpayService,
@@ -67,8 +67,8 @@ export class PaymentsService {
   ) {}
 
   /** The price list, as the pricing screen shows it. */
-  async listPacks(): Promise<CreditPackRow[]> {
-    return this.packs.listActive();
+  async listPacks(): Promise<CreditPlanRow[]> {
+    return this.plans.listActive();
   }
 
   get gatewayConfigured(): boolean {
@@ -85,9 +85,17 @@ export class PaymentsService {
   async startCheckout(user: UserRow, packCode: string): Promise<StartedCheckout> {
     if (!this.razorpay.isConfigured) throw new GatewayNotConfiguredError();
 
-    const pack = await this.packs.findActiveByCode(packCode);
-    if (!pack) throw new UnknownPackError(packCode);
+    const pack = await this.plans.findByCode(packCode);
+    if (!pack || !pack.is_active || pack.archived_at) throw new UnknownPackError(packCode);
 
+    /*
+     * The split is recomputed rather than copied off the plan.
+     *
+     * `credit_plans` stores its own base/tax, and those were correct when the
+     * plan was written. GST_RATE_BPS can change afterwards, and the invoice has
+     * to carry the rate actually charged - so the rate in force now is applied
+     * to the price now, and both land on the order.
+     */
     const taxRateBps = this.settings.gstRateBps;
     const { basePaise, taxPaise } = splitTax(pack.price_paise, taxRateBps);
 
@@ -100,6 +108,7 @@ export class PaymentsService {
       receipt,
       credits: pack.credits,
       packCode: pack.code,
+      planId: pack.id,
       amountPaise: pack.price_paise,
       basePaise,
       taxPaise,
@@ -112,7 +121,7 @@ export class PaymentsService {
       receipt,
       // Carried back on the webhook, which is how a delivery that arrives
       // before our own row is committed can still be attributed.
-      notes: { userId: user.id, packCode: pack.code, orderId: order.id },
+      notes: { userId: user.id, planCode: pack.code, orderId: order.id },
     });
 
     await this.orders.attachGatewayOrder(receipt, gatewayOrder.id);

@@ -13,7 +13,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { maskPhone } from '../common/logger';
-import { CreditPackPeriod } from '../database/types';
+import { CreditPlanPeriod } from '../database/types';
 import { CreditsService } from '../credits/credits.service';
 import { DatabaseService } from '../database/database.service';
 import { AdminRepository } from '../database/repositories/admin.repository';
@@ -21,7 +21,7 @@ import { AnalyticsRepository } from '../database/repositories/analytics.reposito
 import { ChatRepository } from '../database/repositories/chat.repository';
 import { CreditRepository } from '../database/repositories/credit.repository';
 import { CorpusRepository } from '../database/repositories/corpus.repository';
-import { PackRepository } from '../database/repositories/pack.repository';
+import { PlanRepository } from '../database/repositories/plan.repository';
 import { UserRepository } from '../database/repositories/user.repository';
 import { JobQueueService } from '../jobs/job-queue.service';
 import { KanoonService } from '../kanoon/kanoon.service';
@@ -55,7 +55,7 @@ export class AdminController {
     private readonly analytics: AnalyticsRepository,
     private readonly adminRepo: AdminRepository,
     private readonly creditRepo: CreditRepository,
-    private readonly packRepo: PackRepository,
+    private readonly planRepo: PlanRepository,
     private readonly creditsService: CreditsService,
     private readonly chatRepo: ChatRepository,
     private readonly corpus: CorpusRepository,
@@ -476,17 +476,20 @@ export class AdminController {
   // --- Pricing --------------------------------------------------------------
   //
   // The one part of the panel that writes, and the exception is deliberate.
-  // Settings are environment-only because values saved here were overriding the
-  // environment or being read by nothing at all. A price list is not
-  // configuration: it has identity, an active flag, and orders that resolve
+  // Settings are environment-only because values saved there were overriding
+  // the environment or being read by nothing at all. A price list is not
+  // configuration: it has identity, an archive flag, and orders that resolve
   // against it months later. Changing a price is a business action of the same
   // kind as granting credits, which the panel has always been allowed to do.
+  //
+  // Plans are archived, never deleted - `credit_orders.plan_id` has to keep
+  // explaining what somebody paid for two years from now.
 
-  /** Every pack, retired ones included, in display order. */
-  @Get('packs')
-  async listPacks() {
+  /** Every plan, archived ones included, in display order. */
+  @Get('plans')
+  async listPlans() {
     return {
-      packs: await this.packRepo.listAll(),
+      plans: await this.planRepo.listAll(),
       gateway: {
         configured: this.settings.razorpayConfigured,
         gstRateBps: this.settings.gstRateBps,
@@ -494,59 +497,44 @@ export class AdminController {
     };
   }
 
-  @Post('packs')
-  async createPack(@Body() body: Record<string, unknown>) {
-    const input = readPack(body, { requireCode: true });
-
-    const existing = await this.packRepo.findByCode(input.code);
-    if (existing) {
-      throw new BadRequestException({
-        code: 'PACK_EXISTS',
-        message:
-          'A pack with that code already exists. Codes are permanent, so edit that one or choose another.',
-      });
-    }
-
-    return this.packRepo.create(input);
+  /**
+   * Create or change a plan.
+   *
+   * One route rather than a create and an update, matching PlanRepository.upsert:
+   * the panel is one form, and an operator does not think of "change the price
+   * of Starter" as a different operation from "define Starter".
+   *
+   * The whole plan is sent every time. A partial update would have to merge, and
+   * a merge that silently drops a field sets a price to whatever was there
+   * before - which is the one mistake in this file that costs money.
+   */
+  @Post('plans')
+  async savePlan(@Body() body: Record<string, unknown>) {
+    const input = readPlan(body, this.settings.gstRateBps);
+    return this.planRepo.upsert(input);
   }
 
-  /**
-   * Change a pack.
-   *
-   * POST rather than PATCH because the whole pack is sent: a partial update
-   * would have to merge, and a merge that drops a field silently sets a price
-   * to whatever was there before. The code itself is not updatable - it is the
-   * join between an order and what that order bought.
-   */
-  @Post('packs/:code')
-  async updatePack(@Param('code') code: string, @Body() body: Record<string, unknown>) {
-    const input = readPack(body, { requireCode: false });
-
-    const updated = await this.packRepo.update(code.trim().toLowerCase(), {
-      name: input.name,
-      description: input.description,
-      credits: input.credits,
-      pricePaise: input.pricePaise,
-      billingPeriod: input.billingPeriod,
-      sortOrder: input.sortOrder,
-      isFeatured: input.isFeatured,
-      isActive: body.isActive === undefined ? true : Boolean(body.isActive),
-    });
-
+  /** Take a plan off sale without archiving it. */
+  @Post('plans/:id/active')
+  async setPlanActive(@Param('id') id: string, @Body() body: { active?: boolean }) {
+    const updated = await this.planRepo.setActive(id, Boolean(body?.active));
     if (!updated) {
-      throw new BadRequestException({ code: 'NO_PACK', message: 'No pack with that code.' });
+      throw new BadRequestException({ code: 'NO_PLAN', message: 'No plan with that id.' });
     }
     return updated;
   }
 
-  /** Retire a pack. Never a hard delete - see PackRepository. */
-  @Delete('packs/:code')
-  async retirePack(@Param('code') code: string) {
-    const retired = await this.packRepo.deactivate(code.trim().toLowerCase());
-    if (!retired) {
-      throw new BadRequestException({ code: 'NO_PACK', message: 'No pack with that code.' });
+  /** Retire a plan. Never a hard delete - see PlanRepository. */
+  @Delete('plans/:id')
+  async archivePlan(@Param('id') id: string) {
+    const archived = await this.planRepo.archive(id);
+    if (!archived) {
+      throw new BadRequestException({
+        code: 'NO_PLAN',
+        message: 'No plan with that id, or it is already archived.',
+      });
     }
-    return { retired: true, pack: retired };
+    return { archived: true };
   }
 
   /**
@@ -606,31 +594,39 @@ export class AdminController {
 }
 
 /**
- * Read and check a pack from a request body.
+ * Read and check a plan from a request body.
  *
  * Prices arrive in rupees because that is what an operator types, and are
  * stored as integer paise because that is what the gateway and every other
  * money column use. The conversion happens here, once - a division by 100 in
- * the wrong place is a rounding error in somebody's money, and two copies of it
- * are two chances to write one.
+ * the wrong place is a rounding error in somebody's money.
+ *
+ * The tax split is computed rather than asked for. `credit_plans` constrains
+ * base + tax = price, so a form that let those be typed independently would
+ * reject a perfectly reasonable set of numbers for being a paisa out, and the
+ * operator would have no idea which of the three to change.
  */
-const PACK_PERIODS: CreditPackPeriod[] = ['ONE_TIME', 'MONTHLY', 'ANNUAL'];
+const PLAN_PERIODS: CreditPlanPeriod[] = ['ONE_TIME', 'MONTHLY', 'ANNUAL'];
 
-function readPack(
+function readPlan(
   body: Record<string, unknown>,
-  opts: { requireCode: boolean },
+  gstRateBps: number,
 ): {
   code: string;
   name: string;
   description: string | null;
   credits: number;
+  basePaise: number;
+  taxRateBps: number;
+  taxPaise: number;
   pricePaise: number;
-  billingPeriod: CreditPackPeriod;
+  badge: string | null;
+  billingPeriod: CreditPlanPeriod;
   sortOrder: number;
-  isFeatured: boolean;
+  isActive: boolean;
 } {
   const code = String(body.code ?? '').trim().toLowerCase();
-  if (opts.requireCode && !/^[a-z0-9][a-z0-9-]{1,39}$/.test(code)) {
+  if (!/^[a-z0-9][a-z0-9-]{1,39}$/.test(code)) {
     throw new BadRequestException({
       code: 'INVALID_CODE',
       message: 'Code must be 2-40 characters of lowercase letters, numbers and hyphens.',
@@ -639,7 +635,7 @@ function readPack(
 
   const name = String(body.name ?? '').trim();
   if (!name) {
-    throw new BadRequestException({ code: 'NO_NAME', message: 'Give the pack a name.' });
+    throw new BadRequestException({ code: 'NO_NAME', message: 'Give the plan a name.' });
   }
 
   const credits = Number(body.credits);
@@ -668,13 +664,18 @@ function readPack(
     });
   }
 
-  const period = String(body.billingPeriod ?? 'ONE_TIME').toUpperCase() as CreditPackPeriod;
-  if (!PACK_PERIODS.includes(period)) {
+  const period = String(body.billingPeriod ?? 'ONE_TIME').toUpperCase() as CreditPlanPeriod;
+  if (!PLAN_PERIODS.includes(period)) {
     throw new BadRequestException({
       code: 'INVALID_PERIOD',
-      message: 'Billing period must be one of ' + PACK_PERIODS.join(', ') + '.',
+      message: 'Billing period must be one of ' + PLAN_PERIODS.join(', ') + '.',
     });
   }
+
+  // Derived by subtraction so the two always add to the price, which is what
+  // the credit_plans_amount_adds_up constraint requires.
+  const rate = Number.isFinite(gstRateBps) && gstRateBps > 0 ? gstRateBps : 0;
+  const basePaise = rate > 0 ? Math.round((pricePaise * 10_000) / (10_000 + rate)) : pricePaise;
 
   const sortOrder = Number(body.sortOrder ?? 0);
 
@@ -683,9 +684,13 @@ function readPack(
     name,
     description: String(body.description ?? '').trim() || null,
     credits,
+    basePaise,
+    taxRateBps: rate,
+    taxPaise: pricePaise - basePaise,
     pricePaise,
+    badge: String(body.badge ?? '').trim() || null,
     billingPeriod: period,
     sortOrder: Number.isInteger(sortOrder) ? sortOrder : 0,
-    isFeatured: Boolean(body.isFeatured),
+    isActive: body.isActive === undefined ? true : Boolean(body.isActive),
   };
 }
