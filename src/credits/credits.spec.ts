@@ -139,13 +139,16 @@ describe('CreditsService.spend', () => {
   });
 
   it('never touches the ledger for an unlimited role', async () => {
-    // CREDITS_VERIFIED_MONTHLY defaults to -1. There is no balance to move, so a
-    // ledger entry would record a movement that did not happen.
+    // SUPER_ADMIN, not VERIFIED_ADVOCATE. Advocates are metered like everyone
+    // else - usage is credits, and verification confirms a licence rather than
+    // buying an exemption from the meter. Staff stay unlimited because their
+    // usage is not revenue, and metering it would mean topping up whoever is
+    // investigating a billing complaint.
     const { service, repo } = build();
 
     const decision = await service.spend({
       userId: 'u1',
-      role: 'VERIFIED_ADVOCATE',
+      role: 'SUPER_ADMIN',
       cost: 1,
       action: 'PRECEDENT_SEARCH',
       reference: 'spend:web:msg-2',
@@ -155,6 +158,26 @@ describe('CreditsService.spend', () => {
     expect(decision.charged).toBe(0);
     expect(decision.balance.unlimited).toBe(true);
     expect(repo.spend).not.toHaveBeenCalled();
+  });
+
+  it('charges a verified advocate like everyone else', async () => {
+    // This used to short-circuit: CREDITS_VERIFIED_MONTHLY was -1, so a verified
+    // advocate bypassed the wallet entirely and - because an unlimited role's
+    // spends are never written - left no financial record of their usage at all.
+    const { service, repo } = build();
+
+    const decision = await service.spend({
+      userId: 'u1',
+      role: 'VERIFIED_ADVOCATE',
+      cost: CREDIT_COST.PRECEDENT_SEARCH,
+      action: 'PRECEDENT_SEARCH',
+      reference: 'spend:web:msg-9',
+    });
+
+    expect(decision.balance.unlimited).toBe(false);
+    expect(repo.spend).toHaveBeenCalledWith(
+      expect.objectContaining({ cost: CREDIT_COST.PRECEDENT_SEARCH, monthlyAllowance: 30 }),
+    );
   });
 
   it('never touches the ledger for a zero-cost action', async () => {
@@ -232,7 +255,7 @@ describe('CreditsService.refund', () => {
 
   it('does nothing for an unlimited role', async () => {
     const { service, repo } = build();
-    await service.refund('u1', 'VERIFIED_ADVOCATE', 'spend:web:msg-1', 'delivery failed');
+    await service.refund('u1', 'SUPER_ADMIN', 'spend:web:msg-1', 'delivery failed');
     expect(repo.refundByReference).not.toHaveBeenCalled();
   });
 
@@ -249,7 +272,7 @@ describe('CreditsService.refund', () => {
 describe('CreditsService.creditLine', () => {
   it('says unlimited rather than a number', async () => {
     const { service } = build();
-    const balance = await service.balance('u1', 'VERIFIED_ADVOCATE');
+    const balance = await service.balance('u1', 'SUPER_ADMIN');
     expect(service.creditLine(balance)).toBe('Credits: unlimited');
   });
 

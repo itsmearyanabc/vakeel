@@ -340,6 +340,56 @@ export class CreditsService {
   }
 
   /**
+   * Credits an advocate paid for.
+   *
+   * ## The idempotency key is the payment id, and that is the whole design
+   *
+   * A successful payment reaches this twice by design: the browser hands back a
+   * signed checkout result, and Razorpay delivers a `payment.captured` webhook.
+   * Neither is reliable alone - the browser can close on a flaky connection, and
+   * webhook delivery can lag by minutes - so both call in, and `credit_grant()`
+   * collides the second on its unique index instead of paying out twice.
+   *
+   * Keyed on the *payment* id rather than the order id because an order can, in
+   * principle, carry a second successful payment after a first is refunded; each
+   * one is separately real money and separately deserves credits.
+   *
+   * Lands in the durable bucket, never the free one. Purchased credits do not
+   * expire, and putting them anywhere else would make a purchase indistinguishable
+   * from an allowance in the ledger.
+   */
+  async grantPurchase(input: {
+    userId: string;
+    amount: number;
+    paymentId: string;
+    orderId: string;
+    reason: string;
+  }): Promise<{ applied: boolean; free: number; paid: number }> {
+    const result = await this.credits.grant({
+      userId: input.userId,
+      amount: input.amount,
+      kind: 'PURCHASE',
+      bucket: 'PAID',
+      action: 'purchase',
+      reason: input.reason,
+      reference: `purchase:${input.paymentId}`,
+      orderId: input.orderId,
+    });
+
+    this.logger.info(
+      {
+        userId: input.userId,
+        amount: input.amount,
+        paymentId: input.paymentId,
+        applied: result.applied,
+      },
+      result.applied ? 'Purchased credits granted' : 'Purchase already credited; nothing moved',
+    );
+
+    return { applied: result.applied, free: result.free_left, paid: result.paid_left };
+  }
+
+  /**
    * A manual grant from the admin panel.
    *
    * The reference includes the operator and a caller-supplied idempotency key

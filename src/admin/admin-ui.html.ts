@@ -304,6 +304,7 @@ var VIEWS = [
   { id:'verifications', label:'Verifications', icon:'✓' },
   { id:'users',         label:'Users',         icon:'●' },
   { id:'credits',       label:'Credits',       icon:'◆' },
+  { id:'pricing',       label:'Pricing',       icon:'₹' },
   { id:'searches',      label:'Queries',       icon:'▤' },
   { id:'messages',      label:'Messages',      icon:'✉' },
   { id:'chats',         label:'Web chats',     icon:'▭' },
@@ -514,7 +515,8 @@ function go(view) {
   var fn = ({
     dashboard: viewDashboard, system: viewSystem, verifications: viewVerifications,
     users: viewUsers, credits: viewCredits, searches: viewSearches, messages: viewMessages,
-    chats: viewChats, corpus: viewCorpus, settings: viewSettings, audit: viewAudit
+    chats: viewChats, corpus: viewCorpus, settings: viewSettings, audit: viewAudit,
+    pricing: viewPricing
   })[view];
 
   Promise.resolve()
@@ -1024,6 +1026,7 @@ function viewCredits() {
     document.getElementById('main').innerHTML =
       '<div class="head"><h2>Credits</h2><div class="grow"></div>' +
       '<button class="btn sm" onclick="openGrant()">Grant credits</button>' +
+      '<button class="btn secondary sm" onclick="openDeduct()">Deduct credits</button>' +
       '<button class="btn secondary sm" onclick="exportCsv(CACHE.creditRows, \'credits.csv\')">Export CSV</button></div>' +
 
       '<div class="note">Every credit movement, newest first. This is the authoritative record — ' +
@@ -1124,6 +1127,168 @@ function openGrant() {
       : 'Already applied — nothing changed.');
     go('credits');
   }).catch(function (e) { toast(e.message, true); });
+}
+
+/**
+ * Take credits back from an account.
+ *
+ * The mirror of openGrant(). It floors at the balance rather than refusing, so
+ * the figure that comes back is what actually moved - reported verbatim,
+ * because "deducted 40" when only 12 were there is the kind of confirmation
+ * that sends someone looking for the missing 28.
+ */
+function openDeduct() {
+  var userId = prompt('User id to deduct credits from (copy it from the Users page):');
+  if (!userId) return;
+
+  var amount = prompt('How many credits to take back?', '10');
+  if (!amount) return;
+
+  var reason = prompt('Reason (shown to the advocate in their credit history):',
+                      'Correction');
+  if (reason === null) return;
+
+  var key = 'deduct-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+
+  api('/credits/deduct', {
+    method: 'POST',
+    body: { userId: userId.trim(), amount: Number(amount), reason: reason, idempotencyKey: key }
+  }).then(function (result) {
+    toast(result.applied
+      ? 'Deducted ' + result.deducted + '. Balance is now ' + (result.free + result.paid) + '.'
+      : 'Already applied — nothing changed.');
+    go('credits');
+  }).catch(function (e) { toast(e.message, true); });
+}
+
+/* -------------------------------------------------------------------------
+   Pricing
+
+   The one screen in this panel that writes. Settings are environment-only and
+   SettingsService refuses every write; a price list is not configuration. It is
+   data with identity, an active flag and orders that resolve against it months
+   later, so changing a price is a business action of the same kind as granting
+   credits - which this panel has always been allowed to do.
+
+   Packs are retired, never deleted: credit_orders.pack_code is what an invoice
+   resolves against, and a code that stops resolving is a hole in the financial
+   record.
+   ------------------------------------------------------------------------- */
+function viewPricing() {
+  return api('/packs').then(function (data) {
+    CACHE.packs = data.packs;
+
+    var gst = (data.gateway.gstRateBps / 100).toFixed(0);
+
+    document.getElementById('main').innerHTML =
+      '<div class="head"><h2>Pricing</h2><div class="grow"></div>' +
+      '<button class="btn sm" onclick="openPackForm()">New pack</button></div>' +
+
+      (data.gateway.configured
+        ? ''
+        : '<div class="err" style="margin-bottom:14px">Razorpay is not configured, so nothing here can ' +
+          'actually be bought. Set RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET and RAZORPAY_WEBHOOK_SECRET ' +
+          'in the environment and redeploy.</div>') +
+
+      '<div class="note">What credits can be bought for. Prices are what the advocate pays, ' +
+      'GST included at ' + gst + '% and broken out onto the invoice at order time. ' +
+      'Retiring a pack stops it being sold without breaking the orders that bought it.</div>' +
+
+      '<div class="card">' +
+      (data.packs.length
+        ? '<div class="scroll"><table><thead><tr><th>Code</th><th>Name</th>' +
+          '<th style="text-align:right">Credits</th><th style="text-align:right">Price</th>' +
+          '<th>Period</th><th>Status</th><th></th></tr></thead><tbody>' +
+          data.packs.map(function (pack) {
+            return '<tr>' +
+              '<td class="mono">' + esc(pack.code) + '</td>' +
+              '<td>' + esc(pack.name) +
+                (pack.is_featured ? ' <span class="pill good">featured</span>' : '') + '</td>' +
+              '<td style="text-align:right">' + num(pack.credits) + '</td>' +
+              '<td style="text-align:right">' + rupees(pack.price_paise) + '</td>' +
+              '<td class="mono" style="font-size:11px">' +
+                esc(String(pack.billing_period).toLowerCase()) + '</td>' +
+              '<td><span class="pill ' + (pack.is_active ? 'ok' : 'neutral') + '">' +
+                (pack.is_active ? 'on sale' : 'retired') + '</span></td>' +
+              '<td style="text-align:right;white-space:nowrap">' +
+                '<button class="btn secondary sm" onclick="openPackForm(\'' + esc(pack.code) + '\')">Edit</button> ' +
+                (pack.is_active
+                  ? '<button class="btn secondary sm" onclick="retirePack(\'' + esc(pack.code) + '\')">Retire</button>'
+                  : '') +
+              '</td></tr>';
+          }).join('') + '</tbody></table></div>'
+        : empty('No credit packs yet',
+                'Create one and it appears on the advocate\'s Buy credits screen immediately.')) +
+      '</div>';
+  });
+}
+
+/**
+ * Create or edit a pack.
+ *
+ * The code is asked for once and never again: it is the join between an order
+ * and what that order bought, so rewriting it would re-point every historical
+ * order at a pack nobody purchased. Editing an existing pack skips the prompt
+ * entirely rather than showing a field that silently does nothing.
+ */
+function openPackForm(code) {
+  var existing = code
+    ? (CACHE.packs || []).filter(function (p) { return p.code === code; })[0]
+    : null;
+
+  var packCode = code;
+  if (!packCode) {
+    packCode = prompt('Code (permanent — lowercase letters, numbers and hyphens):', '');
+    if (!packCode) return;
+    packCode = packCode.trim().toLowerCase();
+  }
+
+  var name = prompt('Name shown to the advocate:', existing ? existing.name : '');
+  if (name === null) return;
+
+  var credits = prompt('How many credits does it give?', existing ? String(existing.credits) : '100');
+  if (credits === null) return;
+
+  var price = prompt('Price in rupees, GST included:',
+                     existing ? (existing.price_paise / 100).toFixed(2) : '499');
+  if (price === null) return;
+
+  var period = prompt('Billing period — ONE_TIME, MONTHLY or ANNUAL:',
+                      existing ? existing.billing_period : 'ONE_TIME');
+  if (period === null) return;
+
+  var description = prompt('One line of description (optional):',
+                           existing && existing.description ? existing.description : '');
+  if (description === null) return;
+
+  var body = {
+    code: packCode,
+    name: name,
+    credits: Number(credits),
+    priceRupees: Number(price),
+    billingPeriod: period,
+    description: description,
+    sortOrder: existing ? existing.sort_order : (CACHE.packs || []).length * 10 + 10,
+    isFeatured: existing ? existing.is_featured : false,
+    isActive: existing ? existing.is_active : true
+  };
+
+  api(existing ? '/packs/' + encodeURIComponent(packCode) : '/packs',
+      { method: 'POST', body: body })
+    .then(function () {
+      toast(existing ? 'Pack updated.' : 'Pack created.');
+      go('pricing');
+    })
+    .catch(function (e) { toast(e.message, true); });
+}
+
+function retirePack(code) {
+  if (!confirm('Stop selling "' + code + '"?\n\nThe pack is kept so past orders still resolve ' +
+               'against it — this only removes it from the Buy credits screen.')) return;
+
+  api('/packs/' + encodeURIComponent(code), { method: 'DELETE' })
+    .then(function () { toast('Retired.'); go('pricing'); })
+    .catch(function (e) { toast(e.message, true); });
 }
 
 /* -------------------------------------------------------------------------

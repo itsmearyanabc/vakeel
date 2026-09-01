@@ -76,14 +76,18 @@ async function bootstrap(): Promise<void> {
     bodyParser: false,
   });
 
-  // Rate limiting. The webhook is exempt: Meta legitimately bursts on retries
-  // and during high message volume, and throttling it causes exactly the
-  // delivery failures the limiter is supposed to prevent. The admin API and
-  // everything else are limited.
+  // Rate limiting. Both webhooks are exempt, for the same reason: Meta and
+  // Razorpay each retry until they get a 2xx, so throttling them produces
+  // exactly the delivery failures the limiter exists to prevent - and on the
+  // payment side a throttled `payment.captured` is money taken and credits not
+  // granted. Neither endpoint is unauthenticated: each verifies an HMAC over
+  // the raw body before it does anything. The admin API and everything else
+  // are limited.
   await app.register(import('@fastify/rate-limit'), {
     max: 300,
     timeWindow: '1 minute',
-    allowList: (req: FastifyRequest) => req.url.startsWith('/webhooks/whatsapp'),
+    allowList: (req: FastifyRequest) =>
+      req.url.startsWith('/webhooks/whatsapp') || req.url.startsWith('/webhooks/razorpay'),
   });
 
   app.useGlobalFilters(new AllExceptionsFilter());

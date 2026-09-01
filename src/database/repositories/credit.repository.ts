@@ -277,6 +277,106 @@ export class CreditRepository {
     `;
   }
 
+  /** Find an order by the gateway's own id, which is what a webhook carries. */
+  async findOrderByRazorpayId(razorpayOrderId: string): Promise<CreditOrderRow | null> {
+    const [row] = await this.db.sql<CreditOrderRow[]>`
+      SELECT * FROM credit_orders WHERE razorpay_order_id = ${razorpayOrderId} LIMIT 1
+    `;
+    return row ?? null;
+  }
+
+  /** Record the gateway's order id against our row, once it has one. */
+  async attachGatewayOrder(receipt: string, razorpayOrderId: string): Promise<void> {
+    await this.db.sql`
+      UPDATE credit_orders
+         SET razorpay_order_id = ${razorpayOrderId},
+             status = CASE WHEN status = 'CREATED' THEN 'ATTEMPTED'::payment_order_status ELSE status END
+       WHERE receipt = ${receipt}
+    `;
+  }
+
+  /**
+   * Mark an order settled.
+   *
+   * `credited_at` is deliberately NOT set here - that happens only when the
+   * PURCHASE ledger row is actually written, which is what makes "paid but not
+   * credited" a state the uncredited report can find. Setting both together
+   * would make the report structurally incapable of ever returning a row.
+   *
+   * The `status <> 'PAID'` predicate makes this idempotent: the checkout
+   * callback and the webhook both arrive for a successful payment, routinely,
+   * and the second must be a no-op rather than a second write.
+   */
+  async markOrderPaid(input: {
+    razorpayOrderId: string;
+    paymentId: string;
+    signature: string | null;
+    method: string | null;
+  }): Promise<CreditOrderRow | null> {
+    const [row] = await this.db.sql<CreditOrderRow[]>`
+      UPDATE credit_orders
+         SET status              = 'PAID'::payment_order_status,
+             razorpay_payment_id = COALESCE(razorpay_payment_id, ${input.paymentId}),
+             razorpay_signature  = COALESCE(${input.signature}, razorpay_signature),
+             payment_method      = COALESCE(${input.method}, payment_method)
+       WHERE razorpay_order_id = ${input.razorpayOrderId}
+   RETURNING *
+    `;
+    return row ?? null;
+  }
+
+  /** Stamp the order once its credits are in the ledger. */
+  async markOrderCredited(orderId: string): Promise<void> {
+    await this.db.sql`
+      UPDATE credit_orders SET credited_at = NOW()
+       WHERE id = ${orderId} AND credited_at IS NULL
+    `;
+  }
+
+  async markOrderFailed(razorpayOrderId: string, reason: string): Promise<void> {
+    await this.db.sql`
+      UPDATE credit_orders
+         SET status = 'FAILED'::payment_order_status, failure_reason = ${reason}
+       WHERE razorpay_order_id = ${razorpayOrderId} AND status <> 'PAID'
+    `;
+  }
+
+  /**
+   * Claim a webhook event, or report that it has already been seen.
+   *
+   * Razorpay redelivers until it gets a 2xx, so the same `payment.captured`
+   * arriving three times is normal operation and crediting three times is not.
+   * The INSERT is the claim: the primary key rejects the second delivery, and
+   * `false` comes back instead of an exception.
+   *
+   * The body is stored verbatim because when a payment is disputed months later
+   * what the gateway actually sent is the only account that matters.
+   */
+  async claimPaymentEvent(input: {
+    eventId: string;
+    eventType: string;
+    orderId: string | null;
+    payload: Record<string, unknown>;
+  }): Promise<boolean> {
+    const rows = await this.db.sql<{ event_id: string }[]>`
+      INSERT INTO payment_events (event_id, event_type, order_id, payload)
+           VALUES (${input.eventId}, ${input.eventType}, ${input.orderId},
+                   ${this.db.sql.json(input.payload as never)})
+      ON CONFLICT (event_id) DO NOTHING
+        RETURNING event_id
+    `;
+    return rows.length > 0;
+  }
+
+  /** Note what was done with a claimed event, for the audit trail. */
+  async settlePaymentEvent(eventId: string, handled: boolean, error?: string): Promise<void> {
+    await this.db.sql`
+      UPDATE payment_events
+         SET handled = ${handled}, error_detail = ${error ?? null}
+       WHERE event_id = ${eventId}
+    `;
+  }
+
   /**
    * Orders the gateway reports as paid that never produced credits.
    *

@@ -13,6 +13,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { maskPhone } from '../common/logger';
+import { CreditPackPeriod } from '../database/types';
 import { CreditsService } from '../credits/credits.service';
 import { DatabaseService } from '../database/database.service';
 import { AdminRepository } from '../database/repositories/admin.repository';
@@ -20,6 +21,7 @@ import { AnalyticsRepository } from '../database/repositories/analytics.reposito
 import { ChatRepository } from '../database/repositories/chat.repository';
 import { CreditRepository } from '../database/repositories/credit.repository';
 import { CorpusRepository } from '../database/repositories/corpus.repository';
+import { PackRepository } from '../database/repositories/pack.repository';
 import { UserRepository } from '../database/repositories/user.repository';
 import { JobQueueService } from '../jobs/job-queue.service';
 import { KanoonService } from '../kanoon/kanoon.service';
@@ -53,6 +55,7 @@ export class AdminController {
     private readonly analytics: AnalyticsRepository,
     private readonly adminRepo: AdminRepository,
     private readonly creditRepo: CreditRepository,
+    private readonly packRepo: PackRepository,
     private readonly creditsService: CreditsService,
     private readonly chatRepo: ChatRepository,
     private readonly corpus: CorpusRepository,
@@ -428,6 +431,125 @@ export class AdminController {
   }
 
   /**
+   * Take credits back.
+   *
+   * The mirror of {@link grantCredits}, and it existed in CreditsService with
+   * no route to reach it - so an administrator could hand credits out and had
+   * no way to correct a mistake except by asking the advocate not to spend them.
+   *
+   * Floors at the available balance rather than refusing: a deduction larger
+   * than what is left means the advocate already spent it, and rejecting the
+   * whole operation would leave nothing correctable at all. The amount actually
+   * taken comes back, so the panel can say what happened rather than implying
+   * the full figure moved.
+   */
+  @Post('credits/deduct')
+  async deductCredits(
+    @Body() body: { userId?: string; amount?: number; reason?: string; idempotencyKey?: string },
+    @Req() req: AuthenticatedRequest,
+  ) {
+    const amount = Number(body?.amount);
+
+    if (!body?.userId || !Number.isInteger(amount) || amount <= 0 || amount > 100_000) {
+      throw new BadRequestException({
+        code: 'INVALID_DEDUCTION',
+        message: 'Provide a user and a whole number of credits between 1 and 100000.',
+      });
+    }
+
+    if (!body?.idempotencyKey) {
+      throw new BadRequestException({
+        code: 'NO_IDEMPOTENCY_KEY',
+        message: 'An idempotencyKey is required so a retried deduction cannot be applied twice.',
+      });
+    }
+
+    return this.creditsService.adminDeduct({
+      userId: body.userId,
+      amount,
+      reason: body.reason?.trim() || 'Adjusted by an administrator',
+      deductedBy: req.admin?.email ?? 'unknown',
+      idempotencyKey: body.idempotencyKey,
+    });
+  }
+
+  // --- Pricing --------------------------------------------------------------
+  //
+  // The one part of the panel that writes, and the exception is deliberate.
+  // Settings are environment-only because values saved here were overriding the
+  // environment or being read by nothing at all. A price list is not
+  // configuration: it has identity, an active flag, and orders that resolve
+  // against it months later. Changing a price is a business action of the same
+  // kind as granting credits, which the panel has always been allowed to do.
+
+  /** Every pack, retired ones included, in display order. */
+  @Get('packs')
+  async listPacks() {
+    return {
+      packs: await this.packRepo.listAll(),
+      gateway: {
+        configured: this.settings.razorpayConfigured,
+        gstRateBps: this.settings.gstRateBps,
+      },
+    };
+  }
+
+  @Post('packs')
+  async createPack(@Body() body: Record<string, unknown>) {
+    const input = readPack(body, { requireCode: true });
+
+    const existing = await this.packRepo.findByCode(input.code);
+    if (existing) {
+      throw new BadRequestException({
+        code: 'PACK_EXISTS',
+        message:
+          'A pack with that code already exists. Codes are permanent, so edit that one or choose another.',
+      });
+    }
+
+    return this.packRepo.create(input);
+  }
+
+  /**
+   * Change a pack.
+   *
+   * POST rather than PATCH because the whole pack is sent: a partial update
+   * would have to merge, and a merge that drops a field silently sets a price
+   * to whatever was there before. The code itself is not updatable - it is the
+   * join between an order and what that order bought.
+   */
+  @Post('packs/:code')
+  async updatePack(@Param('code') code: string, @Body() body: Record<string, unknown>) {
+    const input = readPack(body, { requireCode: false });
+
+    const updated = await this.packRepo.update(code.trim().toLowerCase(), {
+      name: input.name,
+      description: input.description,
+      credits: input.credits,
+      pricePaise: input.pricePaise,
+      billingPeriod: input.billingPeriod,
+      sortOrder: input.sortOrder,
+      isFeatured: input.isFeatured,
+      isActive: body.isActive === undefined ? true : Boolean(body.isActive),
+    });
+
+    if (!updated) {
+      throw new BadRequestException({ code: 'NO_PACK', message: 'No pack with that code.' });
+    }
+    return updated;
+  }
+
+  /** Retire a pack. Never a hard delete - see PackRepository. */
+  @Delete('packs/:code')
+  async retirePack(@Param('code') code: string) {
+    const retired = await this.packRepo.deactivate(code.trim().toLowerCase());
+    if (!retired) {
+      throw new BadRequestException({ code: 'NO_PACK', message: 'No pack with that code.' });
+    }
+    return { retired: true, pack: retired };
+  }
+
+  /**
    * Purchases, and the one query that matters operationally.
    *
    * `uncredited` lists orders the gateway reports as paid that never produced
@@ -481,4 +603,89 @@ export class AdminController {
   async purge() {
     return this.analytics.purgeExpired();
   }
+}
+
+/**
+ * Read and check a pack from a request body.
+ *
+ * Prices arrive in rupees because that is what an operator types, and are
+ * stored as integer paise because that is what the gateway and every other
+ * money column use. The conversion happens here, once - a division by 100 in
+ * the wrong place is a rounding error in somebody's money, and two copies of it
+ * are two chances to write one.
+ */
+const PACK_PERIODS: CreditPackPeriod[] = ['ONE_TIME', 'MONTHLY', 'ANNUAL'];
+
+function readPack(
+  body: Record<string, unknown>,
+  opts: { requireCode: boolean },
+): {
+  code: string;
+  name: string;
+  description: string | null;
+  credits: number;
+  pricePaise: number;
+  billingPeriod: CreditPackPeriod;
+  sortOrder: number;
+  isFeatured: boolean;
+} {
+  const code = String(body.code ?? '').trim().toLowerCase();
+  if (opts.requireCode && !/^[a-z0-9][a-z0-9-]{1,39}$/.test(code)) {
+    throw new BadRequestException({
+      code: 'INVALID_CODE',
+      message: 'Code must be 2-40 characters of lowercase letters, numbers and hyphens.',
+    });
+  }
+
+  const name = String(body.name ?? '').trim();
+  if (!name) {
+    throw new BadRequestException({ code: 'NO_NAME', message: 'Give the pack a name.' });
+  }
+
+  const credits = Number(body.credits);
+  if (!Number.isInteger(credits) || credits <= 0 || credits > 1_000_000) {
+    throw new BadRequestException({
+      code: 'INVALID_CREDITS',
+      message: 'Credits must be a whole number between 1 and 1000000.',
+    });
+  }
+
+  const rupees = Number(body.priceRupees);
+  if (!Number.isFinite(rupees) || rupees <= 0 || rupees > 10_000_000) {
+    throw new BadRequestException({
+      code: 'INVALID_PRICE',
+      message: 'Price must be a positive amount in rupees.',
+    });
+  }
+
+  // A price finer than a paisa cannot be charged, so it is a typo rather than
+  // something to round away quietly.
+  const pricePaise = Math.round(rupees * 100);
+  if (Math.abs(rupees * 100 - pricePaise) > 1e-6) {
+    throw new BadRequestException({
+      code: 'INVALID_PRICE',
+      message: 'Price cannot be finer than one paisa.',
+    });
+  }
+
+  const period = String(body.billingPeriod ?? 'ONE_TIME').toUpperCase() as CreditPackPeriod;
+  if (!PACK_PERIODS.includes(period)) {
+    throw new BadRequestException({
+      code: 'INVALID_PERIOD',
+      message: 'Billing period must be one of ' + PACK_PERIODS.join(', ') + '.',
+    });
+  }
+
+  const sortOrder = Number(body.sortOrder ?? 0);
+
+  return {
+    code,
+    name,
+    description: String(body.description ?? '').trim() || null,
+    credits,
+    pricePaise,
+    billingPeriod: period,
+    sortOrder: Number.isInteger(sortOrder) ? sortOrder : 0,
+    isFeatured: Boolean(body.isFeatured),
+  };
 }

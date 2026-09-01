@@ -290,6 +290,37 @@ export interface CreditPlanRow {
   updated_at: Date;
 }
 
+/** How a pack is described. Descriptive only - see migration 0015. */
+export type CreditPackPeriod = 'ONE_TIME' | 'MONTHLY' | 'ANNUAL';
+
+/**
+ * One row of the price list (migration 0015).
+ *
+ * Managed from the admin panel rather than from the environment, because a
+ * price list is domain data and not a deployment decision - it has identity, an
+ * active flag, and orders that point at it months later.
+ */
+export interface CreditPackRow {
+  id: string;
+  /** Immutable once orders reference it; recorded as credit_orders.pack_code. */
+  code: string;
+  name: string;
+  description: string | null;
+  credits: number;
+  /** Integer paise, like credit_orders. Never rupees. */
+  price_paise: number;
+  currency: string;
+  billing_period: CreditPackPeriod;
+  /** Buyable. Retiring a pack clears this rather than deleting the row. */
+  is_active: boolean;
+  sort_order: number;
+  is_featured: boolean;
+  /** For the day recurring billing is wired. Unused today. */
+  razorpay_plan_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export interface CreditOrderRow {
   id: string;
   user_id: string;

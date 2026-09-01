@@ -12,6 +12,7 @@ import { ConversationRepository } from './repositories/conversation.repository';
 import { CorpusRepository } from './repositories/corpus.repository';
 import { CreditRepository } from './repositories/credit.repository';
 import { MessageRepository } from './repositories/message.repository';
+import { PackRepository } from './repositories/pack.repository';
 import { UserRepository } from './repositories/user.repository';
 
 const providers = [
@@ -28,6 +29,7 @@ const providers = [
   CacheRepository,
   JobRepository,
   MemoryRepository,
+  PackRepository,
   PlanRepository,
 ];
 

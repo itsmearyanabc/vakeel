@@ -240,19 +240,35 @@ const envSchema = z.object({
 
   // --- Free allowance -------------------------------------------------------
   /**
-   * The free credit allowance per role, per MONTH. Negative means unlimited.
+   * The one-time free credit allowance per role. Negative means unlimited.
    *
-   * Renamed from QUOTA_*_DAILY in migration 0012, because the period changed
-   * from a day to a month and a variable called DAILY holding a monthly figure
-   * is the kind of thing that survives for years and misleads everyone who
-   * reads it. An old QUOTA_* value left in a deployment's environment is simply
-   * ignored rather than silently reinterpreted as a monthly number.
+   * Granted once for the life of the account since migration 0014 - it does not
+   * reset daily, monthly, or at all. The `_MONTHLY` in the names is two cycles
+   * out of date and is kept only because renaming them means moving an env var,
+   * a SQL function argument and every caller in one commit; an old QUOTA_*
+   * value left in a deployment's environment is ignored rather than silently
+   * reinterpreted.
    *
-   * The allowance resets on the 1st, in Asia/Kolkata. Unused credits expire;
-   * purchased ones never do.
+   * ## Why a verified advocate is no longer unlimited
+   *
+   * This was -1, which made VERIFIED_ADVOCATE bypass the wallet entirely - and
+   * because an unlimited role's spends are not written to the ledger at all,
+   * their usage left no financial record either. That was coherent while
+   * verification was the thing being sold. It is not the product: usage is
+   * credits, for everyone, and verification confirms a licence rather than
+   * buying an exemption from the meter.
+   *
+   * Set to the same figure as a guest, so verification changes standing and not
+   * balance. Existing verified accounts receive their one-time grant the first
+   * time they are read after this lands, and keep whatever they had already
+   * spent down to.
+   *
+   * Admins and auditors stay unlimited: they are staff, their usage is not
+   * revenue, and metering it would mean topping up the people investigating a
+   * billing complaint.
    */
   CREDITS_FREE_MONTHLY: z.coerce.number().int().default(30),
-  CREDITS_VERIFIED_MONTHLY: z.coerce.number().int().default(-1),
+  CREDITS_VERIFIED_MONTHLY: z.coerce.number().int().default(30),
   CREDITS_ADMIN_MONTHLY: z.coerce.number().int().default(-1),
 
   // --- Credits --------------------------------------------------------------

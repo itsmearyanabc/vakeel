@@ -1347,7 +1347,7 @@ async function openCredits() {
     if (data.balance.unlimited) {
       const box = el('div', 'alert info');
       box.textContent =
-        'Your account is verified, so searches are unlimited and nothing is deducted.';
+        'This account is not metered, so nothing is deducted for a search.';
       summary.appendChild(box);
     } else {
       const grid = el('div');
@@ -1371,7 +1371,7 @@ async function openCredits() {
 
     if (state.capabilities && state.capabilities.payments) {
       const buy = el('button', 'btn block', 'Buy more credits');
-      buy.onclick = () => alert('Checkout opens here once Razorpay keys are set.');
+      buy.onclick = () => openPacks();
       body.appendChild(buy);
     }
 
@@ -1416,6 +1416,189 @@ function statBox(value, label, hint) {
 // ============================================================================
 // Account
 // ============================================================================
+
+/**
+ * Choose a pack and pay for it.
+ *
+ * ## Why the price list is fetched rather than built in
+ *
+ * The operator edits packs in the admin panel, so anything hard-coded here is
+ * wrong the first time a price changes - and wrong in the direction that quotes
+ * a figure the server will not charge. Only the pack code is ever sent back;
+ * the price and the credit count are read from the database at order time. A
+ * client that could name its own price would name zero.
+ */
+async function openPacks() {
+  showModal('Buy credits', async (body, close) => {
+    body.appendChild(el('div', null, 'Loading…'));
+
+    let data;
+    try {
+      data = await api('/api/payments/packs');
+    } catch (err) {
+      body.innerHTML = '';
+      body.appendChild(el('div', 'alert error', err.message));
+      return;
+    }
+
+    body.innerHTML = '';
+
+    if (!data.gatewayConfigured) {
+      // Said plainly rather than rendering a Buy button that fails on click.
+      // A checkout that cannot take money is indistinguishable from a broken
+      // one, and the only way a user finds out is by trying to pay.
+      body.appendChild(el('div', 'alert warn',
+        'Card payments are not switched on for this deployment yet. ' +
+        'Ask an administrator to add credits to your account in the meantime.'));
+      return;
+    }
+
+    if (!data.packs.length) {
+      body.appendChild(el('div', 'alert info', 'No credit packs are on sale right now.'));
+      return;
+    }
+
+    const feedback = el('div');
+    feedback.style.marginTop = '14px';
+
+    for (const pack of data.packs) {
+      body.appendChild(packCard(pack, feedback, close));
+    }
+
+    const note = el('p', null,
+      'Purchased credits never expire. Prices include GST.');
+    note.style.cssText = 'font-size:12px;color:var(--dim);margin:14px 0 0;text-align:center';
+    body.appendChild(note);
+    body.appendChild(feedback);
+  });
+}
+
+function packCard(pack, feedback, close) {
+  const card = el('div', 'precedent');
+  if (pack.featured) card.style.borderColor = 'var(--accent)';
+
+  const head = el('div', 'case-title', pack.name);
+  card.appendChild(head);
+
+  const meta = el('div', 'case-meta');
+  meta.appendChild(el('span', 'pill good', pack.credits + ' credits'));
+  meta.appendChild(el('span', 'pill', formatRupees(pack.pricePaise)));
+  if (pack.billingPeriod && pack.billingPeriod !== 'ONE_TIME') {
+    meta.appendChild(el('span', 'pill', pack.billingPeriod.toLowerCase()));
+  }
+  if (pack.featured) meta.appendChild(el('span', 'pill good', 'Popular'));
+  card.appendChild(meta);
+
+  if (pack.description) card.appendChild(el('div', 'holding', pack.description));
+
+  const buy = el('button', 'btn block', 'Buy ' + pack.name);
+  buy.style.marginTop = '11px';
+  buy.onclick = () => startCheckout(pack, buy, feedback, close);
+  card.appendChild(buy);
+
+  return card;
+}
+
+/** Paise to rupees. Integer money in, display string out. */
+function formatRupees(paise) {
+  return '₹' + (Number(paise || 0) / 100).toFixed(2);
+}
+
+/**
+ * Open Razorpay checkout for one pack.
+ *
+ * The gateway script is loaded on demand rather than on every page load: it is
+ * a third-party script on a page holding an advocate's session and their legal
+ * research, and the overwhelming majority of visits never reach checkout.
+ */
+async function startCheckout(pack, button, feedback, close) {
+  button.disabled = true;
+  feedback.innerHTML = '';
+
+  try {
+    const order = await post('/api/payments/order', { packCode: pack.code });
+    await loadRazorpay();
+
+    const checkout = new window.Razorpay({
+      key: order.keyId,
+      order_id: order.gatewayOrderId,
+      amount: order.amountPaise,
+      currency: order.currency,
+      name: 'Vakeel Saathi',
+      description: order.credits + ' credits — ' + order.packName,
+      prefill: {
+        name: state.user.fullName || '',
+        email: state.user.email || '',
+        contact: state.user.phoneNumber || '',
+      },
+      theme: { color: '#1f6feb' },
+      handler: async (result) => {
+        // The signed result. Verified server-side before anything is credited -
+        // this callback runs in the page and cannot be trusted on its own.
+        try {
+          const confirmed = await post('/api/payments/verify', result);
+          state.credits = confirmed.balance;
+          renderCredits();
+          close();
+          toastCredits(confirmed.credits);
+        } catch (err) {
+          feedback.innerHTML = '';
+          feedback.appendChild(el('div', 'alert warn',
+            'Your payment went through, but confirming it here failed: ' + err.message +
+            ' The credits will land as soon as the gateway notifies us — no need to pay again.'));
+        }
+      },
+      modal: {
+        ondismiss: () => {
+          button.disabled = false;
+          feedback.innerHTML = '';
+          feedback.appendChild(el('div', 'alert info', 'Payment cancelled. Nothing was charged.'));
+        },
+      },
+    });
+
+    checkout.on('payment.failed', (event) => {
+      button.disabled = false;
+      feedback.innerHTML = '';
+      const reason = (event && event.error && event.error.description) || 'The payment did not go through.';
+      feedback.appendChild(el('div', 'alert error', reason));
+    });
+
+    checkout.open();
+  } catch (err) {
+    button.disabled = false;
+    feedback.innerHTML = '';
+    feedback.appendChild(el('div', 'alert error', err.message));
+  }
+}
+
+/**
+ * Load Razorpay's checkout script, once.
+ *
+ * Resolves immediately if it is already present, so opening the dialog twice in
+ * one session does not add a second copy of a third-party script to the page.
+ */
+function loadRazorpay() {
+  if (window.Razorpay) return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.onload = () => resolve();
+    script.onerror = () =>
+      reject(new Error('Could not load the payment window. Check your connection and try again.'));
+    document.head.appendChild(script);
+  });
+}
+
+function toastCredits(credits) {
+  const banner = el('div', 'alert info');
+  banner.textContent = credits + ' credits added. They never expire.';
+  banner.style.cssText =
+    'position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:60;box-shadow:var(--shadow)';
+  document.body.appendChild(banner);
+  setTimeout(() => banner.remove(), 6000);
+}
 
 function renderAccountButton() {
   const button = $('#account-btn');
