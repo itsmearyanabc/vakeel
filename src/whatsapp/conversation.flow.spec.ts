@@ -346,7 +346,7 @@ describe('paging through precedents', () => {
     await service.handle(job({ waMessageId: 'wamid.2', text: 'more' }));
 
     const page = sent(api);
-    expect(page).not.toContain('That was the last result');
+    expect(page).not.toContain('nothing more to show');
     expect(page).toContain('Showing 6–10 of 12');
   });
 
@@ -361,7 +361,7 @@ describe('paging through precedents', () => {
     api.sendText.mockClear();
     await service.handle(job({ waMessageId: 'wamid.3', text: 'more' }));
 
-    expect(sent(api)).toContain('That was the last result');
+    expect(sent(api)).toContain('nothing more to show');
   });
 
   it('pages a search that was typed as a question, not picked from the menu', async () => {

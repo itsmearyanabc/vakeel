@@ -1,5 +1,11 @@
 import { CREDIT_COST, isSameSearchContext } from '../credits/credits.service';
-import { isValidCnr, normaliseCnr, parseProfile, ParsedProfile } from './onboarding';
+import {
+  isValidCnr,
+  looksLikeCnrAttempt,
+  normaliseCnr,
+  parseProfile,
+  ParsedProfile,
+} from './onboarding';
 import * as Replies from './replies';
 import { matchLanguage } from './replies';
 
@@ -209,12 +215,27 @@ export function route(
    * the state switch so it works from every state, and after the new-session
    * block because an expired session holds no rows to page.
    */
-  if (context.precedentRows?.length && isMoreRequest(text)) {
-    // Named rather than omitted. Paging does not move the advocate, and the
-    // caller persists the context under whatever state this returns - so
-    // leaving it out would drop the advanced offset with it and serve the same
-    // page again on the next "more".
-    return { actions: [{ kind: 'nextPrecedentPage' }], nextState: context.state };
+  if (isMoreRequest(text)) {
+    if (context.precedentRows?.length) {
+      // Named rather than omitted. Paging does not move the advocate, and the
+      // caller persists the context under whatever state this returns - so
+      // leaving it out would drop the advanced offset with it and serve the
+      // same page again on the next "more".
+      return { actions: [{ kind: 'nextPrecedentPage' }], nextState: context.state };
+    }
+
+    /*
+     * "more" with nothing held. Answered here rather than left to fall through.
+     *
+     * Downstream it becomes whatever the state happens to be: "invalid case
+     * number" after a case status, or - worse - a fresh two-credit search on
+     * the word "more" after a section lookup. Neither is what was asked, and
+     * one of them charges for it.
+     */
+    return {
+      actions: [{ kind: 'reply', text: Replies.NOTHING_MORE }],
+      nextState: SESSION_STATE.MAIN_MENU,
+    };
   }
 
   switch (context.state) {
@@ -395,22 +416,28 @@ function routeCaseStatus(text: string, context: SessionContext, creditLine: stri
     /*
      * A mistyped CNR and a change of subject need different answers.
      *
-     * Somebody who picked "case status" and then asked "what is IPC 420" has
-     * moved on, and repeating INVALID_CNR at them traps them in a state they
-     * did not know they were in. Guarded by looksLikeQuestion so a genuine
-     * typo - which reads nothing like a question - still gets the CNR help
-     * rather than being sent to retrieval and charged for it.
+     * The test used to be `looksLikeQuestion`, which asks "is this
+     * interrogative" - and almost nothing anybody types after reading a case
+     * card is. An advocate who got their answer and replied "More" or "That's
+     * it" was told "The case number is invalid" and told it again for every
+     * message after, with no way out but knowing to type 0. Two real messages
+     * into a working feature, the bot reads as broken.
+     *
+     * `looksLikeCnrAttempt` asks the question that actually matters: does this
+     * look like somebody trying to type a 16-character reference number? Digit
+     * density is the discriminator, so a genuine typo still gets the CNR help
+     * and ordinary English is released to the classifier rather than refused.
      */
-    if (looksLikeQuestion(text)) {
+    if (looksLikeReference(text)) {
       return {
-        actions: [{ kind: 'freeform', text }],
-        nextState: SESSION_STATE.MAIN_MENU,
+        actions: [{ kind: 'reply', text: Replies.INVALID_CNR }],
+        nextState: SESSION_STATE.CASE_STATUS,
       };
     }
 
     return {
-      actions: [{ kind: 'reply', text: Replies.INVALID_CNR }],
-      nextState: SESSION_STATE.CASE_STATUS,
+      actions: [{ kind: 'freeform', text }],
+      nextState: SESSION_STATE.MAIN_MENU,
     };
   }
 
@@ -474,6 +501,26 @@ function routePrecedents(text: string, context: SessionContext, creditLine: stri
     // the offset: a search that then fails must not leave the last one pageable.
     contextPatch: charge > 0 ? { lastChargedQuery: text, ...CLEARED_PRECEDENTS } : { ...CLEARED_PRECEDENTS },
   };
+}
+
+/**
+ * Is this somebody trying to type a case reference, having been asked for one?
+ *
+ * Wider than {@link looksLikeCnrAttempt} on purpose. That function has to work
+ * on any message in any state, so it demands 10+ characters and 6+ digits -
+ * which is right there and wrong here. Having just been shown the CNR format
+ * and asked for one, an advocate who sends "12345" is fumbling a reference, not
+ * changing the subject, and deserves the format again rather than a retrieval
+ * they get billed for.
+ *
+ * A single unbroken alphanumeric token with digits in it. "More", "ok" and
+ * "thanks" have no digits; "That's it" is two tokens with an apostrophe.
+ */
+function looksLikeReference(text: string): boolean {
+  if (looksLikeCnrAttempt(text)) return true;
+
+  const trimmed = text.trim();
+  return /^[A-Za-z0-9]+$/.test(trimmed) && (trimmed.match(/\d/g) ?? []).length >= 3;
 }
 
 /** Zero when this is the same question the advocate already paid for. */

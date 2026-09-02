@@ -125,7 +125,15 @@ export class IntentService {
 
     // Length cap is what keeps this from swallowing real questions that happen
     // to open with a greeting.
-    if (trimmed.length <= 20 && /^(hi|hello|hey|namaste|hola|thanks|thank you|ok|okay|नमस्ते|धन्यवाद)[\s!.]*$/.test(lower)) {
+    // Acknowledgements, not questions. "that's it" and "no thanks" reached the
+    // router model, came back GENERAL_LEGAL on the fallback path, and were
+    // charged two credits for a retrieval over a sign-off.
+    if (
+      trimmed.length <= 20 &&
+      /^(hi|hello|hey|namaste|hola|thanks|thank you|thanks a lot|ok|okay|k|got it|noted|done|that'?s it|thats it|no thanks|nothing|nope|yes|yep|नमस्ते|धन्यवाद|शुक्रिया)[\s!.]*$/.test(
+        lower,
+      )
+    ) {
       return { ...base, intent: 'SMALL_TALK', confidence: 0.99 };
     }
 

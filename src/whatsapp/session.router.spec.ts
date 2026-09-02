@@ -154,6 +154,34 @@ describe('case status', () => {
     expect(out.nextState).toBe(SESSION_STATE.CASE_STATUS);
   });
 
+  it.each(['More', "That's it", 'thanks', 'ok', 'no', 'What next'])(
+    'releases %p instead of looping "invalid case number"',
+    (text) => {
+      // The trap an advocate actually hit: read the case card, replied "More",
+      // and was told the case number was invalid - for that message and every
+      // one after it, with no way out but knowing to type 0. The old test was
+      // "is this interrogative", which almost nothing said after reading a card
+      // is.
+      const out = route(text, ctx({ state: SESSION_STATE.CASE_STATUS }), KNOWN_USER, CREDITS);
+
+      expect(replies(out.actions)).not.toContain('invalid');
+      expect(out.nextState).toBe(SESSION_STATE.MAIN_MENU);
+    },
+  );
+
+  it.each(['BRMG0300001119', 'BRMG03 000011 199', '1234567890123456'])(
+    'still offers CNR help for %p, which reads like a mistyped reference',
+    (text) => {
+      // Digit density is the discriminator. A genuine typo must not be sent to
+      // the classifier and charged for.
+      const out = route(text, ctx({ state: SESSION_STATE.CASE_STATUS }), KNOWN_USER, CREDITS);
+
+      expect(replies(out.actions)).toContain('invalid');
+      expect(out.nextState).toBe(SESSION_STATE.CASE_STATUS);
+      expect(out.actions.some((a) => a.kind === 'freeform')).toBe(false);
+    },
+  );
+
   it('rejects a malformed CNR without calling the court', () => {
     const out = route('12345', ctx({ state: SESSION_STATE.CASE_STATUS }), KNOWN_USER, CREDITS);
 
@@ -226,10 +254,16 @@ describe('billing', () => {
   });
 
   it('never charges for paging with "more"', () => {
-    // "more" continues a result set already paid for.
+    // "more" continues a result set already paid for. The held rows are part of
+    // the context now, and are what make this a page rather than a new search.
     const out = route(
       'more',
-      ctx({ state: SESSION_STATE.PRECEDENT_SEARCH, lastChargedQuery: 'bail', precedentOffset: 5 }),
+      ctx({
+        state: SESSION_STATE.PRECEDENT_SEARCH,
+        lastChargedQuery: 'bail',
+        precedentOffset: 5,
+        precedentRows: [{ judgment_id: 'j1' }],
+      }),
       KNOWN_USER,
       CREDITS,
     );
@@ -306,12 +340,19 @@ describe('billing', () => {
     },
   );
 
-  it('still treats "more" as an ordinary message when nothing is held', () => {
-    // Nothing to continue, so it must not hijack the word from the classifier
-    // anywhere except the state that was explicitly showing precedents.
-    const out = route('more', ctx({ state: SESSION_STATE.MAIN_MENU }), KNOWN_USER, CREDITS);
-    expect(out.actions).toEqual([{ kind: 'freeform', text: 'more' }]);
-  });
+  it.each([SESSION_STATE.MAIN_MENU, SESSION_STATE.CASE_STATUS, SESSION_STATE.SECTION_INFO])(
+    'answers "more" with nothing held, from %s, without charging',
+    (state) => {
+      // Left to fall through it becomes whatever the state is: "invalid case
+      // number" after a case status, or a fresh two-credit search on the word
+      // "more" after a section lookup. Neither is what was asked, and one of
+      // them bills for it.
+      const out = route('more', ctx({ state }), KNOWN_USER, CREDITS);
+
+      expect(replies(out.actions)).toContain('nothing more to show');
+      expect(out.actions.every((a) => a.kind === 'reply')).toBe(true);
+    },
+  );
 
   it.each(['1', '2', '3', '0'])('never reads %p as a page request', (key) => {
     const out = route(

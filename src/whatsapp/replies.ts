@@ -421,6 +421,18 @@ export function usageSummary(
     .join('\n');
 }
 
+/**
+ * "more", with no result set to continue.
+ *
+ * Free, and it says which of the two possible reasons applies rather than
+ * making the advocate guess whether the bot lost their results or never had any.
+ */
+export const NOTHING_MORE = [
+  'There is nothing more to show — the last thing I sent was complete.',
+  '',
+  'Send a new question, or type *0* for the menu.',
+].join('\n');
+
 export const UNSUPPORTED_MESSAGE_TYPE = [
   'I can read text messages, voice notes and images.',
   '',

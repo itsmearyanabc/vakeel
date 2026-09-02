@@ -138,3 +138,50 @@ export function isValidCnr(input: string): boolean {
 export function normaliseCnr(input: string): string {
   return input.replace(/[\s-]/g, '').toUpperCase();
 }
+
+/**
+ * Did the advocate try to send a CNR, or change the subject?
+ *
+ * Having asked for a CNR, replying "I could not find that CNR" to *everything*
+ * traps the user - "what is ipc 420" gets a CNR error forever and the only
+ * escape is knowing to type "menu".
+ *
+ * The first attempt at this stripped whitespace and looked for a run of 10+
+ * alphanumerics. That is wrong, and shipped: removing spaces turns ordinary
+ * sentences into long runs, so "what is ipc 420" became "whatisipc420" (12
+ * characters) and was read as a botched CNR.
+ *
+ * Length alone is not the discriminator either - that was the second wrong
+ * answer. English is full of 10+ character words, so "punishment for cheating"
+ * and "show me precedents on anticipatory bail" both looked like CNRs.
+ *
+ * **Digit density is the discriminator.** A CNR is 16 characters of which 10
+ * are digits (4 letters + 2 alphanumeric + 6-digit case number + 4-digit year).
+ * Ordinary legal English contains almost none. So:
+ *
+ *   - a single token, 10+ alphanumerics, 6+ of them digits -> an attempt
+ *   - <= 4 tokens, 14+ alphanumerics, 8+ of them digits     -> an attempt
+ *     (a CNR typed in groups, e.g. "DLCT01 000123 2024")
+ *   - anything else                                         -> a new question
+ *
+ * Exported for tests: pure logic, and the regression it guards has reached
+ * production twice.
+ */
+export function looksLikeCnrAttempt(text: string): boolean {
+  const tokens = text.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return false;
+
+  const alnum = (value: string): string => value.replace(/[^A-Za-z0-9]/g, '');
+  const digits = (value: string): number => (value.match(/\d/g) ?? []).length;
+
+  // One unbroken reference number, possibly mistyped.
+  const hasReferenceToken = tokens.some((token) => {
+    const compact = alnum(token);
+    return compact.length >= 10 && digits(compact) >= 6;
+  });
+  if (hasReferenceToken) return true;
+
+  // Or the same number typed in groups, which people do with long references.
+  const whole = alnum(text);
+  return tokens.length <= 4 && whole.length >= 14 && digits(whole) >= 8;
+}
