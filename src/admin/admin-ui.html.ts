@@ -860,6 +860,14 @@ function viewSystem() {
           // on the dashboard - an operator's first stop when the bot is quiet,
           // pointing at a service that was never going to answer.
           row('WhatsApp credentials', c.whatsappConfigured, c.whatsappPhoneNumberId || 'not configured') +
+          // A configuration fault, not an outage: the circuit stays closed
+          // because retrying a wrong base URL never helps, so nothing else on
+          // this page would show it.
+          row('eCourts',
+              c.ecourtsMode === 'mock' ? true : (!c.ecourtsConfigurationError && !c.ecourtsDegraded),
+              c.ecourtsMode === 'mock'
+                ? 'mock mode - sample case data'
+                : (c.ecourtsConfigurationError || (c.ecourtsDegraded ? 'DEGRADED' : 'live'))) +
         '</tbody></table></div>' +
 
         '<div class="card"><h3>Active configuration</h3>' +

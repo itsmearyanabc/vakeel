@@ -24,6 +24,7 @@ import { CorpusRepository } from '../database/repositories/corpus.repository';
 import { PlanRepository } from '../database/repositories/plan.repository';
 import { UserRepository } from '../database/repositories/user.repository';
 import { JobQueueService } from '../jobs/job-queue.service';
+import { EcourtsService } from '../ecourts/ecourts.service';
 import { KanoonService } from '../kanoon/kanoon.service';
 import { SETTING_DEFINITIONS, SETTING_GROUPS } from '../settings/settings.catalog';
 import { SettingsService } from '../settings/settings.service';
@@ -63,6 +64,7 @@ export class AdminController {
     private readonly settings: SettingsService,
     private readonly tester: WhatsAppConnectionTester,
     private readonly kanoon: KanoonService,
+    private readonly ecourts: EcourtsService,
     private readonly queue: JobQueueService,
     private readonly db: DatabaseService,
   ) {}
@@ -356,6 +358,18 @@ export class AdminController {
         routerProvider: this.settings.get('LLM_ROUTER_PROVIDER') || 'mock',
         embeddingProvider: this.settings.get('EMBEDDING_PROVIDER') || 'mock',
         memoryEnabled: this.settings.getBoolean('MEMORY_ENABLED', true),
+        /*
+         * eCourts, including the fault an outage indicator cannot show.
+         *
+         * A wrong base URL or a rejected key does not open the circuit - there
+         * is nothing to retry - so `degraded` stays false while every lookup
+         * fails. Without `configurationError` the panel reports a service as
+         * healthy when it is answering nobody, which is precisely how one
+         * deployment ran for a day pointed at the provider's marketing site.
+         */
+        ecourtsMode: this.settings.get('ECOURTS_MODE') || 'mock',
+        ecourtsDegraded: this.ecourts.isDegraded,
+        ecourtsConfigurationError: this.ecourts.configurationError,
       },
     };
   }

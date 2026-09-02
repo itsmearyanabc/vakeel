@@ -1,4 +1,4 @@
-import { CaseStatus, EcourtsService } from './ecourts.service';
+import { CaseStatus, CnrNotFoundError, EcourtsMisconfiguredError, EcourtsService } from './ecourts.service';
 import { formatCaseStatus } from '../whatsapp/replies';
 import realResponse from './__fixtures__/ecourtsindia-case.json';
 
@@ -159,5 +159,124 @@ describe('a response this mapper cannot read', () => {
     expect(flat.petitioner).toBe('State of Bihar');
     expect(flat.stage).toBe('Framing of Charge');
     expect(flat.status).toBe('PENDING');
+  });
+});
+
+/**
+ * Telling a wrong address apart from a court that is down.
+ *
+ * This is not hypothetical. A deployment ran with
+ * ECOURTS_BASE_URL=https://ecourtsindia.com - the provider's marketing site,
+ * not their API host - and every lookup got 403 text/plain. Advocates were told
+ * "the court records service is not responding", the operator went looking at
+ * eCourts, and eCourts was working the entire time.
+ *
+ * The distinguishing signal is what kind of thing answered: a provider returns
+ * JSON, a web server that has never heard of the path returns HTML or text.
+ */
+describe('a base URL pointing at the wrong thing', () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  function serviceReturning(status: number, contentType: string, body = '') {
+    global.fetch = jest.fn().mockResolvedValue({
+      status,
+      ok: status >= 200 && status < 300,
+      headers: { get: (h: string) => (h.toLowerCase() === 'content-type' ? contentType : null) },
+      text: async () => body,
+      json: async () => JSON.parse(body || '{}'),
+    }) as never;
+
+    const settings = {
+      get: (key: string) =>
+        ({
+          ECOURTS_MODE: 'http',
+          ECOURTS_BASE_URL: 'https://ecourtsindia.com',
+          ECOURTS_API_KEY: 'eci_live_x',
+        })[key] ?? '',
+    };
+    const env = {
+      ECOURTS_MODE: 'http',
+      ECOURTS_BASE_URL: 'https://ecourtsindia.com',
+      ECOURTS_API_KEY: 'eci_live_x',
+      ECOURTS_TIMEOUT_MS: 5000,
+      ECOURTS_BREAKER_THRESHOLD: 5,
+      ECOURTS_BREAKER_RESET_MS: 60_000,
+    };
+    return new EcourtsService(env as never, settings as never);
+  }
+
+  it('names the misconfiguration on the 403 the marketing site actually returned', async () => {
+    const service = serviceReturning(403, 'text/plain', 'Forbidden');
+
+    await expect(service.lookup('DLHC010001232024')).rejects.toBeInstanceOf(
+      EcourtsMisconfiguredError,
+    );
+  });
+
+  it('points at the two settings that could be wrong', async () => {
+    const service = serviceReturning(403, 'text/plain');
+
+    await expect(service.lookup('DLHC010001232024')).rejects.toThrow(
+      /ECOURTS_API_KEY[\s\S]*ECOURTS_BASE_URL/,
+    );
+  });
+
+  it('does not read an HTML 404 as "no such case"', async () => {
+    // The silent version, and the worse one: any web server 404s an unknown
+    // path, so a wrong host makes every CNR come back as a case that does not
+    // exist - charged, refunded, and nothing in the logs looking like an error.
+    const service = serviceReturning(404, 'text/html', '<!doctype html>');
+
+    await expect(service.lookup('DLHC010001232024')).rejects.toBeInstanceOf(
+      EcourtsMisconfiguredError,
+    );
+  });
+
+  it('still reads a provider JSON 404 as "no such case"', async () => {
+    const service = serviceReturning(404, 'application/json', '{"code":"CASE_NOT_FOUND"}');
+
+    await expect(service.lookup('DLHC010001232024')).rejects.toBeInstanceOf(CnrNotFoundError);
+  });
+
+  it('rejects a 200 that is not JSON', async () => {
+    // A marketing page, or a proxy holding response. The friendly status code
+    // makes this the easiest one to mistake for working.
+    const service = serviceReturning(200, 'text/html', '<!doctype html>');
+
+    await expect(service.lookup('DLHC010001232024')).rejects.toBeInstanceOf(
+      EcourtsMisconfiguredError,
+    );
+  });
+
+  it('reports the fault where an operator can see it', async () => {
+    // The circuit deliberately stays closed, so `isDegraded` cannot show this
+    // and the panel would otherwise report a service that answers nobody as
+    // healthy.
+    const service = serviceReturning(403, 'text/plain');
+
+    await service.lookup('DLHC010001232024').catch(() => undefined);
+
+    expect(service.isDegraded).toBe(false);
+    expect(service.configurationError).toMatch(/ECOURTS_BASE_URL/);
+  });
+
+  it('stops reporting a fault once the configuration is fixed', async () => {
+    const service = serviceReturning(403, 'text/plain');
+    await service.lookup('DLHC010001232024').catch(() => undefined);
+    expect(service.configurationError).not.toBeNull();
+
+    global.fetch = jest.fn().mockResolvedValue({
+      status: 200,
+      ok: true,
+      headers: { get: () => 'application/json' },
+      text: async () => '',
+      json: async () => realResponse,
+    }) as never;
+
+    await service.lookup('DLHC010001232025');
+    expect(service.configurationError).toBeNull();
   });
 });

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { CreditsModule } from '../credits/credits.module';
+import { EcourtsModule } from '../ecourts/ecourts.module';
 import { JobsModule } from '../jobs/jobs.module';
 import { KanoonModule } from '../kanoon/kanoon.module';
 import { UsersModule } from '../users/users.module';
@@ -14,10 +15,13 @@ import { AdminGuard } from './admin.guard';
  * and the login endpoint - are matched before the guarded API catch-alls.
  */
 @Module({
-  // KanoonModule is needed for the dashboard's case-law source status. Nest
-  // only reports a missing import at boot, which is why module-resolution has
-  // its own test - see app.wiring.spec.ts.
-  imports: [UsersModule, WhatsAppModule, KanoonModule, CreditsModule, JobsModule],
+  // KanoonModule and EcourtsModule are needed for the dashboard's source
+  // status: whether case law is live, and whether CNR lookups are reaching the
+  // provider or failing on a wrong base URL. Nest only reports a missing import
+  // at boot, which is why module resolution has its own test - and why this
+  // list has twice been one entry short of a working deploy. See
+  // app.wiring.spec.ts.
+  imports: [UsersModule, WhatsAppModule, KanoonModule, EcourtsModule, CreditsModule, JobsModule],
   controllers: [AdminUiController, AdminAuthController, AdminController],
   providers: [AdminGuard],
 })

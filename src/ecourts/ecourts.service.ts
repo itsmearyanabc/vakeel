@@ -55,6 +55,28 @@ export class CnrNotFoundError extends Error {
   }
 }
 
+/**
+ * The adapter is pointed at something that is not the provider's API.
+ *
+ * Distinct from a transport failure because the operator's next step is
+ * completely different, and because the two are otherwise indistinguishable
+ * from the log line: both are "a request did not produce a case".
+ *
+ * This exists because it happened. A deployment was configured with
+ * ECOURTS_BASE_URL=https://ecourtsindia.com - the marketing site - instead of
+ * the API host. Every lookup got 403 text/plain, which is not a 404, so it was
+ * reported to advocates as "the court records service is not responding" and to
+ * the operator as an upstream outage. Nothing pointed at the one line of
+ * configuration that was wrong, and eCourts was working perfectly the whole
+ * time.
+ */
+export class EcourtsMisconfiguredError extends Error {
+  constructor(readonly detail: string) {
+    super(`eCourts is not correctly configured: ${detail}`);
+    this.name = 'EcourtsMisconfiguredError';
+  }
+}
+
 /** Cache successful lookups for an hour; cause lists move daily, not hourly. */
 const CACHE_TTL_SECONDS = 3600;
 
@@ -87,6 +109,20 @@ export class EcourtsService {
 
   private readonly cache = new LruCache<CaseStatus>(1_000, CACHE_TTL_SECONDS);
 
+  /**
+   * Why the last lookup could not reach the provider, if it was our fault.
+   *
+   * Held because a misconfiguration deliberately does not open the circuit -
+   * retrying will never fix a wrong base URL - which means `isDegraded` stays
+   * false and the panel would otherwise show eCourts as perfectly healthy while
+   * every advocate gets an error. This is the one place an operator can see the
+   * actual sentence.
+   *
+   * Cleared by the next successful lookup, so a fixed deployment stops
+   * reporting a fault it no longer has.
+   */
+  private configurationFault: string | null = null;
+
   constructor(
     @InjectEnv() private readonly env: AppEnv,
     private readonly settings: SettingsService,
@@ -117,22 +153,64 @@ export class EcourtsService {
       return cached;
     }
 
-    const result =
-      this.mode === 'mock'
-        ? this.mockLookup(cnr)
-        : await this.breaker.execute(
-            () => this.httpLookup(cnr),
-            // "No such case" is a healthy response, not an outage.
-            (err) => !(err instanceof CnrNotFoundError),
-          );
+    const result = await this.runLookup(cnr);
 
     this.cache.set(cacheKey, result, CACHE_TTL_SECONDS);
     return result;
   }
 
+  /** The lookup itself, wrapped so the configuration fault can be tracked. */
+  private async runLookup(cnr: string): Promise<CaseStatus> {
+    try {
+      const result = await this.dispatch(cnr);
+      this.configurationFault = null;
+      return result;
+    } catch (err) {
+      if (err instanceof EcourtsMisconfiguredError) {
+        this.configurationFault = err.detail;
+        this.logger.error(
+          { detail: err.detail },
+          'eCourts is misconfigured - this is a settings problem, not an upstream outage',
+        );
+      }
+      throw err;
+    }
+  }
+
+  private async dispatch(cnr: string): Promise<CaseStatus> {
+    return this.mode === 'mock'
+        ? this.mockLookup(cnr)
+        : await this.breaker.execute(
+            () => this.httpLookup(cnr),
+            /*
+             * What counts as an outage.
+             *
+             * "No such case" is a healthy response. So, in a different way, is
+             * a rejected key or a wrong base URL: the upstream is fine and
+             * retrying will never help. Counting either towards the breaker
+             * would open the circuit and replace a precise error with a generic
+             * "service unavailable" for the next minute - hiding the one message
+             * that says what to fix.
+             */
+            (err) =>
+              !(err instanceof CnrNotFoundError) && !(err instanceof EcourtsMisconfiguredError),
+          );
+  }
+
   /** True when the upstream is currently being skipped, for user-facing messaging. */
   get isDegraded(): boolean {
     return this.breaker.currentState === 'OPEN';
+  }
+
+  /**
+   * The last configuration fault, for the admin panel.
+   *
+   * Null when the adapter is in mock mode - a deployment that has deliberately
+   * not configured eCourts is not misconfigured, and reporting it as a fault
+   * would train the operator to ignore this field.
+   */
+  get configurationError(): string | null {
+    return this.mode === 'mock' ? null : this.configurationFault;
   }
 
   private async httpLookup(cnr: string): Promise<CaseStatus> {
@@ -143,7 +221,9 @@ export class EcourtsService {
       throw new Error('eCourts mode is set to http but no provider base URL is configured');
     }
 
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/case/${cnr}`, {
+    const url = `${baseUrl.replace(/\/$/, '')}/case/${cnr}`;
+
+    const response = await fetch(url, {
       method: 'GET',
       headers: {
         accept: 'application/json',
@@ -152,16 +232,66 @@ export class EcourtsService {
       signal: AbortSignal.timeout(this.env.ECOURTS_TIMEOUT_MS),
     });
 
+    // What kind of thing answered. A provider returns JSON; a web server that
+    // has never heard of this path returns HTML or plain text, and that
+    // difference is the whole of the diagnosis below.
+    const contentType = response.headers.get('content-type') ?? '';
+    const isJson = contentType.includes('json');
+
+    /*
+     * Credentials, not connectivity.
+     *
+     * 401 and 403 are answers from a healthy service saying the key is wrong,
+     * expired, or being sent somewhere that does not want it. Reporting that as
+     * an outage sends the operator to the provider's status page instead of to
+     * their own environment.
+     */
+    if (response.status === 401 || response.status === 403) {
+      const where = new URL(url).host;
+      throw new EcourtsMisconfiguredError(
+        `${where} rejected the API key with ${response.status}. ` +
+          'Check ECOURTS_API_KEY, and check ECOURTS_BASE_URL points at the provider API ' +
+          '(for eCourtsIndia: https://webapi.ecourtsindia.com/api/partner) rather than at their website.',
+      );
+    }
+
     if (response.status === 404) {
+      /*
+       * A 404 means "no such case" only if a provider said it.
+       *
+       * Any web server 404s an unknown path, so a base URL pointing at the
+       * wrong host makes *every* CNR come back as not found - charged, refunded,
+       * and reported to the advocate as a case that does not exist. That is the
+       * silent version of the misconfiguration above, and it is worse: nothing
+       * in the logs looks like an error at all.
+       *
+       * A JSON body is the signal that the provider answered. Anything else is
+       * a wrong address.
+       */
+      if (!isJson) {
+        throw new EcourtsMisconfiguredError(
+          `${new URL(url).host} returned 404 with ${contentType || 'no content type'}, not a provider response. ` +
+            'ECOURTS_BASE_URL is almost certainly wrong.',
+        );
+      }
+
       // A genuine "no such case" must not count towards the breaker - it is a
-      // correct answer from a healthy upstream. Thrown before the generic
-      // error check so it never trips the circuit.
+      // correct answer from a healthy upstream.
       throw new CnrNotFoundError(cnr);
     }
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
       throw new Error(`eCourts provider returned ${response.status}: ${body.slice(0, 200)}`);
+    }
+
+    // A 200 that is not JSON is the same wrong address wearing a friendlier
+    // status code - a marketing page, or a proxy's holding response.
+    if (!isJson) {
+      throw new EcourtsMisconfiguredError(
+        `${new URL(url).host} answered 200 with ${contentType || 'no content type'} instead of JSON. ` +
+          'ECOURTS_BASE_URL is pointing at something that is not the provider API.',
+      );
     }
 
     const payload = (await response.json()) as Record<string, unknown>;
