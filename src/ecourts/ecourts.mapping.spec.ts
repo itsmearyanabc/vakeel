@@ -84,6 +84,21 @@ describe('a real eCourtsIndia response', () => {
     expect(status.registrationDate).toBe('2024-01-04');
   });
 
+  it('keeps the two case numbers apart, as the provider does', () => {
+    // The live record carries both, and they differ. A card that prints one
+    // into both lines asserts something untrue about the matter.
+    expect(status.filingNumber).toBe('9623/2024');
+    expect(status.caseNumber).toBe('Writ Petition (Civil) 138/2024');
+    expect(status.filingNumber).not.toBe(status.caseNumber);
+  });
+
+  it('reads the first hearing date from its own field', () => {
+    // Guards the fixture as much as the mapper. The first capture trimmed
+    // `firstHearingDate` out, so this line rendered "Not available" and looked
+    // like a mapping bug - when the live API returns it and always had.
+    expect(status.firstHearingDate).toBe('2024-01-05');
+  });
+
   it('is never marked as mock data', () => {
     // `mocked` drives a "this is synthetic" label. A real record wearing it, or
     // a synthetic one without it, are both worse than no label.

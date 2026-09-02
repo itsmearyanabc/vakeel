@@ -13,6 +13,9 @@
       "filingNumber": "9623/2024",
       "registrationDate": "2024-01-04",
       "registrationNumber": "138/2024",
+      "firstHearingDate": "2024-01-05",
+      "lastHearingDate": "2024-01-05",
+      "decisionDate": "2024-01-05",
       "judges": [
         "TUSHAR RAO GEDELA"
       ],
@@ -26,9 +29,7 @@
         "Kendriya Vidyalaya Sangathan (kvs) & ORS"
       ],
       "respondentAdvocates": [],
-      "purpose": "FRESH MATTERS & APPLICATIONS",
-      "lastHearingDate": "2024-01-05",
-      "decisionDate": "2024-01-05"
+      "purpose": "FRESH MATTERS & APPLICATIONS"
     },
     "entityInfo": {
       "cnr": "DLHC010001232024",
@@ -67,6 +68,6 @@
     }
   },
   "meta": {
-    "request_id": "4001822a-0011-aa00-b63f-84710c7967bb"
+    "request_id": "4000eaa3-0005-8e00-b63f-84710c7967bb"
   }
 }
