@@ -9,10 +9,31 @@ import { SettingsService } from '../settings/settings.service';
 
 export interface CaseStatus {
   cnr: string;
+  /**
+   * The registration number, as an advocate would quote it - "W.P.(C) 138/2024".
+   *
+   * Not the provider's internal `caseNumber`, which on eCourtsIndia is a
+   * 15-digit string that appears on no document anybody holds.
+   */
   caseNumber: string | null;
+  /**
+   * The filing number, which is a different number from the registration one.
+   *
+   * The card printed `caseNumber` on both lines and so asserted the two were
+   * the same. On the first real record they were "9623/2024" and "138/2024".
+   */
+  filingNumber: string | null;
   caseType: string | null;
   filingDate: string | null;
   registrationDate: string | null;
+  /**
+   * First listing, which is not the last one.
+   *
+   * The card labelled a line "First Hearing Date" and printed
+   * `lastHearingDate` into it. On a matter running two years that is a
+   * confidently wrong date on the field an advocate checks first.
+   */
+  firstHearingDate: string | null;
   court: string | null;
   judge: string | null;
   petitioner: string | null;
@@ -148,66 +169,136 @@ export class EcourtsService {
   }
 
   /**
-   * Map a provider payload onto {@link CaseStatus}.
+   * Map an eCourtsIndia payload onto {@link CaseStatus}.
    *
-   * ## The envelope
+   * Written against a real response rather than guessed at. The three things
+   * that guessing got wrong, all of which produce a card that looks fine and is
+   * missing the fields an advocate actually reads:
    *
-   * eCourtsIndia answers `GET /api/partner/case/{cnr}` with
-   * `{ data: { courtCaseData, files, judgmentOrders, entityInfo }, meta }`, so
-   * the case fields are two levels down. Unwrapping only `data` - which is what
-   * this did - reached an object whose keys are all containers, matched nothing,
-   * and produced a card of "Not available" from a request that returned 200.
+   *   1. **The case sits two levels down**, under `data.courtCaseData`.
+   *      Unwrapping only `data` reaches an object whose values are all
+   *      containers, matches nothing, and renders "Not available" from a 200.
    *
-   * The other shapes are kept because this is still an adapter: a deployment
-   * pointed at a different provider, or at a gateway that re-wraps the payload,
-   * should not need a code change to be read.
+   *   2. **Parties and judges are arrays.** `petitioners`, `respondents`,
+   *      `judges` and both advocate fields are lists, so a reader that only
+   *      accepts a string returns null for every one of them - which is to say,
+   *      for everything a case status is actually for.
    *
-   * ## Why the key names are still a list
+   *   3. **The hearing dates are not in `courtCaseData` at all.** They are on
+   *      the sibling `entityInfo` block, as `nextDateOfHearing` and
+   *      `lastDateOfHearing`. Reading them off the case object yields null, and
+   *      a null next hearing is what {@link CaseStatus.status} uses to decide a
+   *      case is UNKNOWN rather than pending.
    *
-   * Providers disagree on casing and on whether a hearing date is `next_date`
-   * or `nextHearingDate`, and the leaf names here are not confirmed against a
-   * live response. Reading several plausible spellings costs nothing and is the
-   * difference between a working card and an empty one; {@link mappedAnything}
-   * is what stops a total miss passing silently.
+   * ## The enum lookup is worth using
+   *
+   * Several fields are codes: `courtName` is "DLHC", `caseType` is "WP_C". The
+   * response carries `descriptions.enumLookup` translating each to "High Court
+   * of Delhi, Delhi" and "Writ Petition (Civil)". Printing the code instead is
+   * not wrong, exactly - it is just unreadable to the person the card is for.
+   *
+   * The generic key lists are kept underneath so this stays an adapter: a
+   * deployment pointed at another provider should not need a code change.
    */
   private mapProviderResponse(cnr: string, payload: Record<string, unknown>): CaseStatus {
     const envelope = (payload.data ?? payload.result ?? payload) as Record<string, unknown>;
     const data = (envelope.courtCaseData ?? envelope.caseDetails ?? envelope) as Record<string, unknown>;
+    const entity = (envelope.entityInfo ?? {}) as Record<string, unknown>;
+    const lookup = ((envelope.descriptions as Record<string, unknown> | undefined)?.enumLookup ??
+      {}) as Record<string, Record<string, string>>;
 
-    const pick = (...keys: string[]): string | null => {
+    /** First key holding a usable scalar. */
+    const text = (source: Record<string, unknown>, ...keys: string[]): string | null => {
       for (const key of keys) {
-        const value = data[key];
+        const value = source[key];
         if (typeof value === 'string' && value.trim()) return value.trim();
-        if (typeof value === 'number') return String(value);
+        if (typeof value === 'number' && Number.isFinite(value)) return String(value);
       }
       return null;
     };
 
-    const stage = pick('case_stage', 'stage', 'caseStage', 'caseStatus', 'status');
-    const nextHearing = pick(
-      'next_hearing_date',
-      'nextHearingDate',
-      'next_date',
-      'nextDate',
-      'nextHearing',
+    /** First key holding a non-empty list of names, joined for display. */
+    const names = (...keys: string[]): string | null => {
+      for (const key of keys) {
+        const value = data[key];
+        if (Array.isArray(value)) {
+          const joined = value
+            .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+            .filter(Boolean)
+            .join(', ');
+          if (joined) return joined;
+        }
+        if (typeof value === 'string' && value.trim()) return value.trim();
+      }
+      return null;
+    };
+
+    /** Translate a coded value through the response's own lookup table. */
+    const label = (table: string, code: string | null): string | null => {
+      if (!code) return null;
+      return lookup[table]?.[code] ?? null;
+    };
+
+    /** Dates arrive as either a plain day or a full ISO timestamp. */
+    const day = (value: string | null): string | null => {
+      if (!value) return null;
+      return /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : value;
+    };
+
+    const rawStatus = text(data, 'caseStatus', 'case_status', 'status');
+
+    // "Listed for final arguments" is what an advocate wants under Stage;
+    // "DISPOSED" is the status and is printed on its own line.
+    const stage =
+      text(data, 'purpose', 'case_stage', 'stage', 'caseStage') ??
+      label('caseStatus', rawStatus) ??
+      rawStatus;
+
+    const nextHearing = day(
+      text(entity, 'nextDateOfHearing') ?? text(data, 'next_hearing_date', 'nextHearingDate', 'nextDate'),
     );
+
+    // The registration number is the one an advocate quotes - "W.P.(C) 138/2024"
+    // - not the internal 15-digit `caseNumber`, which appears on nothing.
+    const caseTypeLabel =
+      label('caseType', text(data, 'caseType')) ?? text(data, 'caseTypeRaw', 'caseType', 'case_type');
+    const registration = text(data, 'registrationNumber', 'filingNumber', 'case_number', 'caseNumber');
 
     const mapped: CaseStatus = {
       cnr,
-      caseNumber: pick('case_number', 'caseNumber', 'case_no', 'caseNo', 'registrationNumber'),
-      caseType: pick('case_type', 'caseType', 'type'),
-      filingDate: pick('filing_date', 'filingDate', 'dateOfFiling'),
-      registrationDate: pick('registration_date', 'registrationDate', 'dateOfRegistration'),
-      court: pick('court_name', 'courtName', 'court', 'courtEstablishment', 'district'),
-      judge: pick('judge', 'judge_name', 'judgeName', 'coram', 'bench'),
-      petitioner: pick('petitioner', 'petitioner_name', 'petitionerName', 'plaintiff'),
-      respondent: pick('respondent', 'respondent_name', 'respondentName', 'defendant'),
-      petitionerAdvocate: pick('petitioner_advocate', 'petitionerAdvocate', 'petitionerAdv'),
-      respondentAdvocate: pick('respondent_advocate', 'respondentAdvocate', 'respondentAdv'),
+      caseNumber:
+        caseTypeLabel && registration ? `${caseTypeLabel} ${registration}` : registration,
+      filingNumber: text(data, 'filingNumber', 'filing_number'),
+      caseType: caseTypeLabel,
+      filingDate: day(text(data, 'filingDate', 'filing_date')),
+      registrationDate: day(text(data, 'registrationDate', 'registration_date')),
+      firstHearingDate: day(text(data, 'firstHearingDate', 'first_hearing_date')),
+      court:
+        label('courtCode', text(data, 'cnrCourtCode', 'courtComplexCode')) ??
+        text(data, 'court_name', 'courtName', 'court'),
+      judge: names('judges', 'judge', 'judge_name', 'coram'),
+      petitioner: names('petitioners', 'petitioner', 'plaintiff'),
+      respondent: names('respondents', 'respondent', 'defendant'),
+      petitionerAdvocate: names('petitionerAdvocates', 'petitioner_advocate'),
+      respondentAdvocate: names('respondentAdvocates', 'respondent_advocate'),
       stage,
       nextHearingDate: nextHearing,
-      lastHearingDate: pick('last_hearing_date', 'lastHearingDate', 'previousDate', 'lastDate'),
-      status: /dispos/i.test(stage ?? '') ? 'DISPOSED' : nextHearing ? 'PENDING' : 'UNKNOWN',
+      lastHearingDate: day(
+        text(entity, 'lastDateOfHearing') ?? text(data, 'lastHearingDate', 'last_hearing_date'),
+      ),
+      /*
+       * Read from the provider's own status where it gives one.
+       *
+       * Inferring "pending" from the presence of a next hearing date - which is
+       * what this did - is wrong in both directions on real data: a disposed
+       * case can carry a stale listing, and a pending case between hearings has
+       * no next date at all. This response says DISPOSED outright.
+       */
+      status: /dispos/i.test(rawStatus ?? '')
+        ? 'DISPOSED'
+        : /pend/i.test(rawStatus ?? '') || nextHearing
+          ? 'PENDING'
+          : 'UNKNOWN',
       mocked: false,
     };
 
@@ -271,9 +362,11 @@ export class EcourtsService {
     return {
       cnr,
       caseNumber: `CC/${1000 + (seed % 8999)}/${year}`,
+      filingNumber: `F/${2000 + (seed % 7999)}/${year}`,
       caseType: seed % 2 === 0 ? 'Criminal Case' : 'Civil Suit',
       filingDate: `${year}-0${(seed % 9) + 1}-1${seed % 9}`,
       registrationDate: `${year}-0${(seed % 9) + 1}-2${seed % 8}`,
+      firstHearingDate: `${year}-0${(seed % 9) + 1}-2${seed % 8}`,
       court: courts[seed % courts.length],
       judge: `Hon'ble Judge (Court No. ${(seed % 12) + 1})`,
       petitioner: 'State of Maharashtra',

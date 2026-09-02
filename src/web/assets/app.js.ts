@@ -1217,8 +1217,12 @@ function renderCaseStatus(data) {
     ['Stage', data.stage],
     ['Court', data.court],
     ['Judge', data.judge],
-    ['Case number', data.caseNumber],
+    ['Registration number', data.caseNumber],
+    // A different number from the registration one, and on the record the
+    // provider returns they genuinely differ.
+    ['Filing number', data.filingNumber],
     ['Filed', data.filingDate],
+    ['First hearing', data.firstHearingDate],
     ['Next hearing', data.nextHearingDate],
     ['Last hearing', data.lastHearingDate],
     ['Petitioner advocate', data.petitionerAdvocate],

@@ -5,9 +5,11 @@ function status(overrides: Partial<CaseStatus> = {}): CaseStatus {
   return {
     cnr: 'BRMG030000191989',
     caseNumber: 'CS/123/2024',
+    filingNumber: 'F/9623/2024',
     caseType: 'Civil Suit',
     filingDate: '2024-01-10',
     registrationDate: '2024-01-15',
+    firstHearingDate: '2024-01-20',
     court: 'Munger District Court',
     judge: 'Court 3 — Sri Alok Gupta',
     petitioner: 'State of Bihar',
@@ -28,8 +30,8 @@ describe('formatCaseStatus', () => {
     const out = formatCaseStatus(status());
     const labels = [
       'Case Type', 'Filing Number', 'Filing Date', 'Registration Number',
-      'Registration Date', 'CNR Number', 'First Hearing Date', 'Next Hearing Date',
-      'Case Status', 'Stage of Case', 'Court Number and Judge',
+      'Registration Date', 'CNR Number', 'First Hearing Date', 'Last Hearing Date',
+      'Next Hearing Date', 'Case Status', 'Stage of Case', 'Court', 'Judge',
       'Petitioner and Advocate', 'Respondent and Advocate',
     ];
     let cursor = -1;
@@ -46,7 +48,29 @@ describe('formatCaseStatus', () => {
     const out = formatCaseStatus(status({ caseType: null, stage: null, judge: null }));
     expect(out).toContain('• Case Type: Not available');
     expect(out).toContain('• Stage of Case: Not available');
-    expect(out).toContain('• Court Number and Judge: Not available');
+    expect(out).toContain('• Judge: Not available');
+  });
+
+  it('prints the court, which it used to map and then discard', () => {
+    // The card told an advocate everything about a matter except which court it
+    // is in - the one field they cannot work out from the rest.
+    expect(formatCaseStatus(status())).toContain('• Court: Munger District Court');
+  });
+
+  it('keeps the filing and registration numbers apart', () => {
+    // Both lines printed `caseNumber`, which asserted the two numbers were the
+    // same. On the first real record they were "9623/2024" and "138/2024".
+    const out = formatCaseStatus(status());
+    expect(out).toContain('• Filing Number: F/9623/2024');
+    expect(out).toContain('• Registration Number: CS/123/2024');
+  });
+
+  it('does not print the last hearing date under the first-hearing label', () => {
+    // These coincide only on a case that has been heard once. On a matter
+    // running two years the card was confidently wrong.
+    const out = formatCaseStatus(status());
+    expect(out).toContain('• First Hearing Date: 2024-01-20');
+    expect(out).toContain('• Last Hearing Date: 2024-02-01');
   });
 
   it('blanks a past next-hearing date on a disposed case', () => {

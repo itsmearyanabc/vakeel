@@ -1,0 +1,72 @@
+{
+  "data": {
+    "courtCaseData": {
+      "cnr": "DLHC010001232024",
+      "caseNumber": "213400001382024",
+      "caseType": "WP_C",
+      "caseTypeRaw": "W.P.(C)",
+      "caseStatus": "DISPOSED",
+      "courtName": "DLHC",
+      "cnrCourtCode": "DLHC01",
+      "courtComplexCode": "DLHC01",
+      "filingDate": "2024-01-04",
+      "filingNumber": "9623/2024",
+      "registrationDate": "2024-01-04",
+      "registrationNumber": "138/2024",
+      "judges": [
+        "TUSHAR RAO GEDELA"
+      ],
+      "petitioners": [
+        "Shubham Pratap Singh"
+      ],
+      "petitionerAdvocates": [
+        "KARAN BABUTA"
+      ],
+      "respondents": [
+        "Kendriya Vidyalaya Sangathan (kvs) & ORS"
+      ],
+      "respondentAdvocates": [],
+      "purpose": "FRESH MATTERS & APPLICATIONS",
+      "lastHearingDate": "2024-01-05",
+      "decisionDate": "2024-01-05"
+    },
+    "entityInfo": {
+      "cnr": "DLHC010001232024",
+      "nextDateOfHearing": null,
+      "lastDateOfHearing": "2024-01-05T00:00:00Z",
+      "dateCreated": "2026-01-24T03:41:26.60364Z",
+      "dateModified": "2026-09-01T20:31:05.836584Z"
+    },
+    "descriptions": {
+      "enumFields": [
+        "caseType",
+        "caseStatus",
+        "courtCode",
+        "judicialSection",
+        "caseCategory",
+        "benchType",
+        "stateCode"
+      ],
+      "enumLookup": {
+        "caseType": {
+          "WP_C": "Writ Petition (Civil)"
+        },
+        "caseStatus": {
+          "DISPOSED": "Disposed"
+        },
+        "courtCode": {
+          "DLHC01": "High Court of Delhi, Delhi"
+        },
+        "judicialSection": {
+          "APP": "Appeal Section"
+        },
+        "caseCategory": {},
+        "benchType": {},
+        "stateCode": {}
+      }
+    }
+  },
+  "meta": {
+    "request_id": "4001822a-0011-aa00-b63f-84710c7967bb"
+  }
+}

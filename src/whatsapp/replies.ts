@@ -492,16 +492,25 @@ export function formatCaseStatus(status: CaseStatus): string {
     `*Case status — ${status.cnr}*`,
     '',
     `• Case Type: ${value(status.caseType)}`,
-    `• Filing Number: ${value(status.caseNumber)}`,
+    // Two different numbers. This printed `caseNumber` on both lines, which
+    // asserted they were the same - on the first real record they were
+    // "9623/2024" and "138/2024".
+    `• Filing Number: ${value(status.filingNumber)}`,
     `• Filing Date: ${value(status.filingDate)}`,
     `• Registration Number: ${value(status.caseNumber)}`,
     `• Registration Date: ${value(status.registrationDate)}`,
     `• CNR Number: ${status.cnr}`,
-    `• First Hearing Date: ${value(status.lastHearingDate)}`,
+    // Was printing lastHearingDate under a "First Hearing" label. The two are
+    // the same day only on a case that has been heard once.
+    `• First Hearing Date: ${value(status.firstHearingDate)}`,
+    `• Last Hearing Date: ${value(status.lastHearingDate)}`,
     `• Next Hearing Date: ${nextHearing}`,
     `• Case Status: ${value(status.status)}`,
     `• Stage of Case: ${value(status.stage)}`,
-    `• Court Number and Judge: ${value(status.judge)}`,
+    // The court was mapped and then never printed - so a card told an advocate
+    // everything about a matter except which court it is in.
+    `• Court: ${value(status.court)}`,
+    `• Judge: ${value(status.judge)}`,
     `• Petitioner and Advocate: ${pair(status.petitioner, status.petitionerAdvocate)}`,
     `• Respondent and Advocate: ${pair(status.respondent, status.respondentAdvocate)}`,
     '',
