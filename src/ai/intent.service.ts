@@ -1,7 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { getLogger } from '../common/logger';
 import { QueryIntent } from '../database/types';
-import { ActCode, extractCnr, extractSectionReference, normaliseActCode } from './legal-patterns';
+import {
+  ActCode,
+  extractCnr,
+  extractOrderReference,
+  extractSectionReference,
+  normaliseActCode,
+} from './legal-patterns';
 import { INTENT_CLASSIFIER_SYSTEM } from './prompts';
 import { parseJsonLoose } from './providers/llm-provider.interface';
 import { ProviderRegistry } from './providers/provider.registry';
@@ -47,12 +53,13 @@ export class IntentService {
     // answer even if the LLM call fails entirely.
     const regexCnr = extractCnr(text);
     const { section: regexSection, act: regexAct } = extractSectionReference(text);
+    const regexOrder = extractOrderReference(text);
 
     // Some messages do not need a model to understand. Answering them still
     // cost a full router round trip - roughly a second of the advocate's time,
     // and a billed call - before the switch downstream threw the classification
     // away and sent a fixed menu. See fastPath() for what qualifies.
-    const fast = this.fastPath(text, regexCnr);
+    const fast = this.fastPath(text, regexCnr, regexOrder, regexAct);
     if (fast) {
       this.logger.debug({ intent: fast.intent }, 'Intent resolved without the router model');
       return fast;
@@ -85,6 +92,25 @@ export class IntentService {
     if (regexSection && !classified.sectionNumber) classified.sectionNumber = regexSection;
     if (regexAct && !classified.actCode) classified.actCode = regexAct;
 
+    /*
+     * An Order of the CPC is a provision, not a research topic.
+     *
+     * "order 32 CPC" was classified PRECEDENT_SEARCH and answered with ten
+     * unrelated Patna judgments. The model has no reliable sense of this - it
+     * sees the word "order" and thinks of judgments - but the regex is certain,
+     * so the regex decides. Same principle as the CNR override above.
+     *
+     * DRAFTING_HELP is left alone: "draft an application under Order 39" is a
+     * drafting request that happens to name a provision.
+     */
+    if (
+      regexOrder &&
+      (classified.intent === 'PRECEDENT_SEARCH' || classified.intent === 'GENERAL_LEGAL')
+    ) {
+      classified.intent = 'SECTION_LOOKUP';
+    }
+    if (regexOrder && !classified.sectionNumber) classified.sectionNumber = regexOrder;
+
     return classified;
   }
 
@@ -112,7 +138,12 @@ export class IntentService {
    * acceptable because none of these branches generate prose from the query: the
    * menu is templated, and small talk passes the raw text to the LLM anyway.
    */
-  private fastPath(text: string, cnr: string | null): ClassifiedIntent | null {
+  private fastPath(
+    text: string,
+    cnr: string | null,
+    order: string | null = null,
+    act: ActCode | null = null,
+  ): ClassifiedIntent | null {
     const trimmed = text.trim();
     const lower = trimmed.toLowerCase();
     const language = /[ऀ-ॿ]/.test(trimmed) ? 'hi' : 'en';
@@ -141,6 +172,25 @@ export class IntentService {
     // question the model should see.
     if (cnr && trimmed.replace(/[\s-]/g, '').length === cnr.length) {
       return { ...base, intent: 'CASE_STATUS', confidence: 0.99 };
+    }
+
+    /*
+     * A bare Order reference - "order 32 CPC", "O.37 R.3".
+     *
+     * Short and unambiguous, so it does not need the router model, and the
+     * router model gets it wrong: it reads "order" as "judgment" and sends a
+     * procedural question to case-law search. Length-capped so "what did the
+     * court hold about Order 39 injunctions in NDPS matters" still reaches the
+     * model, which is genuinely a research question.
+     */
+    if (order && trimmed.length <= 32) {
+      return {
+        ...base,
+        intent: 'SECTION_LOOKUP',
+        sectionNumber: order,
+        actCode: act ?? 'CPC',
+        confidence: 0.97,
+      };
     }
 
     return null;

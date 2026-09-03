@@ -28,7 +28,7 @@ Return ONLY a JSON object with exactly these keys:
 
 Intent guidance:
 - CASE_STATUS: asking about the status, next hearing date, or details of a specific case, usually with a CNR or case number.
-- SECTION_LOOKUP: asking what a statutory provision says, its punishment, or whether it is bailable/cognizable.
+- SECTION_LOOKUP: asking what a statutory provision says, its punishment, or whether it is bailable/cognizable. This includes Orders and Rules of the Civil Procedure Code - "Order 32 CPC", "O.37 R.3" - which are provisions, not judgments. The word "order" there does not mean a court order.
 - PRECEDENT_SEARCH: looking for case law, judgments, rulings or precedents on a legal question.
 - DRAFTING_HELP: asking for help drafting a notice, petition, application or affidavit.
 - GENERAL_LEGAL: a legal question that needs no corpus lookup.
@@ -39,6 +39,7 @@ Intent guidance:
 Notes on Indian usage:
 - Hinglish is common. "302 ka punishment kya hai" is SECTION_LOOKUP with section_number "302".
 - Users write sections many ways: "s.302", "sec 302", "u/s 302", "section 302 IPC". Normalise to the bare number.
+- The CPC's procedure lives in Orders and Rules, not sections: "Order 32", "Order 37 Rule 3", "O.32 R.1". Put these in section_number verbatim as "Order 32" or "Order 37 Rule 3", and act_code "CPC".
 - Since 1 July 2024 the BNS replaced the IPC and the BNSS replaced the CrPC. If the user names neither, leave act_code null and let the search handle it.
 - A CNR is 16 characters: 4 letters (state+district), 2 alphanumeric (establishment), 6 digits (case number), 4 digits (year).
 
@@ -243,6 +244,52 @@ Absolute rules:
 
 Reply with JSON only, no code fence:
 {"principles":[{"n":1,"principle":"..."},{"n":2,"principle":"NONE"}]}`;
+}
+
+/**
+ * The advocate named a provision the corpus has no text for.
+ *
+ * ## Why this is not just the general prompt
+ *
+ * The general prompt forbids stating any section number it was not given. That
+ * rule exists to stop invented *case citations*, which is the failure this
+ * product is built to prevent - and applied to statutes it made the bot useless
+ * for most of civil practice. The seeded corpus is ~28 sections of the criminal
+ * codes and the Evidence Act; the CPC's Orders are not in it, so "what does
+ * Order 32 CPC say" got an answer that declined to say.
+ *
+ * A provision the advocate themselves named is a different object from a
+ * citation the model chose. It is published, fixed, and checkable in a minute
+ * against the bare Act - and this reply says so rather than implying it was
+ * verified. What stays forbidden is unchanged: no case citations, and no
+ * inventing a *different* provision to support the answer.
+ *
+ * ## The failure this has to avoid
+ *
+ * Confidently describing the wrong Order. Order numbers are close together and
+ * easy to transpose - 33 is indigent persons, 34 is mortgages, 37 is summary
+ * procedure - so the instruction is to decline rather than guess, and to say
+ * which provision it is actually describing so a wrong one is visible
+ * immediately rather than after it has been relied on.
+ */
+export function buildUnverifiedProvisionPrompt(provision: string, language: string): string {
+  return `${VAKEEL_PERSONA}
+
+The advocate asked about *${provision}*. There is no text for it in the corpus, so you are answering from general knowledge of Indian law.
+
+What to do:
+- Name the provision at the top of the reply, in full, exactly as you understand it - e.g. "Order 33 CPC - suits by indigent persons". If your understanding of what that number covers differs from what they seem to expect, say so plainly. Getting an Order number wrong is the one mistake here that costs them real time.
+- Then answer: what it provides for, the procedure it sets out, and the practical points that matter in a filing.
+- If you are not confident which provision that reference is, say exactly that in one sentence and stop. Do not guess between two candidates.
+
+Hard limits:
+- Do NOT cite any case. You have been given none, and a case named here would be invented.
+- Do NOT cite a *different* section or Order as authority for what you are saying, unless it is one the provision itself cross-refers to and you are certain of it.
+- Close with one short line: this is from general knowledge and is not verified against the judgment corpus. One line, at the end, not repeated.
+
+${WHATSAPP_FORMATTING}
+
+${languageInstruction(language)}`;
 }
 
 // -----------------------------------------------------------------------------

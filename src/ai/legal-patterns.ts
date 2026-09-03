@@ -42,8 +42,16 @@ export function isValidCnr(cnr: string): boolean {
   return year >= 1950 && year <= new Date().getFullYear() + 1;
 }
 
-/** Acts we can resolve section references against. */
-export const KNOWN_ACTS = ['IPC', 'BNS', 'CRPC', 'BNSS', 'IEA', 'BSA'] as const;
+/**
+ * Acts we can resolve provision references against.
+ *
+ * CPC was missing, which made every civil-procedure question unrecognisable:
+ * "order 32 CPC" extracted no act, no provision, and fell through to the
+ * classifier as free text - which sent a question about a procedural rule to a
+ * case-law search. The list was assembled from the criminal side of practice
+ * and never revisited, and civil litigation is most of the work.
+ */
+export const KNOWN_ACTS = ['IPC', 'BNS', 'CRPC', 'BNSS', 'IEA', 'BSA', 'CPC'] as const;
 export type ActCode = (typeof KNOWN_ACTS)[number];
 
 const ACT_ALIASES: Record<string, ActCode> = {
@@ -66,6 +74,9 @@ const ACT_ALIASES: Record<string, ActCode> = {
   bsa: 'BSA',
   'bharatiya sakshya adhiniyam': 'BSA',
   'sakshya adhiniyam': 'BSA',
+  cpc: 'CPC',
+  'civil procedure code': 'CPC',
+  'code of civil procedure': 'CPC',
 };
 
 export function normaliseActCode(raw: string | null | undefined): ActCode | null {
@@ -82,8 +93,12 @@ export function normaliseActCode(raw: string | null | undefined): ActCode | null
  * "156(3)" are kept intact because they change the meaning entirely.
  */
 export function extractSectionReference(text: string): { section: string | null; act: ActCode | null } {
+  // `crpc` and the criminal codes are listed before `cpc`, and `code of
+  // criminal procedure` before `code of civil procedure`, because the regex
+  // engine takes the first alternative that matches at a position - and "CrPC"
+  // read as "CPC" would answer a criminal question with civil procedure.
   const actMatch =
-    /\b(ipc|bns|crpc|cr\.?p\.?c|bnss|iea|bsa|indian penal code|penal code|bharatiya nyaya sanhita|nyaya sanhita|criminal procedure code|code of criminal procedure|bharatiya nagarik suraksha sanhita|evidence act|indian evidence act|bharatiya sakshya adhiniyam)\b/i.exec(
+    /\b(ipc|bns|crpc|cr\.?p\.?c|bnss|iea|bsa|cpc|indian penal code|penal code|bharatiya nyaya sanhita|nyaya sanhita|code of criminal procedure|criminal procedure code|bharatiya nagarik suraksha sanhita|evidence act|indian evidence act|bharatiya sakshya adhiniyam|code of civil procedure|civil procedure code)\b/i.exec(
       text,
     );
 
@@ -114,6 +129,66 @@ export function extractSectionReference(text: string): { section: string | null;
   }
 
   return { section: null, act };
+}
+
+/**
+ * A reference to an Order (and optionally a Rule) of the Civil Procedure Code.
+ *
+ * ## Why this is separate from a section number
+ *
+ * The CPC is not organised into sections the way the IPC is. Its substantive
+ * body has sections, but the procedure practitioners actually cite lives in the
+ * First Schedule, as Orders divided into Rules - "Order 32", "Order 37 Rule 3".
+ * An advocate asking about civil procedure names an Order, and the section
+ * matcher has no concept of one, so the whole question read as free text.
+ *
+ * Returned as a display string rather than a number because "Order 37 Rule 3"
+ * is one reference, not two, and splitting it loses which rule of which order.
+ *
+ * Deliberately not matched without a following number: "order" is an ordinary
+ * English word and appears in "interim order", "order sheet" and "order of the
+ * court", none of which is a citation.
+ */
+export function extractOrderReference(text: string): string | null {
+  /*
+   * The numeral must end on a word boundary, and a Roman one must be at least
+   * two characters.
+   *
+   * Without either, "interim order in a bail matter" reads the "i" of "in" as
+   * Roman one, and answers a bail question with Order 1 of the CPC. The cost of
+   * the second rule is that "Order I" written in Roman is missed; in practice it
+   * is written "Order 1", and a missed reference degrades to an ordinary search
+   * while a false one sends the advocate somewhere unrelated.
+   */
+  const match =
+    /\bo(?:rder)?\.?\s*([IVXLC]{2,}|\d{1,3})\b\s*(?:,?\s*r(?:ule)?\.?\s*(\d{1,3}[A-Z]?))?/i.exec(
+      text,
+    );
+  if (!match) return null;
+
+  // Roman numerals appear on the older reports; normalised so "Order XXXII" and
+  // "Order 32" are the same reference to everything downstream.
+  const order = fromRoman(match[1]);
+  if (!order || order < 1 || order > 51) return null;
+
+  return match[2] ? `Order ${order} Rule ${match[2].toUpperCase()}` : `Order ${order}`;
+}
+
+/** A decimal string, or a Roman numeral, as a number. Null when neither. */
+function fromRoman(value: string): number | null {
+  if (/^\d+$/.test(value)) return Number(value);
+
+  const digits: Record<string, number> = { I: 1, V: 5, X: 10, L: 50, C: 100 };
+  const upper = value.toUpperCase();
+  if (!/^[IVXLC]+$/.test(upper)) return null;
+
+  let total = 0;
+  for (let i = 0; i < upper.length; i++) {
+    const here = digits[upper[i]];
+    const next = digits[upper[i + 1]] ?? 0;
+    total += here < next ? -here : here;
+  }
+  return total;
 }
 
 /**

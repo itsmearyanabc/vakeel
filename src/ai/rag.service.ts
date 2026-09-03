@@ -13,6 +13,7 @@ import {
   buildPrecedentSearchPrompt,
   buildSectionExplanationPrompt,
   buildSmallTalkPrompt,
+  buildUnverifiedProvisionPrompt,
 } from './prompts';
 import { LlmMessage } from './providers/llm-provider.interface';
 import { ProviderRegistry } from './providers/provider.registry';
@@ -93,8 +94,27 @@ export class RagService {
     );
 
     if (statutes.length === 0) {
-      // Nothing matched. Fall through to a general answer rather than
-      // inventing one - the general prompt forbids citing sections outright.
+      /*
+       * Nothing in the corpus for a provision the advocate named by number.
+       *
+       * This fell through to the general prompt, which forbids stating any
+       * section it was not given - so a question about Order 32 CPC produced an
+       * answer that declined to say what Order 32 is. The seeded corpus is ~28
+       * sections of the criminal codes; the CPC's Orders, the NI Act, the
+       * Companies Act and most of what a civil practice runs on are simply not
+       * in it, and refusing them all is refusing the product.
+       *
+       * A provision the advocate named is not a citation the model chose. It is
+       * answered, from general knowledge, and labelled as unverified - see
+       * buildUnverifiedProvisionPrompt for what stays forbidden.
+       */
+      const named = describeProvision(intent);
+      if (named) {
+        const system = buildUnverifiedProvisionPrompt(named, intent.language);
+        return this.generate(system, intent, [], [], started, history, onStage);
+      }
+
+      // No provision named either - a general legal question, answered as one.
       return this.answerGeneral(intent, started, history, onStage);
     }
 
@@ -247,4 +267,22 @@ export class RagService {
       mocked: result.mocked === true,
     };
   }
+}
+
+/**
+ * The provision the advocate named, as a phrase to put in a prompt.
+ *
+ * Null when they named none - "is anticipatory bail maintainable" is a legal
+ * question, not a provision lookup, and answering it as though a provision had
+ * been named would invite the model to pick one.
+ */
+function describeProvision(intent: ClassifiedIntent): string | null {
+  if (!intent.sectionNumber) return null;
+
+  const provision = intent.sectionNumber.trim();
+  const act = intent.actCode;
+
+  // "Order 32" already reads as a provision; a bare "302" needs the word.
+  const head = /^(order|rule)\b/i.test(provision) ? provision : `Section ${provision}`;
+  return act ? `${head} ${act}` : head;
 }
