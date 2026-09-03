@@ -35,6 +35,15 @@ export interface CaseName {
   petitioner: string;
   /** The party after it. */
   respondent: string;
+  /**
+   * The court the advocate named, as they wrote it - "Patna High court".
+   *
+   * Stripped out of the parties, and kept rather than discarded, because it is
+   * the one part of the surrounding text that is worth sending to the search:
+   * Kanoon derives its `doctypes:` restriction from these words, and dropping
+   * them turns a Patna High Court lookup into a search of everything.
+   */
+  court?: string;
 }
 
 /**
@@ -102,12 +111,13 @@ export function extractCaseName(text: string): CaseName | null {
 
   // Trailing court and date qualifiers - "... . Patna High court", "... (2017)"
   // - are context for the search, not part of the name.
-  const trimmed = text
+  const withoutLeadIn = text
     .trim()
     .replace(LEAD_IN, '')
-    .replace(/[.,;]?\s*\(?\b(19|20)\d{2}\)?\s*$/, '')
-    .replace(TRAILING_COURT, '')
-    .trim();
+    .replace(/[.,;]?\s*\(?\b(19|20)\d{2}\)?\s*$/, '');
+
+  const courtMatch = TRAILING_COURT.exec(withoutLeadIn);
+  const trimmed = withoutLeadIn.replace(TRAILING_COURT, '').trim();
 
   const parts = trimmed.split(SEPARATOR);
   if (parts.length !== 2) return null;
@@ -122,7 +132,8 @@ export function extractCaseName(text: string): CaseName | null {
   // answering it as a topic.
   if (words(petitioner).length > 8 || words(respondent).length > 8) return null;
 
-  return { petitioner, respondent };
+  const court = courtMatch ? courtMatch[0].replace(/^[\s.,;]+/, '').trim() : undefined;
+  return court ? { petitioner, respondent, court } : { petitioner, respondent };
 }
 
 /**

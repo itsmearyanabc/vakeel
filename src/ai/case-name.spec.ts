@@ -1,4 +1,5 @@
 import { CASE_NAME_MATCH, caseNameScore, extractCaseName } from './case-name';
+import { kanoonQuery } from './precedents.service';
 
 /**
  * Reported from a live session, with the screenshot.
@@ -54,7 +55,7 @@ describe('spotting that a judgment was named', () => {
       'Rajesh Kumar Mittal vs State of Bihar Patna High Court',
       'case law on Rajesh Kumar Mittal vs State of Bihar',
     ]) {
-      expect(extractCaseName(phrasing)).toEqual({
+      expect(extractCaseName(phrasing)).toMatchObject({
         petitioner: 'Rajesh Kumar Mittal',
         respondent: 'State of Bihar',
       });
@@ -82,12 +83,20 @@ describe('spotting that a judgment was named', () => {
     expect(extractCaseName('X vs Delhi High Court')).toBeNull();
   });
 
-  it('strips the court and year the advocate added as context', () => {
-    // "Patna High court" narrows the search; it is not part of the cause title,
-    // and leaving it on made the respondent "State of Bihar . Patna High court".
+  it('takes the court and year out of the parties, and keeps the court', () => {
+    /*
+     * "Patna High court" is not part of the cause title - leaving it on made the
+     * respondent "State of Bihar . Patna High court".
+     *
+     * It is returned rather than discarded because it is the one word in the
+     * surrounding text that still narrows the search: Kanoon derives its
+     * doctypes: restriction from it. Throwing it away would fix the parties and
+     * quietly widen a Patna High Court lookup to every court in India.
+     */
     expect(extractCaseName(ASKED)).toEqual({
       petitioner: 'Rajesh Kumar Mittal',
       respondent: 'State of Bihar',
+      court: 'Patna High court',
     });
     expect(extractCaseName('Vishaka vs State of Rajasthan (1997)')).toEqual({
       petitioner: 'Vishaka',
@@ -175,5 +184,41 @@ describe('scoring a title against the name that was asked for', () => {
     const vague = extractCaseName('State vs State')!;
 
     expect(caseNameScore(vague, 'Anything vs Anything Else')).toBe(0);
+  });
+});
+
+describe('what actually gets sent to Indian Kanoon', () => {
+  /*
+   * The second half of the same report: the bot said "no judgment found" for a
+   * case the advocate could see on Kanoon's own site.
+   *
+   * Kanoon ranks by relevance across every word it is given, and it was being
+   * given the router's rewrite - "case law for Rajesh Kumar Mittal vs State of
+   * Bihar in Patna High Court". Five of those words identify the judgment and
+   * the rest are scaffolding, so the signal is a third of the string. Once a
+   * cause title has been recognised, the parties are the query.
+   */
+  it('searches for the parties, not the sentence around them', () => {
+    expect(kanoonQuery('case law for Rajesh Kumar Mittal vs State of Bihar', 'rewritten')).toBe(
+      'Rajesh Kumar Mittal State of Bihar',
+    );
+  });
+
+  it('keeps the court, because that is what narrows the search', () => {
+    // Kanoon's doctypes: restriction is derived from phrases like "Patna High
+    // Court". Dropping them turns a High Court lookup into a search of
+    // everything, which is how a precise question gets a vague answer.
+    expect(kanoonQuery('case of Rajesh Kumar Mittal vs State of Bihar . Patna High court', 'x')).toBe(
+      'Rajesh Kumar Mittal State of Bihar Patna High court',
+    );
+    expect(extractCaseName('Vishaka vs State of Rajasthan')?.court).toBeUndefined();
+  });
+
+  it('leaves an ordinary question with the rewrite, which is what it is for', () => {
+    // "anticipatory bail after chargesheet" is better searched in the model's
+    // legal vocabulary than in the advocate's phrasing.
+    expect(kanoonQuery('is anticipatory bail maintainable', 'anticipatory bail after chargesheet')).toBe(
+      'anticipatory bail after chargesheet',
+    );
   });
 });

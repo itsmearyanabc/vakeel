@@ -124,6 +124,7 @@ export class IntentService {
      */
     if (
       regexOrder &&
+      !asksForJudgments(text) &&
       (classified.intent === 'PRECEDENT_SEARCH' || classified.intent === 'GENERAL_LEGAL')
     ) {
       classified.intent = 'SECTION_LOOKUP';
@@ -208,7 +209,7 @@ export class IntentService {
      * court hold about Order 39 injunctions in NDPS matters" still reaches the
      * model, which is genuinely a research question.
      */
-    if (order && trimmed.length <= 32) {
+    if (order && trimmed.length <= 32 && !asksForJudgments(trimmed)) {
       return {
         ...base,
         intent: 'SECTION_LOOKUP',
@@ -286,4 +287,31 @@ export class IntentService {
       confidence: 0.3,
     };
   }
+}
+
+/**
+ * Did the advocate ask for judgments, rather than for what a provision says?
+ *
+ * ## Why the Order override needs this
+ *
+ * "order 32 CPC" is a provision lookup and the router model gets it wrong,
+ * reading "order" as "judgment" - so the regex overrides it. That override was
+ * unconditional, and it swallowed the opposite case: "list of judgements for
+ * order 32 cpc" was forced to SECTION_LOOKUP, found no CPC text in the corpus,
+ * and answered "I don't have a specific list of judgments for Order 32 CPC.
+ * You might need to look into legal databases" - to a bot whose entire third
+ * feature is a judgment database.
+ *
+ * The provision is the *subject* of that question, not the request. When the
+ * advocate has named the thing they want, they are not guessing and the model
+ * is not needed: the words are explicit, so they decide.
+ *
+ * Kept narrow deliberately. "What does Order 32 provide" and "explain Order 37
+ * Rule 3" say nothing about judgments and must still be overridden, or the
+ * original bug comes straight back.
+ */
+export function asksForJudgments(text: string): boolean {
+  return /\b(judgment|judgement|judgments|judgements|case\s*laws?|precedents?|rulings?|authorit(?:y|ies)|citations?|decisions?|digests?)\b/i.test(
+    text,
+  );
 }

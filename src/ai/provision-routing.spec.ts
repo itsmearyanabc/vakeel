@@ -238,3 +238,67 @@ describe('recognising a constitutional Article', () => {
     expect(intent.actCode).toBe('COI');
   });
 });
+
+describe('asking for judgments about a provision', () => {
+  /*
+   * The other side of the Order override, and it was a regression I introduced
+   * fixing the first side.
+   *
+   * "order 32 CPC" is a provision lookup, and the router model gets it wrong -
+   * it sees "order" and thinks judgment - so the regex overrides it. That
+   * override was unconditional, and it caught the opposite case too. "list of
+   * judgements for order 32 cpc" was forced to SECTION_LOOKUP, found no CPC
+   * text in the corpus, and answered "I don't have a specific list of judgments
+   * for Order 32 CPC. You might need to look into legal databases" - from a bot
+   * whose third feature is a judgment database.
+   *
+   * The provision is the *subject* of that question, not the request. When the
+   * advocate names what they want, the model does not need to guess and the
+   * override must stand down.
+   */
+  function service(modelIntent = 'PRECEDENT_SEARCH') {
+    const registry = {
+      complete: jest.fn().mockResolvedValue({
+        text: JSON.stringify({ intent: modelIntent, language: 'en', search_query: 'q' }),
+        model: 'mock',
+        inputTokens: 0,
+        outputTokens: 0,
+      }),
+    };
+    return new IntentService(registry as never);
+  }
+
+  it.each([
+    'list of judgements for order 32 cpc',
+    'judgments on order 39 rule 1 CPC',
+    'case law for article 226',
+    'precedents under Order 37 CPC',
+    'rulings on Order 7 Rule 11',
+  ])('leaves %p as a precedent search', async (text) => {
+    const intent = await service().classify(text);
+
+    expect(intent.intent).toBe('PRECEDENT_SEARCH');
+  });
+
+  it('still carries the provision so retrieval can use it', async () => {
+    // Standing down from the override must not also throw away what was
+    // extracted - the section filter is what keeps the results on topic.
+    const intent = await service().classify('list of judgements for order 32 cpc');
+
+    expect(intent.sectionNumber).toBe('Order 32');
+    expect(intent.actCode).toBe('CPC');
+  });
+
+  it.each([
+    'order 32 CPC',
+    'what does order 32 cpc provide',
+    'explain Order 37 Rule 3',
+    'article 226',
+  ])('still overrides %p, which asks for no judgments', async (text) => {
+    // The narrowness is the point. If these stopped being overridden, the
+    // original bug is back.
+    const intent = await service().classify(text);
+
+    expect(intent.intent).toBe('SECTION_LOOKUP');
+  });
+});

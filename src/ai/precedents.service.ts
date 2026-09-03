@@ -25,6 +25,37 @@ function display(name: CaseName): string {
   return `${name.petitioner} vs ${name.respondent}`;
 }
 
+/**
+ * What Indian Kanoon is actually asked.
+ *
+ * ## Why a named case is not searched with the question around it
+ *
+ * Kanoon ranks by relevance over every word it is given. Handed "case law for
+ * Rajesh Kumar Mittal vs State of Bihar in Patna High Court" - which is what
+ * the router's rewrite produces - it is scoring "case", "law", "for", "in" and
+ * "court" alongside the two things that identify the judgment. The signal is a
+ * third of the string and the noise is the rest, and the case does not surface
+ * even when Kanoon plainly has it.
+ *
+ * When a cause title has been recognised, the parties are the query. Nothing
+ * else in the sentence narrows anything.
+ *
+ * The court comes along because it is the one remaining word that does narrow
+ * something: Kanoon's `doctypes:` restriction is derived from phrases like
+ * "Patna High Court", and applyCourtFilter needs to see them to add it. Drop
+ * them and a High Court lookup silently becomes a search of everything.
+ *
+ * Anything that is not a cause title keeps the rewrite, which is what it is
+ * for: "anticipatory bail after chargesheet" is better searched in the model's
+ * legal vocabulary than in the advocate's.
+ */
+export function kanoonQuery(typed: string, rewritten: string): string {
+  const name = extractCaseName(typed);
+  if (!name) return rewritten;
+
+  return [name.petitioner, name.respondent, name.court].filter(Boolean).join(' ');
+}
+
 export interface PrecedentSearchResult {
   /** Already sorted newest-first, whichever source produced them. */
   precedents: PrecedentRow[];
@@ -109,7 +140,10 @@ export class PrecedentsService {
 
     if (useKanoon) {
       try {
-        const found = await this.kanoon.search(intent.searchQuery, this.maxResults);
+        const found = await this.kanoon.search(
+          kanoonQuery(intent.rawText, intent.searchQuery),
+          this.maxResults,
+        );
         const { precedents, namedCaseNotFound } = this.forNamedCase(intent.rawText, found);
         return {
           precedents: await this.withPrinciples(precedents),
