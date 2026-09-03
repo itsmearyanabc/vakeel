@@ -11,6 +11,7 @@ import { SettingsService } from '../settings/settings.service';
 import { CAVEAT, RETURN_TO_MENU } from '../whatsapp/replies';
 import { EmbeddingService } from './embedding.service';
 import { ClassifiedIntent } from './intent.service';
+import { CASE_NAME_MATCH, CaseName, caseNameScore, extractCaseName } from './case-name';
 import { expandQuery } from './legal-patterns';
 import { buildPrincipleSummaryPrompt } from './prompts';
 import { parseJsonLoose } from './providers/llm-provider.interface';
@@ -18,6 +19,11 @@ import { ProviderRegistry } from './providers/provider.registry';
 
 /** Named so the extract builder below reads as prose rather than escapes. */
 const NEWLINE = '\n';
+
+/** The name as the advocate would recognise it, for quoting back to them. */
+function display(name: CaseName): string {
+  return `${name.petitioner} vs ${name.respondent}`;
+}
 
 export interface PrecedentSearchResult {
   /** Already sorted newest-first, whichever source produced them. */
@@ -28,6 +34,16 @@ export interface PrecedentSearchResult {
   lexicalOnly: boolean;
   /** Which backend actually answered - shown to the user and logged. */
   source: 'local' | 'kanoon';
+  /**
+   * Set when the advocate asked for a judgment by name and nothing in the
+   * results is that judgment.
+   *
+   * Carried rather than inferred at render time, because deciding it needs the
+   * name they gave and the titles that came back - and the second page has
+   * neither. Without it, page two of a failed lookup reads like a successful
+   * topic search.
+   */
+  namedCaseNotFound?: string;
   latencyMs: number;
 }
 
@@ -93,9 +109,11 @@ export class PrecedentsService {
 
     if (useKanoon) {
       try {
-        const precedents = await this.kanoon.search(intent.searchQuery, this.maxResults);
+        const found = await this.kanoon.search(intent.searchQuery, this.maxResults);
+        const { precedents, namedCaseNotFound } = this.forNamedCase(intent.searchQuery, found);
         return {
           precedents: await this.withPrinciples(precedents),
+          namedCaseNotFound,
           totalMatches: precedents[0]?.total_matches ?? precedents.length,
           // Kanoon runs its own relevance ranking; the local dense/lexical
           // distinction does not apply, so this is never a degraded state.
@@ -144,12 +162,67 @@ export class PrecedentsService {
       'Precedent search complete',
     );
 
+    const named = this.forNamedCase(intent.searchQuery, precedents);
+
     return {
-      precedents: await this.withPrinciples(precedents),
+      precedents: await this.withPrinciples(named.precedents),
+      namedCaseNotFound: named.namedCaseNotFound,
       totalMatches: precedents[0]?.total_matches ?? precedents.length,
       lexicalOnly: !embedding,
       source: 'local',
       latencyMs: Date.now() - started,
+    };
+  }
+
+  /**
+   * When the advocate named a judgment, put that judgment first - or say it is
+   * not there.
+   *
+   * ## The reply this replaces
+   *
+   * "case of Rajesh Kumar Mittal vs State of Bihar . Patna High court" was
+   * answered with "Case law - 10 precedents" and *Sunil Bharti Mittal vs The
+   * State Of Bihar* at number one. Relevance ranking was working exactly as
+   * designed: given free text, "Mittal" and "State of Bihar" are the best
+   * lexical match available once the named case is not in the result set.
+   *
+   * The error is a level up. A request for one named judgment and a request for
+   * authority on a question are different questions, and the second answer -
+   * ten cases, newest first, no caveat - was being given to both. An advocate
+   * reading it has no way to tell that the case they asked for is simply absent.
+   *
+   * So: matches to the front, and when there are none, a flag the formatter
+   * turns into a plain sentence. The results are still shown, because the
+   * closest names are genuinely useful when a title was misremembered - they
+   * are just no longer presented as if they were what was asked for.
+   *
+   * Note what is *not* claimed. Absence from the index is not absence from the
+   * law reports, so nothing here says the case does not exist.
+   */
+  private forNamedCase(
+    query: string,
+    rows: PrecedentRow[],
+  ): { precedents: PrecedentRow[]; namedCaseNotFound?: string } {
+    const name = extractCaseName(query);
+    if (!name || rows.length === 0) return { precedents: rows };
+
+    const scored = rows.map((row) => ({ row, score: caseNameScore(name, row.case_title) }));
+    const matches = scored.filter((s) => s.score >= CASE_NAME_MATCH);
+
+    if (matches.length === 0) {
+      this.logger.info(
+        { petitioner: name.petitioner, respondent: name.respondent, candidates: rows.length },
+        'Named case not found in the results - the reply will say so',
+      );
+      return { precedents: rows, namedCaseNotFound: display(name) };
+    }
+
+    // Best match first, then the rest in the order retrieval produced. The
+    // chronological requirement is for a topic search; somebody who named one
+    // case wants that case at the top, not the newest thing sharing a surname.
+    const rest = scored.filter((s) => s.score < CASE_NAME_MATCH).map((s) => s.row);
+    return {
+      precedents: [...matches.sort((a, b) => b.score - a.score).map((s) => s.row), ...rest],
     };
   }
 
@@ -494,7 +567,7 @@ export function formatPrecedentPage(
   offset: number,
   pageSize: number,
   query: string,
-  opts: { lexicalOnly?: boolean; source?: 'local' | 'kanoon' } = {},
+  opts: { lexicalOnly?: boolean; source?: 'local' | 'kanoon'; namedCaseNotFound?: string } = {},
 ): string {
   if (all.length === 0) {
     return [
@@ -510,12 +583,33 @@ export function formatPrecedentPage(
   const page = all.slice(offset, offset + pageSize);
   const shownTo = offset + page.length;
 
-  const header = [
-    `*Case law — ${all.length} precedent${all.length === 1 ? '' : 's'}*`,
-    `_${query}_`,
-    '',
-    `Showing ${offset + 1}–${shownTo} of ${all.length}, newest first.`,
-  ];
+  /*
+   * A failed name lookup must not wear the successful search's heading.
+   *
+   * "Case law - 10 precedents" over ten judgments that are not the one asked
+   * for is the whole complaint: nothing in that reply tells the advocate the
+   * named case is absent, so the first result reads as the answer.
+   *
+   * The closest names are still worth showing - titles get misremembered, and
+   * the right case is often two words away - but they are labelled as what they
+   * are. And the sentence stops short of "no such case": absence from the index
+   * is not absence from the reports, and that is not a claim this can make.
+   */
+  const header = opts.namedCaseNotFound
+    ? [
+        `*No judgment found named "${opts.namedCaseNotFound}"*`,
+        '',
+        'I could not find that case. It may be reported under a slightly ' +
+          'different cause title, or not be in the searchable record.',
+        '',
+        `*Closest matches by name* — showing ${offset + 1}–${shownTo} of ${all.length}.`,
+      ]
+    : [
+        `*Case law — ${all.length} precedent${all.length === 1 ? '' : 's'}*`,
+        `_${query}_`,
+        '',
+        `Showing ${offset + 1}–${shownTo} of ${all.length}, newest first.`,
+      ];
 
   if (opts.lexicalOnly) {
     // Say so rather than quietly returning worse results.

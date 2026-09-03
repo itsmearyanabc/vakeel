@@ -278,3 +278,58 @@ describe('precedent formatting', () => {
     });
   });
 });
+
+describe('a judgment asked for by name and not found', () => {
+  /*
+   * The heading is the defect. "Case law - 10 precedents" over ten judgments
+   * that are not the one asked for tells the advocate nothing is wrong, so the
+   * first result reads as the answer - and the first result was *Sunil Bharti
+   * Mittal vs The State Of Bihar* for a question about Rajesh Kumar Mittal.
+   */
+  const rows = [
+    row({ judgment_id: 'k1', case_title: 'Sunil Bharti Mittal vs The State Of Bihar' }),
+    row({ judgment_id: 'k2', case_title: 'Baliram Prasad Singh & Ors vs The State Of Bihar & Ors' }),
+  ];
+
+  it('says so instead of calling them precedents', () => {
+    const page = formatPrecedentPage(rows, 0, 5, 'Rajesh Kumar Mittal vs State of Bihar', {
+      namedCaseNotFound: 'Rajesh Kumar Mittal vs State of Bihar',
+    });
+
+    expect(page).toContain('No judgment found named "Rajesh Kumar Mittal vs State of Bihar"');
+    expect(page).not.toContain('Case law —');
+  });
+
+  it('offers the near misses as near misses', () => {
+    // Still worth showing: cause titles get misremembered, and the right case
+    // is often two words away. Just not presented as what was asked for.
+    const page = formatPrecedentPage(rows, 0, 5, 'q', { namedCaseNotFound: 'A vs B' });
+
+    expect(page).toContain('Closest matches by name');
+    expect(page).toContain('Sunil Bharti Mittal');
+  });
+
+  it('does not claim the case does not exist', () => {
+    // Absence from the searchable record is not absence from the law reports,
+    // and an advocate cannot check a claim like that.
+    const page = formatPrecedentPage(rows, 0, 5, 'q', { namedCaseNotFound: 'A vs B' });
+
+    expect(page).toMatch(/could not find that case/i);
+    expect(page).not.toMatch(/does not exist|no such case/i);
+  });
+
+  it('keeps the caveat on the second page too', () => {
+    // Without the flag carried through the session, page two reverted to the
+    // confident heading and read like a search that had worked.
+    const page = formatPrecedentPage(rows, 1, 5, 'q', { namedCaseNotFound: 'A vs B' });
+
+    expect(page).toContain('No judgment found named');
+  });
+
+  it('is absent from an ordinary topic search', () => {
+    const page = formatPrecedentPage(rows, 0, 5, 'anticipatory bail');
+
+    expect(page).toContain('Case law —');
+    expect(page).not.toContain('No judgment found named');
+  });
+});

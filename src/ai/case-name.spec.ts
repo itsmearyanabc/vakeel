@@ -1,0 +1,127 @@
+import { CASE_NAME_MATCH, caseNameScore, extractCaseName } from './case-name';
+
+/**
+ * Reported from a live session, with the screenshot.
+ *
+ * The advocate asked for "case of Rajesh Kumar Mittal vs State of Bihar . Patna
+ * High court". The reply was headed "Case law - 10 precedents" and the first
+ * result was *Sunil Bharti Mittal vs The State Of Bihar*. Nothing in it was
+ * marked uncertain - ten unrelated judgments, in the confident format used for
+ * a topic search that worked.
+ *
+ * Relevance ranking was doing its job. Given free text, "Mittal" and "State of
+ * Bihar" are the best lexical match available once the named case is not in the
+ * result set. The mistake is one level up: a request for one named judgment and
+ * a request for authority on a question are different questions, and both were
+ * getting the second answer.
+ */
+
+const ASKED = 'case of Rajesh Kumar Mittal vs State of Bihar . Patna High court';
+
+describe('spotting that a judgment was named', () => {
+  it.each([
+    ['case of Rajesh Kumar Mittal vs State of Bihar', 'Rajesh Kumar Mittal', 'State of Bihar'],
+    ['Rajesh Kumar Mittal vs State of Bihar', 'Rajesh Kumar Mittal', 'State of Bihar'],
+    ['Kesavananda Bharati v. State of Kerala', 'Kesavananda Bharati', 'State of Kerala'],
+    ['Maneka Gandhi versus Union of India', 'Maneka Gandhi', 'Union of India'],
+    ['judgment of Vishaka vs State of Rajasthan', 'Vishaka', 'State of Rajasthan'],
+    ['M/s Tata Steel Ltd vs Union of India', 'M/s Tata Steel Ltd', 'Union of India'],
+  ])('reads %p', (text, petitioner, respondent) => {
+    expect(extractCaseName(text)).toEqual({ petitioner, respondent });
+  });
+
+  it('strips the court and year the advocate added as context', () => {
+    // "Patna High court" narrows the search; it is not part of the cause title,
+    // and leaving it on made the respondent "State of Bihar . Patna High court".
+    expect(extractCaseName(ASKED)).toEqual({
+      petitioner: 'Rajesh Kumar Mittal',
+      respondent: 'State of Bihar',
+    });
+    expect(extractCaseName('Vishaka vs State of Rajasthan (1997)')).toEqual({
+      petitioner: 'Vishaka',
+      respondent: 'State of Rajasthan',
+    });
+  });
+
+  it.each([
+    'is anticipatory bail maintainable after a chargesheet is filed',
+    'what is IPC 420',
+    'order 32 CPC',
+    'precedents on cheque bounce',
+    'bail',
+    '',
+  ])('does not read %p as a case name', (text) => {
+    // Null is the common answer and the right one. A topic search must go on
+    // being a topic search.
+    expect(extractCaseName(text)).toBeNull();
+  });
+
+  it('does not read a sentence containing "vs" as a cause title', () => {
+    // The separator appears in ordinary prose. A whole clause either side of it
+    // is a question, and answering it with a name lookup is worse than
+    // answering it as a topic.
+    expect(
+      extractCaseName(
+        'when is bail granted if the accused and the complainant vs each other have settled the entire dispute amicably',
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('scoring a title against the name that was asked for', () => {
+  const name = extractCaseName(ASKED)!;
+
+  it('matches the case that was actually asked for', () => {
+    expect(caseNameScore(name, 'Rajesh Kumar Mittal vs The State Of Bihar')).toBe(1);
+    expect(caseNameScore(name, 'Rajesh Kumar Mittal vs State Of Bihar & Ors')).toBe(1);
+  });
+
+  it('rejects the one that was returned instead', () => {
+    /*
+     * The whole point. *Sunil Bharti Mittal vs The State Of Bihar* shares one
+     * surname and the universal respondent, and it came first.
+     *
+     * 1 of 3 distinctive petitioner tokens x 0.75, plus a respondent that
+     * matches completely and is worth 0.25 - because "vs State of Bihar" is
+     * shared by tens of thousands of judgments and must never carry a result on
+     * its own.
+     */
+    const score = caseNameScore(name, 'Sunil Bharti Mittal vs The State Of Bihar');
+
+    expect(score).toBeCloseTo(0.5, 5);
+    expect(score).toBeLessThan(CASE_NAME_MATCH);
+  });
+
+  it('rejects a title agreeing only on the respondent', () => {
+    expect(caseNameScore(name, 'Baliram Prasad Singh & Ors vs The State Of Bihar & Ors')).toBeLessThan(
+      CASE_NAME_MATCH,
+    );
+  });
+
+  it('still finds the case when the title is quoted from memory', () => {
+    // Advocates type "Mittal vs State of Bihar" far more often than the full
+    // cause title, and that has to keep working - which is why the bar is 0.7
+    // and not higher.
+    const short = extractCaseName('Rajesh Mittal vs State of Bihar')!;
+
+    expect(caseNameScore(short, 'Rajesh Kumar Mittal vs The State Of Bihar')).toBeGreaterThanOrEqual(
+      CASE_NAME_MATCH,
+    );
+  });
+
+  it('is unmoved by punctuation, case and the honorifics in a cause title', () => {
+    const parties = extractCaseName('M/s Tata Steel Ltd vs Union of India')!;
+
+    expect(
+      caseNameScore(parties, 'M/S. TATA STEEL LIMITED vs UNION OF INDIA & ORS'),
+    ).toBeGreaterThanOrEqual(CASE_NAME_MATCH);
+  });
+
+  it('claims nothing when the request has no distinctive party at all', () => {
+    // "State vs State" is every criminal appeal ever reported. Matching on it
+    // would put an arbitrary judgment at the top and call it the one asked for.
+    const vague = extractCaseName('State vs State')!;
+
+    expect(caseNameScore(vague, 'Anything vs Anything Else')).toBe(0);
+  });
+});
