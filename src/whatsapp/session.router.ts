@@ -1,3 +1,4 @@
+import { isAcknowledgement } from '../ai/conversational';
 import { CREDIT_COST, isSameSearchContext } from '../credits/credits.service';
 import {
   isValidCnr,
@@ -215,7 +216,23 @@ export function route(
    * the state switch so it works from every state, and after the new-session
    * block because an expired session holds no rows to page.
    */
-  if (isMoreRequest(text)) {
+  /*
+   * Onboarding is the one place nothing else may run.
+   *
+   * Everything below this line - paging, the menu, a research question - is for
+   * an advocate the bot already knows. The "more" handler underneath sat above
+   * the state switch unconditionally, and it answers from *any* state: typing
+   * "more" as the second message of a brand-new conversation replied "there is
+   * nothing more to show" and moved the session to MAIN_MENU, which is where
+   * free text is classified, answered and billed. Registration was skipped by
+   * typing one word - not as a clever bypass, but because "more" and "next" are
+   * ordinary things to send a bot that has just written you a paragraph.
+   */
+  const onboarding =
+    context.state === SESSION_STATE.AWAITING_PROFILE ||
+    context.state === SESSION_STATE.AWAITING_LANGUAGE;
+
+  if (!onboarding && isMoreRequest(text)) {
     if (context.precedentRows?.length) {
       // Named rather than omitted. Paging does not move the advocate, and the
       // caller persists the context under whatever state this returns - so
@@ -344,6 +361,30 @@ function routeLanguage(text: string, user: SessionUser, creditLine: string): Rou
   const language = matchLanguage(text);
 
   if (!language) {
+    /*
+     * The third instance of one bug, and the last one left.
+     *
+     * A state that asks a question and answers everything else with "I could
+     * not understand that" is a trap, and this was the worst of the three
+     * because it sits at the top of every returning session. An advocate who
+     * opens the thread, sees "Select your language", and types the question
+     * they actually came to ask - "what is IPC 420" - was told they were
+     * unintelligible, shown the same three options, and told it again for every
+     * message after. Nothing in the reply mentions the way out.
+     *
+     * A question is a change of subject, so it is released to the classifier
+     * exactly as CASE_STATUS releases one. Skipping the prompt loses nothing:
+     * the classifier detects the language from the message itself and
+     * handleFreeformQuery records it, which is already how language is set for
+     * everybody who never sees this prompt.
+     */
+    if (looksLikeQuestion(text)) {
+      return {
+        actions: [{ kind: 'freeform', text }],
+        nextState: SESSION_STATE.MAIN_MENU,
+      };
+    }
+
     return {
       actions: [
         { kind: 'reply', text: `${Replies.NOT_UNDERSTOOD}\n\n${Replies.LANGUAGE_PROMPT}` },
@@ -402,6 +443,11 @@ function routeMenu(text: string, creditLine: string): Routed {
        * how people actually talk to a chat window - gets an answer instead of
        * being told they are unintelligible.
        */
+      // Nothing to classify. An empty body reaches here from a message type
+      // that carried no text, and sending it to the router model buys a
+      // provider call to be told that "" is not a legal question.
+      if (!text) return backToMenu(creditLine);
+
       return {
         actions: [{ kind: 'freeform', text }],
         nextState: SESSION_STATE.MAIN_MENU,
@@ -462,6 +508,7 @@ function routeCaseStatus(text: string, context: SessionContext, creditLine: stri
 function routeSection(text: string, context: SessionContext, creditLine: string): Routed {
   if (text === RETURN_KEY) return backToMenu(creditLine);
   if (!text) return backToMenu(creditLine, Replies.NOT_UNDERSTOOD);
+  if (isAcknowledgement(text)) return released(text);
 
   const charge = chargeFor(context.lastChargedQuery, text, CREDIT_COST.SECTION_LOOKUP);
 
@@ -490,6 +537,7 @@ function routePrecedents(text: string, context: SessionContext, creditLine: stri
   }
 
   if (!text) return backToMenu(creditLine, Replies.NOT_UNDERSTOOD);
+  if (isAcknowledgement(text)) return released(text);
 
   const charge = chargeFor(context.lastChargedQuery, text, CREDIT_COST.PRECEDENT_SEARCH);
 
@@ -501,6 +549,30 @@ function routePrecedents(text: string, context: SessionContext, creditLine: stri
     // the offset: a search that then fails must not leave the last one pageable.
     contextPatch: charge > 0 ? { lastChargedQuery: text, ...CLEARED_PRECEDENTS } : { ...CLEARED_PRECEDENTS },
   };
+}
+
+/**
+ * Let a message through to the classifier, from a feature state, unbilled.
+ *
+ * ## Why a sign-off cannot stay in the feature state
+ *
+ * SECTION_INFO and PRECEDENT_SEARCH are sticky: the state survives the answer,
+ * so the advocate can ask a second section without going back to the menu. That
+ * is the right behaviour and it had a hole in it - *every* message arriving in
+ * those states became a charged lookup, on the text as typed. Reading a section
+ * explanation and replying "thanks" bought a retrieval over the word "thanks".
+ * So did "ok", "great", "hi", and a full stop sent by a thumb.
+ *
+ * This is the case-status trap inverted. There, anything that was not a CNR got
+ * an error forever; here, anything at all gets a bill. An error is at least
+ * visible. A charge is not, and it lands on an advocate who was being polite.
+ *
+ * The message is not swallowed - it goes to the classifier, which answers a
+ * greeting as small talk for free. The state returns to the menu, because
+ * somebody who said "that's it" has finished with the feature.
+ */
+function released(text: string): Routed {
+  return { actions: [{ kind: 'freeform', text }], nextState: SESSION_STATE.MAIN_MENU };
 }
 
 /**

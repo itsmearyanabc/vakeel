@@ -495,3 +495,101 @@ describe('the charge is keyed to the message, not the attempt', () => {
     );
   });
 });
+
+describe('the states that ask a question must let you change the subject', () => {
+  /*
+   * Every one of these was found by an advocate, not by a test, and every one
+   * is the same mistake: a prompt that treats "not the answer I asked for" as
+   * "invalid", forever, with no way out mentioned in the reply.
+   *
+   * Driven end to end rather than through the router, because two of the three
+   * prompts are not the router's - handleStatefulInput owns them, and it was
+   * the half nothing was calling at all until recently.
+   */
+
+  it('answers a legal question asked while the verification prompt is open', async () => {
+    // AWAITING_BAR_ID released only messages with no digits, on the reasoning
+    // that an enrolment number always has one. True, and useless: "what is IPC
+    // 420", "section 138 NI Act" and "punishment under 302" all have digits, so
+    // all three were submitted as enrolment numbers, rejected, and answered
+    // with "that is not a valid Bar Council ID" for the next half hour.
+    const conversations = conversationStore();
+    conversations.seed('AWAITING_BAR_ID', {});
+    const { service, api, users, rag } = build({ intent: 'SECTION_LOOKUP', conversations });
+
+    await service.handle(job({ text: 'what is IPC 420' }));
+
+    expect(users.submitBarCouncilId).not.toHaveBeenCalled();
+    expect(rag.answer).toHaveBeenCalled();
+    expect(sent(api)).not.toMatch(/Bar Council/i);
+  });
+
+  it('still accepts an enrolment number when one is actually sent', async () => {
+    const conversations = conversationStore();
+    conversations.seed('AWAITING_BAR_ID', {});
+    const { service, users } = build({ conversations });
+
+    await service.handle(job({ text: 'D/1234/2015' }));
+
+    expect(users.submitBarCouncilId).toHaveBeenCalledWith('user-1', 'D/1234/2015');
+  });
+
+  it('answers a question typed at the language prompt instead of refusing it', async () => {
+    // The first screen of every returning session. "I could not understand
+    // that" here is the worst placement of that sentence in the product.
+    const conversations = conversationStore();
+    conversations.seed('AWAITING_LANGUAGE', {});
+    const { service, api, rag } = build({ intent: 'SECTION_LOOKUP', conversations });
+
+    await service.handle(job({ text: 'what is IPC 420' }));
+
+    expect(rag.answer).toHaveBeenCalled();
+    expect(sent(api)).not.toMatch(/could not understand/i);
+  });
+});
+
+describe('a pleasantry is never a purchase', () => {
+  /*
+   * SECTION_INFO and PRECEDENT_SEARCH keep their state after answering, so a
+   * second question needs no trip through the menu. The cost was that every
+   * message arriving in them became a charged lookup on the text as typed -
+   * including the one an advocate sends after reading a good answer.
+   *
+   * Unlike the traps above, this one is silent. Nobody reports being charged
+   * two credits for the word "thanks"; they just run out sooner than they
+   * expected and trust the counter less.
+   */
+  it.each([
+    ['SECTION_INFO', 'thanks'],
+    ['SECTION_INFO', 'ok'],
+    ['SECTION_INFO', 'great'],
+    ['PRECEDENT_SEARCH', "that's it"],
+    ['PRECEDENT_SEARCH', 'thank you'],
+    ['PRECEDENT_SEARCH', 'hi'],
+  ])('%s: replies to %p without spending a credit', async (state, text) => {
+    const conversations = conversationStore();
+    conversations.seed(state, {});
+    const { service, api, credits, rag, precedents } = build({
+      intent: 'SMALL_TALK',
+      conversations,
+    });
+
+    await service.handle(job({ text }));
+
+    expect(credits.spend).not.toHaveBeenCalled();
+    expect(rag.answer).not.toHaveBeenCalled();
+    expect(precedents.search).not.toHaveBeenCalled();
+    expect(api.sendText).toHaveBeenCalled();
+  });
+
+  it('charges normally for the next real question', async () => {
+    // The release must not leave the advocate somewhere that stops billing.
+    const conversations = conversationStore();
+    conversations.seed('SECTION_INFO', {});
+    const { service, credits } = build({ intent: 'SECTION_LOOKUP', conversations });
+
+    await service.handle(job({ text: 'what does section 138 NI Act say' }));
+
+    expect(charged(credits)).toEqual({ action: 'SECTION_LOOKUP', cost: CREDIT_COST.SECTION_LOOKUP });
+  });
+});

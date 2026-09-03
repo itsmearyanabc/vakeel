@@ -114,4 +114,26 @@ describe('matchLanguage', () => {
   it.each(['4', '0', 'french', '', 'yes'])('returns null for %s', (input) => {
     expect(matchLanguage(input)).toBeNull();
   });
+
+  it('does not read "hi" as a request for Hindi', () => {
+    /*
+     * It did, by matching the ISO code. So the most common way anybody opens a
+     * chat, sent at the language prompt by somebody who had not read it,
+     * silently switched an English-speaking advocate's replies to Hindi and
+     * dropped them at the menu with no explanation and no obvious way back.
+     *
+     * "hindi" and "2" still work, which is what people who mean Hindi type.
+     */
+    expect(matchLanguage('hi')).toBeNull();
+    expect(matchLanguage('Hi')).toBeNull();
+    expect(matchLanguage('hindi')?.code).toBe('hi');
+    expect(matchLanguage('2')?.code).toBe('hi');
+  });
+
+  it('still resolves the two codes somebody might type on purpose', () => {
+    // Nobody types "hi" meaning Hindi, and somebody might type "en". The two
+    // safe ones are aliases now rather than a blanket match on the code.
+    expect(matchLanguage('en')?.code).toBe('en');
+    expect(matchLanguage('kn')?.code).toBe('kn');
+  });
 });

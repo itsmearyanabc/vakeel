@@ -116,6 +116,38 @@ function titleCase(value: string): string {
 }
 
 /**
+ * Did the advocate quote a Bar Council enrolment number, or ask a question?
+ *
+ * The verification prompt has the same shape as the CNR prompt and had the same
+ * trap in it. Its release test was "a message with no digits is a change of
+ * subject", which is true and covers almost nothing: "what is IPC 420",
+ * "section 138 NI Act" and "punishment under 302" all carry digits, so all
+ * three were submitted as enrolment numbers, rejected, and answered with "that
+ * is not a valid Bar Council ID" - for that message and every message after it,
+ * for the half hour the state lives.
+ *
+ * The discriminator is the number's own shape, not the presence of a digit. It
+ * reuses {@link BAR_ID}, so what counts as an attempt here and what parses as a
+ * profile there cannot drift apart.
+ *
+ * A single compact token is accepted too, without the full shape: somebody who
+ * sends "1234" at this prompt is fumbling their enrolment number, not changing
+ * the subject, and deserves the format back rather than a retrieval.
+ */
+export function looksLikeEnrolmentAttempt(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.includes('?')) return false;
+
+  // Matched anywhere in the message, not just at the start. "my enrolment is
+  // D/1234/2015" is somebody answering the prompt, and refusing it because they
+  // wrote a sentence would be the same rigidity parseProfile exists to avoid.
+  if (BAR_ID.test(trimmed)) return true;
+
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  return tokens.length === 1 && /\d/.test(trimmed);
+}
+
+/**
  * A CNR is 4 letters then 12 digits, of which the last four are the filing
  * year - `BRMG030000191989`.
  *

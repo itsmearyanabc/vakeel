@@ -3,7 +3,7 @@ import { InjectEnv } from '../config/config.module';
 import { AppEnv } from '../config/env';
 import { IntentService } from '../ai/intent.service';
 import { extractCnr } from '../ai/legal-patterns';
-import { looksLikeCnrAttempt } from './onboarding';
+import { looksLikeCnrAttempt, looksLikeEnrolmentAttempt } from './onboarding';
 import { ChatMemoryService } from '../ai/memory/chat-memory.service';
 import { PrecedentsService, formatPrecedentPage, prioritiseHomeCourt } from '../ai/precedents.service';
 import { ProviderRegistry } from '../ai/providers/provider.registry';
@@ -363,10 +363,24 @@ export class ConversationService {
   // ---------------------------------------------------------------------------
 
   private async runSession(user: WhatsAppUserRow, text: string, job: InboundMessageJob): Promise<void> {
-    // A row past its expires_at reads as null, which is exactly what the router
-    // treats as "start a new session". The TTL is therefore the whole of the
-    // session-expiry mechanism; there is no separate sweep.
-    let stored = await this.conversations.get(user.id);
+    /*
+     * Both reads at once. Neither depends on the other, and on the free tier
+     * every round trip to Supabase is a real slice of the reply.
+     *
+     * A row past its expires_at reads as null, which is exactly what the router
+     * treats as "start a new session". The TTL is therefore the whole of the
+     * session-expiry mechanism; there is no separate sweep.
+     *
+     * The balance is refreshed rather than peeked: this is the first thing that
+     * happens on an inbound message, so it is also where the monthly allowance
+     * rolls over. Refreshing it is idempotent, which is what makes it safe to
+     * start before we know whether the message even reaches the router.
+     */
+    const [initialState, balance] = await Promise.all([
+      this.conversations.get(user.id),
+      this.credits.balance(user.id, user.role),
+    ]);
+    let stored = initialState;
 
     /*
      * A flow started from the interactive menu, not from the router.
@@ -394,10 +408,6 @@ export class ConversationService {
     const context: SessionContext = stored
       ? { ...(stored.context as Partial<SessionContext>), state: stored.state as SessionState }
       : { state: null };
-
-    // Refreshing rather than peeking: this is the first thing that happens on
-    // an inbound message, so it is also where the daily allowance rolls over.
-    const balance = await this.credits.balance(user.id, user.role);
 
     const routed = route(
       text,
@@ -810,11 +820,23 @@ export class ConversationService {
       }
 
       case STATE.AWAITING_BAR_ID: {
-        // Same trap as AWAITING_CNR: without this, asking for an enrolment
-        // number means every later message gets "that is not valid" until the
-        // user guesses that "menu" is the way out. A bar council number always
-        // contains digits, so a message with none is a change of subject.
-        if (!/\d/.test(text)) {
+        /*
+         * Same trap as AWAITING_CNR, and the release test was too narrow.
+         *
+         * "A message with no digits is a change of subject" is true and does
+         * not cover the cases that matter: almost every legal question has a
+         * number in it. "What is IPC 420", "section 138 NI Act", "punishment
+         * under 302" all contain digits, so all three were submitted as
+         * enrolment numbers, rejected, and answered with "that is not a valid
+         * Bar Council ID" - for that message and every message after it, for
+         * the full half-hour the state lives. The advocate had done nothing
+         * but ask a question while a verification prompt was open.
+         *
+         * An enrolment number is a short reference, not a sentence. Both
+         * signals are needed: digits, and the shape of something being quoted
+         * rather than asked.
+         */
+        if (!looksLikeEnrolmentAttempt(text)) {
           await this.conversations.clear(user.id);
           return false;
         }
@@ -1227,14 +1249,23 @@ export class ConversationService {
     originalText: string,
     job: InboundMessageJob,
   ): Promise<void> {
-    // Billing happens once, upstream in answerSearch(). See the note there.
-    // Peeked rather than refreshed: the spend that just ran already rolled the
-    // allowance over, and a second refresh here would be a wasted round trip.
-    const balance = await this.credits.peek(user.id, user.role);
-
-    // Prior turns for THIS advocate only - keyed by user id, so two people
-    // messaging simultaneously can never pick up each other's context.
-    const history = await this.memory.load(user.id);
+    /*
+     * Billing happens once, upstream in answerSearch(). See the note there.
+     * Peeked rather than refreshed: the spend that just ran already rolled the
+     * allowance over, and a second refresh here would be a wasted round trip.
+     *
+     * History is loaded alongside it rather than after it. These were two
+     * serial round trips sitting directly in front of the slowest call in the
+     * product, and the balance is not read until after the answer comes back -
+     * it only decides whether to show the verification nudge.
+     *
+     * History is prior turns for THIS advocate only - keyed by user id, so two
+     * people messaging simultaneously can never pick up each other's context.
+     */
+    const [balance, history] = await Promise.all([
+      this.credits.peek(user.id, user.role),
+      this.memory.load(user.id),
+    ]);
 
     const answer = await this.rag.answer(intent, history);
 

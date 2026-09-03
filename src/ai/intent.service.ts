@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { getLogger } from '../common/logger';
 import { QueryIntent } from '../database/types';
+import { isAcknowledgement, isMenuWord } from './conversational';
 import {
   ActCode,
   extractCnr,
@@ -150,21 +151,19 @@ export class IntentService {
 
     const base = { language, cnrNumber: cnr, sectionNumber: null, actCode: null, searchQuery: trimmed };
 
-    if (/^(menu|help|start|options|मदद|मेन्यू)$/.test(lower)) {
+    if (isMenuWord(lower)) {
       return { ...base, intent: 'MENU_NAVIGATION', confidence: 0.99 };
     }
 
-    // Length cap is what keeps this from swallowing real questions that happen
-    // to open with a greeting.
-    // Acknowledgements, not questions. "that's it" and "no thanks" reached the
-    // router model, came back GENERAL_LEGAL on the fallback path, and were
-    // charged two credits for a retrieval over a sign-off.
-    if (
-      trimmed.length <= 20 &&
-      /^(hi|hello|hey|namaste|hola|thanks|thank you|thanks a lot|ok|okay|k|got it|noted|done|that'?s it|thats it|no thanks|nothing|nope|yes|yep|नमस्ते|धन्यवाद|शुक्रिया)[\s!.]*$/.test(
-        lower,
-      )
-    ) {
+    /*
+     * Acknowledgements, not questions.
+     *
+     * The list moved to ai/conversational.ts, because the session router needs
+     * the same judgement one step earlier - it takes the credit *before* this
+     * method ever runs, so a list that lived only here could stop a wasted
+     * model call but never a wasted charge.
+     */
+    if (isAcknowledgement(trimmed)) {
       return { ...base, intent: 'SMALL_TALK', confidence: 0.99 };
     }
 

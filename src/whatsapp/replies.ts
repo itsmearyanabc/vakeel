@@ -45,9 +45,9 @@ export const ACTION = {
  * advocate type "hindi", "हिंदी" or "2" and be understood either way.
  */
 export const LANGUAGES: { code: string; label: string; aliases: string[] }[] = [
-  { code: 'en', label: 'English', aliases: ['english', 'eng', 'angrezi'] },
+  { code: 'en', label: 'English', aliases: ['english', 'eng', 'en', 'angrezi'] },
   { code: 'hi', label: 'हिंदी', aliases: ['hindi', 'हिंदी', 'हिन्दी'] },
-  { code: 'kn', label: 'ಕನ್ನಡ', aliases: ['kannada', 'ಕನ್ನಡ', 'kannad'] },
+  { code: 'kn', label: 'ಕನ್ನಡ', aliases: ['kannada', 'ಕನ್ನಡ', 'kannad', 'kn'] },
 ];
 
 /**
@@ -68,8 +68,21 @@ export function matchLanguage(input: string): { code: string; label: string } | 
     return { code: picked.code, label: picked.label };
   }
 
+  /*
+   * Matched on the label and the aliases, and deliberately NOT on the ISO code.
+   *
+   * The code comparison was here, and it meant "hi" selected Hindi - so the
+   * single most common way to open a chat, sent at the language prompt by
+   * somebody who had not read it, silently switched an English-speaking
+   * advocate's replies to Hindi and dropped them at the menu with no idea what
+   * had happened or how to undo it.
+   *
+   * Nothing is lost by dropping it: nobody types "kn" to mean Kannada. The two
+   * codes that are plausibly typed on purpose are listed as aliases instead,
+   * where "hi" can be left out on its own.
+   */
   const picked = LANGUAGES.find(
-    (l) => l.code === cleaned || l.label.toLowerCase() === cleaned || l.aliases.includes(cleaned),
+    (l) => l.label.toLowerCase() === cleaned || l.aliases.includes(cleaned),
   );
   return picked ? { code: picked.code, label: picked.label } : null;
 }
