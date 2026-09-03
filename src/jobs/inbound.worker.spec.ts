@@ -25,10 +25,11 @@ const JOB: InboundMessageJob = {
   text: 'hello',
 };
 
-function build(over: { claim?: jest.Mock; conversation?: jest.Mock } = {}) {
+function build(over: { claim?: jest.Mock; conversation?: jest.Mock; touch?: jest.Mock } = {}) {
   const jobs = {
     complete: jest.fn().mockResolvedValue(undefined),
     fail: jest.fn().mockResolvedValue({ dead: true, attempts: 1, retryAt: null }),
+    touch: over.touch ?? jest.fn().mockResolvedValue(true),
   };
   const messages = {
     // Atomic insert-if-absent: true the first time, false ever after.
@@ -38,12 +39,17 @@ function build(over: { claim?: jest.Mock; conversation?: jest.Mock } = {}) {
   const conversation = { handle: over.conversation ?? jest.fn().mockResolvedValue(undefined) };
   const api = { sendText: jest.fn().mockResolvedValue({ ok: true }) };
 
+  // A real lease value, not an empty object: the lease-renewal timer derives
+  // its interval from it, and NaN makes setInterval fire immediately and
+  // forever.
+  const env = { JOB_LEASE_SECONDS: 120 };
+
   const worker = new InboundWorker(
     jobs as never,
     conversation as never,
     api as never,
     messages as never,
-    {} as never,
+    env as never,
   );
 
   // `handle` is private by design - nothing outside the poll loop should call
@@ -121,5 +127,83 @@ describe('InboundWorker.handle', () => {
     // the only message the advocate gets - never an apology plus a late answer.
     expect(jobs.fail).toHaveBeenCalled();
     expect(api.sendText).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('holding the lock for as long as the work takes', () => {
+  /*
+   * Per-advocate serialisation is what stops two messages from one number
+   * racing through the same conversation row, and it is enforced by a lease
+   * that a clock decides - not by whether this process is alive. So it holds
+   * only while the lease outlasts the work, and the work can outlast it: one
+   * message makes at least two provider calls, each capable of taking
+   * LLM_TIMEOUT_MS x (1 + LLM_MAX_RETRIES) - 135 seconds on the defaults,
+   * against a 120-second lease.
+   *
+   * When it lapses, the sweep marks the job DEAD and frees the lock while the
+   * work is still running, and the advocate's next message is claimed alongside
+   * it. The failure is silent: the original worker then completes the DEAD row,
+   * so it does not even show up in the queue stats.
+   */
+  beforeEach(() => jest.useFakeTimers({ doNotFake: ['nextTick'] }));
+  afterEach(() => jest.useRealTimers());
+
+  it('renews the lease while a slow message is still being answered', async () => {
+    let finish = (): void => undefined;
+    let started = (): void => undefined;
+    // Resolved from inside the fake handler, so the timer is only advanced once
+    // the worker is genuinely mid-message. Awaiting a fixed number of
+    // microtasks instead would depend on how many awaits precede this one.
+    const reached = new Promise<void>((resolve) => { started = resolve; });
+    const conversation = jest.fn(() => {
+      started();
+      return new Promise<void>((resolve) => { finish = resolve; });
+    });
+    const { run, jobs } = build({ conversation });
+
+    const pending = run();
+    await reached;
+
+    // A third of the 120-second lease, twice over.
+    jest.advanceTimersByTime(80_000);
+    expect(jobs.touch).toHaveBeenCalledWith('job-1', 120);
+    expect(jobs.touch.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    finish();
+    await pending;
+  });
+
+  it('stops renewing once the message is answered', async () => {
+    const { run, jobs } = build();
+
+    await run();
+    jobs.touch.mockClear();
+    jest.advanceTimersByTime(300_000);
+
+    // A timer left running would keep renewing the lease of a job nobody is
+    // working on, which blocks that advocate until the process restarts.
+    expect(jobs.touch).not.toHaveBeenCalled();
+  });
+
+  it('stops renewing when handling fails', async () => {
+    const { run, jobs } = build({
+      conversation: jest.fn().mockRejectedValue(new Error('model timed out')),
+    });
+
+    await run();
+    jobs.touch.mockClear();
+    jest.advanceTimersByTime(300_000);
+
+    expect(jobs.touch).not.toHaveBeenCalled();
+  });
+
+  it('does not abandon a message because one heartbeat failed', async () => {
+    // A blip on the renewal must not take down a reply that is otherwise going
+    // fine; the next beat covers it.
+    const { run, jobs, api } = build({ touch: jest.fn().mockRejectedValue(new Error('blip')) });
+
+    await expect(run()).resolves.toBeUndefined();
+    expect(jobs.complete).toHaveBeenCalled();
+    expect(api.sendText).not.toHaveBeenCalled();
   });
 });

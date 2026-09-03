@@ -162,6 +162,44 @@ export class InboundWorker implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    /*
+     * Keep saying we are alive for as long as this takes.
+     *
+     * The lease is what stops a second message from the same advocate being
+     * claimed while this one is running, and it is decided by a clock rather
+     * than by whether this process is actually alive - deliberately, because
+     * that is how a crashed worker's job gets recovered. The consequence is
+     * that the serialisation holds only while the lease outlasts the work, and
+     * it does not: one message makes at least two provider calls, each of which
+     * can take LLM_TIMEOUT_MS x (1 + LLM_MAX_RETRIES) - 135 seconds on the
+     * defaults, against a 120-second lease.
+     *
+     * When it expires, the sweep marks this job DEAD and frees the lock key
+     * while the work is still running, and the advocate's next message is
+     * claimed alongside it. Two handlers, one conversation row.
+     *
+     * Renewing at a third of the lease leaves room for two missed beats before
+     * anything is reclaimed. Failures are ignored on purpose: a blip must not
+     * abort a message that is otherwise going fine, and the next beat covers it.
+     */
+    const renewal = setInterval(
+      () => {
+        void this.jobs
+          .touch(jobId, this.env.JOB_LEASE_SECONDS)
+          .then((held) => {
+            if (!held) {
+              this.logger.error(
+                { jobId, waMessageId: data.waMessageId },
+                'Lease was lost while still working - another worker may now be handling this advocate',
+              );
+            }
+          })
+          .catch(() => undefined);
+      },
+      Math.max(1000, Math.floor((this.env.JOB_LEASE_SECONDS * 1000) / 3)),
+    );
+    renewal.unref();
+
     try {
       await this.messages.updateStatus(data.waMessageId, 'PROCESSING');
       await this.conversation.handle(data);
@@ -189,6 +227,12 @@ export class InboundWorker implements OnModuleInit, OnModuleDestroy {
       if (outcome.dead) {
         await this.api.sendText(data.from, Replies.PROCESSING_ERROR).catch(() => undefined);
       }
+    } finally {
+      // In a finally rather than after the catch: an error thrown by the error
+      // handling itself would otherwise leave a timer renewing the lease of a
+      // job nobody is working on, which blocks that advocate until the process
+      // restarts.
+      clearInterval(renewal);
     }
   }
 

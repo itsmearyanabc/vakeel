@@ -57,6 +57,20 @@ export class JobRepository {
     return row ?? null;
   }
 
+  /**
+   * Extend a running job's lease.
+   *
+   * Returns false when the claim has already been lost - the sweep decided this
+   * worker was dead and released the lock key, so another message from the same
+   * advocate may now be running alongside this one. See migration 0016.
+   */
+  async touch(jobId: string, leaseSeconds: number): Promise<boolean> {
+    const [row] = await this.db.sql<{ job_touch: boolean }[]>`
+      SELECT job_touch(${jobId}::uuid, ${leaseSeconds}::integer)
+    `;
+    return row?.job_touch ?? false;
+  }
+
   async complete(jobId: string): Promise<void> {
     await this.db.sql`SELECT job_complete(${jobId}::uuid)`;
   }
