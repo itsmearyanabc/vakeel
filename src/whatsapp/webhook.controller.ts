@@ -125,6 +125,28 @@ export class WebhookController {
       return;
     }
 
+    /*
+     * A reaction is feedback, not a message, and must not be answered.
+     *
+     * Meta delivers a thumbs-up on one of our replies through the same
+     * `messages` array as everything else, so it fell to the unsupported branch
+     * and the worker answered it: "I can read text messages, voice notes and
+     * images. Please type your question." An advocate who liked an answer got
+     * lectured for saying so - and reacting is one of the most common things
+     * anybody does in WhatsApp.
+     *
+     * Dropped here rather than in the worker so it costs nothing: no queue row,
+     * no user lookup, no session read, and no outbound message eating into the
+     * service window.
+     */
+    if (message.type === 'reaction') {
+      this.logger.debug(
+        { from: maskPhone(message.from), waMessageId: message.id },
+        'Ignoring a reaction - it is feedback on a reply, not a question',
+      );
+      return;
+    }
+
     // First of three dedupe layers: this table, the unique index on the message
     // log, and the queue's own dedupe key. Meta redelivers aggressively and each
     // duplicate would otherwise cost a model call.

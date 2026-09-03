@@ -40,6 +40,7 @@ Notes on Indian usage:
 - Hinglish is common. "302 ka punishment kya hai" is SECTION_LOOKUP with section_number "302".
 - Users write sections many ways: "s.302", "sec 302", "u/s 302", "section 302 IPC". Normalise to the bare number.
 - The CPC's procedure lives in Orders and Rules, not sections: "Order 32", "Order 37 Rule 3", "O.32 R.1". Put these in section_number verbatim as "Order 32" or "Order 37 Rule 3", and act_code "CPC".
+- The Constitution is divided into Articles: "Article 226", "Art. 32", "Article 21A". Put these in section_number verbatim as "Article 226", and act_code "COI".
 - Since 1 July 2024 the BNS replaced the IPC and the BNSS replaced the CrPC. If the user names neither, leave act_code null and let the search handle it.
 - A CNR is 16 characters: 4 letters (state+district), 2 alphanumeric (establishment), 6 digits (case number), 4 digits (year).
 

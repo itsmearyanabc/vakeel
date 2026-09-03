@@ -1,4 +1,9 @@
-import { extractOrderReference, extractSectionReference, normaliseActCode } from './legal-patterns';
+import {
+  extractArticleReference,
+  extractOrderReference,
+  extractSectionReference,
+  normaliseActCode,
+} from './legal-patterns';
 import { IntentService } from './intent.service';
 
 /**
@@ -148,5 +153,88 @@ describe('routing a provision question', () => {
     const intent = await s.classify('draft an application for injunction under Order 39 Rule 1 CPC');
 
     expect(intent.intent).toBe('DRAFTING_HELP');
+  });
+});
+
+describe('recognising a constitutional Article', () => {
+  /*
+   * The same hole as the CPC's Orders, in the other direction.
+   *
+   * Constitutional provisions are Articles, and nothing recognised one - so
+   * "Article 226" reached the classifier as free text and came back a case-law
+   * search. Article 226 and Article 32 are two of the most-asked provisions in
+   * Indian practice, and both were answered with a list of judgments instead of
+   * an explanation of the provision.
+   */
+  it.each([
+    ['article 226', 'Article 226'],
+    ['Article 32', 'Article 32'],
+    ['art. 21', 'Article 21'],
+    ['Art 14', 'Article 14'],
+    ['article 21A right to education', 'Article 21A'],
+    ['article 300A', 'Article 300A'],
+    ['article 243ZG', 'Article 243ZG'],
+  ])('reads %p as %p', (text, expected) => {
+    expect(extractArticleReference(text)).toBe(expected);
+  });
+
+  it('does not let the next English word become an amendment suffix', () => {
+    // The pattern is case-insensitive, so a gap before the suffix let "in"
+    // attach itself: "article 226 in a writ petition" read as Article 226IN.
+    expect(extractArticleReference('article 226 in a writ petition')).toBe('Article 226');
+    expect(extractArticleReference('article 32 before the Supreme Court')).toBe('Article 32');
+  });
+
+  it.each([
+    'the articles of association',
+    'this article was published in AIR',
+    'part 3 of the agreement',
+  ])('does not read %p as a provision', (text) => {
+    expect(extractArticleReference(text)).toBeNull();
+  });
+
+  it('rejects a number the Constitution does not reach', () => {
+    // The text ends at Article 395. A four-digit "article 1234" is something
+    // else with the wrong word in front of it.
+    expect(extractArticleReference('article 999')).toBeNull();
+  });
+
+  it('resolves the Constitution as an act in its own right', () => {
+    expect(normaliseActCode('Constitution of India')).toBe('COI');
+    expect(normaliseActCode('constitution')).toBe('COI');
+    expect(extractSectionReference('article 226 of the Constitution').act).toBe('COI');
+  });
+
+  it('sends an Article to a provision lookup and names the Constitution', async () => {
+    const registry = {
+      complete: jest.fn().mockResolvedValue({
+        text: JSON.stringify({ intent: 'PRECEDENT_SEARCH', language: 'en', search_query: 'q' }),
+        model: 'mock',
+        inputTokens: 0,
+        outputTokens: 0,
+      }),
+    };
+    const intent = await new IntentService(registry as never).classify('article 226');
+
+    expect(intent.intent).toBe('SECTION_LOOKUP');
+    expect(intent.sectionNumber).toBe('Article 226');
+    expect(intent.actCode).toBe('COI');
+  });
+
+  it('overrides the model when it calls an Article question case law', async () => {
+    const registry = {
+      complete: jest.fn().mockResolvedValue({
+        text: JSON.stringify({ intent: 'PRECEDENT_SEARCH', language: 'en', search_query: 'q' }),
+        model: 'mock',
+        inputTokens: 0,
+        outputTokens: 0,
+      }),
+    };
+    const intent = await new IntentService(registry as never).classify(
+      'please explain in detail the scope of article 226 of the Constitution',
+    );
+
+    expect(intent.intent).toBe('SECTION_LOOKUP');
+    expect(intent.actCode).toBe('COI');
   });
 });

@@ -303,8 +303,24 @@ function looksLikeQuestion(text: string): boolean {
   if (/^(what|who|whose|whom|how|why|when|where|which|can|could|is|are|do|does|did|tell|explain|kya|kaise|kyu|kyun)\b/.test(t)) {
     return true;
   }
+
+  /*
+   * The same test in Devanagari.
+   *
+   * Everything above is Latin script or transliteration, and this bot offers
+   * Hindi on its second line - so the advocate most likely to type a question
+   * at the language prompt, instead of picking from it, is the one this missed.
+   * "धारा 302 क्या है" opens with the noun rather than the interrogative, so
+   * neither the anchored list nor the transliterated "dhara" caught it, and the
+   * question was answered with the language menu again.
+   *
+   * Not anchored to the start, because Hindi puts the question word last.
+   */
+  if (/(क्या|कैसे|क्यों|कब|कौन|कहाँ|कहां|बताइए|बताओ|समझाइए)/.test(text)) return true;
+  if (/(धारा|अनुच्छेद|अधिनियम|संहिता|संविधान)/.test(text)) return true;
+
   // The statutes and identifiers this product exists to answer about.
-  if (/\b(ipc|bns|crpc|bnss|cpc|section|dhara)\b/.test(t)) return true;
+  if (/\b(ipc|bns|crpc|bnss|cpc|section|dhara|article|order)\b/.test(t)) return true;
   if (/[A-Za-z]{4}\d{2}-?\d{6}-?\d{4}/i.test(text)) return true;
 
   return false;

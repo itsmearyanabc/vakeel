@@ -302,3 +302,36 @@ describe('being polite is free', () => {
     expect((routed.actions[0] as { charge: number }).charge).toBeGreaterThan(0);
   });
 });
+
+describe('the language prompt, for the language it offers', () => {
+  it('releases a question written in Hindi', () => {
+    /*
+     * The advocate this bot offers Hindi to is the one most likely to type a
+     * Hindi question at the language prompt rather than picking from it - and
+     * that was the one case the release missed. "धारा 302 क्या है" opens with
+     * the noun, not the interrogative, so neither the anchored English list nor
+     * the transliterated "dhara" matched, and a Hindi question was answered
+     * with the language menu again.
+     */
+    for (const question of ['धारा 302 क्या है', 'अनुच्छेद 226 समझाइए', 'जमानत कैसे मिलेगी']) {
+      const routed = route(
+        question,
+        { state: SESSION_STATE.AWAITING_LANGUAGE },
+        KNOWN,
+        CREDIT_LINE,
+        '',
+      );
+      expect(routed.actions).toEqual([{ kind: 'freeform', text: question }]);
+    }
+  });
+
+  it('still treats the native language names as a choice, not a question', () => {
+    // "हिंदी" is the label on option 2. It must select the language, not be
+    // released as a Devanagari question - matchLanguage runs first, and this
+    // asserts the release did not overtake it.
+    const routed = route('हिंदी', { state: SESSION_STATE.AWAITING_LANGUAGE }, KNOWN, CREDIT_LINE, '');
+
+    expect(routed.nextState).toBe(SESSION_STATE.MAIN_MENU);
+    expect(routed.contextPatch?.language).toBe('hi');
+  });
+});

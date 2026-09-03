@@ -283,6 +283,6 @@ function describeProvision(intent: ClassifiedIntent): string | null {
   const act = intent.actCode;
 
   // "Order 32" already reads as a provision; a bare "302" needs the word.
-  const head = /^(order|rule)\b/i.test(provision) ? provision : `Section ${provision}`;
+  const head = /^(order|rule|article)\b/i.test(provision) ? provision : `Section ${provision}`;
   return act ? `${head} ${act}` : head;
 }

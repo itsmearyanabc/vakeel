@@ -51,7 +51,7 @@ export function isValidCnr(cnr: string): boolean {
  * case-law search. The list was assembled from the criminal side of practice
  * and never revisited, and civil litigation is most of the work.
  */
-export const KNOWN_ACTS = ['IPC', 'BNS', 'CRPC', 'BNSS', 'IEA', 'BSA', 'CPC'] as const;
+export const KNOWN_ACTS = ['IPC', 'BNS', 'CRPC', 'BNSS', 'IEA', 'BSA', 'CPC', 'COI'] as const;
 export type ActCode = (typeof KNOWN_ACTS)[number];
 
 const ACT_ALIASES: Record<string, ActCode> = {
@@ -77,6 +77,12 @@ const ACT_ALIASES: Record<string, ActCode> = {
   cpc: 'CPC',
   'civil procedure code': 'CPC',
   'code of civil procedure': 'CPC',
+  coi: 'COI',
+  constitution: 'COI',
+  'constitution of india': 'COI',
+  'indian constitution': 'COI',
+  samvidhan: 'COI',
+  'संविधान': 'COI',
 };
 
 export function normaliseActCode(raw: string | null | undefined): ActCode | null {
@@ -98,7 +104,7 @@ export function extractSectionReference(text: string): { section: string | null;
   // engine takes the first alternative that matches at a position - and "CrPC"
   // read as "CPC" would answer a criminal question with civil procedure.
   const actMatch =
-    /\b(ipc|bns|crpc|cr\.?p\.?c|bnss|iea|bsa|cpc|indian penal code|penal code|bharatiya nyaya sanhita|nyaya sanhita|code of criminal procedure|criminal procedure code|bharatiya nagarik suraksha sanhita|evidence act|indian evidence act|bharatiya sakshya adhiniyam|code of civil procedure|civil procedure code)\b/i.exec(
+    /\b(ipc|bns|crpc|cr\.?p\.?c|bnss|iea|bsa|cpc|indian penal code|penal code|bharatiya nyaya sanhita|nyaya sanhita|code of criminal procedure|criminal procedure code|bharatiya nagarik suraksha sanhita|evidence act|indian evidence act|bharatiya sakshya adhiniyam|code of civil procedure|civil procedure code|constitution of india|indian constitution|constitution|संविधान)\b/i.exec(
       text,
     );
 
@@ -172,6 +178,41 @@ export function extractOrderReference(text: string): string | null {
   if (!order || order < 1 || order > 51) return null;
 
   return match[2] ? `Order ${order} Rule ${match[2].toUpperCase()}` : `Order ${order}`;
+}
+
+/**
+ * A reference to an Article of the Constitution.
+ *
+ * ## Why this needed its own extractor, like Orders did
+ *
+ * Constitutional provisions are Articles, and nothing recognised one - so
+ * "Article 226" reached the classifier as free text and came back a case-law
+ * search, which is the same failure "order 32 CPC" had and for the same reason:
+ * the reference was invisible, so a model guessed.
+ *
+ * Article 226 and Article 32 are two of the most-asked provisions in Indian
+ * practice. They are also the kind an advocate quotes by number and expects to
+ * be understood without spelling out where it comes from, which is why the act
+ * is inferred rather than required.
+ *
+ * Bounded at 395, the last Article of the original text. The letter suffix
+ * carries the amendments - 21A, 300A, 243ZG - and is preserved as typed.
+ *
+ * Like {@link extractOrderReference}, never matched without a number after it:
+ * "article" is an ordinary English word, and "the articles of association" is
+ * not a constitutional question.
+ */
+export function extractArticleReference(text: string): string | null {
+  // The amendment suffix must be adjacent to the number - "21A", never "21 A".
+  // With a gap allowed, the case-insensitive flag lets the next English word
+  // become the suffix, and "article 226 in a writ petition" reads as 226IN.
+  const match = /\bart(?:icle)?\.?\s*(\d{1,3})([A-Z]{1,3})?\b/i.exec(text);
+  if (!match) return null;
+
+  const article = Number(match[1]);
+  if (article < 1 || article > 395) return null;
+
+  return match[2] ? `Article ${article}${match[2].toUpperCase()}` : `Article ${article}`;
 }
 
 /** A decimal string, or a Roman numeral, as a number. Null when neither. */

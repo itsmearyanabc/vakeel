@@ -4,6 +4,7 @@ import { QueryIntent } from '../database/types';
 import { isAcknowledgement, isMenuWord } from './conversational';
 import {
   ActCode,
+  extractArticleReference,
   extractCnr,
   extractOrderReference,
   extractSectionReference,
@@ -54,7 +55,10 @@ export class IntentService {
     // answer even if the LLM call fails entirely.
     const regexCnr = extractCnr(text);
     const { section: regexSection, act: regexAct } = extractSectionReference(text);
-    const regexOrder = extractOrderReference(text);
+    // An Order of the CPC and an Article of the Constitution are both
+    // provisions the section matcher cannot see, and both were being answered
+    // with case law. Treated identically from here down.
+    const regexOrder = extractOrderReference(text) ?? extractArticleReference(text);
 
     // Some messages do not need a model to understand. Answering them still
     // cost a full router round trip - roughly a second of the advocate's time,
@@ -111,6 +115,7 @@ export class IntentService {
       classified.intent = 'SECTION_LOOKUP';
     }
     if (regexOrder && !classified.sectionNumber) classified.sectionNumber = regexOrder;
+    if (regexOrder?.startsWith('Article') && !classified.actCode) classified.actCode = 'COI';
 
     return classified;
   }
@@ -187,7 +192,9 @@ export class IntentService {
         ...base,
         intent: 'SECTION_LOOKUP',
         sectionNumber: order,
-        actCode: act ?? 'CPC',
+        // An Article belongs to the Constitution and nothing else; an Order,
+        // absent any other act named, is the CPC's.
+        actCode: act ?? (order.startsWith('Article') ? 'COI' : 'CPC'),
         confidence: 0.97,
       };
     }
