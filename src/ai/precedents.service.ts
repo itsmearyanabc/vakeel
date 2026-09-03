@@ -110,7 +110,7 @@ export class PrecedentsService {
     if (useKanoon) {
       try {
         const found = await this.kanoon.search(intent.searchQuery, this.maxResults);
-        const { precedents, namedCaseNotFound } = this.forNamedCase(intent.searchQuery, found);
+        const { precedents, namedCaseNotFound } = this.forNamedCase(intent.rawText, found);
         return {
           precedents: await this.withPrinciples(precedents),
           namedCaseNotFound,
@@ -162,7 +162,7 @@ export class PrecedentsService {
       'Precedent search complete',
     );
 
-    const named = this.forNamedCase(intent.searchQuery, precedents);
+    const named = this.forNamedCase(intent.rawText, precedents);
 
     return {
       precedents: await this.withPrinciples(named.precedents),
@@ -200,10 +200,21 @@ export class PrecedentsService {
    * law reports, so nothing here says the case does not exist.
    */
   private forNamedCase(
-    query: string,
+    /**
+     * What the advocate typed, NOT intent.searchQuery.
+     *
+     * The rewrite is aimed at retrieval and rephrases freely: this same
+     * question came back from the router as "case law for Rajesh Kumar Mittal
+     * vs State of Bihar in Patna High Court", out of which the parties read as
+     * "law for Rajesh Kumar Mittal" and "State of Bihar in Patna High Court".
+     * That is wrong twice over - it is quoted back in the heading, and the
+     * junk tokens dilute the score enough that the real judgment would have
+     * been rejected too.
+     */
+    typed: string,
     rows: PrecedentRow[],
   ): { precedents: PrecedentRow[]; namedCaseNotFound?: string } {
-    const name = extractCaseName(query);
+    const name = extractCaseName(typed);
     if (!name || rows.length === 0) return { precedents: rows };
 
     const scored = rows.map((row) => ({ row, score: caseNameScore(name, row.case_title) }));

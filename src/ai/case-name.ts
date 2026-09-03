@@ -53,9 +53,32 @@ const NOISE = new Set([
   'm/s', 'ms', 'mr', 'mrs', 'shri', 'smt', 'sri',
 ]);
 
-/** Everything an advocate puts around a case name that is not part of it. */
+/**
+ * Everything an advocate puts in front of a case name that is not part of it.
+ *
+ * `law` is in the noun list and `for|on|about` in the preposition list because
+ * of a real reply: "case law for Rajesh Kumar Mittal vs ..." lost only the word
+ * "case", and the petitioner came out as "law for Rajesh Kumar Mittal". Both
+ * halves are repeated so the whole phrase goes, not just its first word.
+ */
 const LEAD_IN =
-  /^(?:(?:the\s+)?(?:case|judgment|judgement|matter|decision|order|citation|ruling)\s+(?:of|in|titled|named)?\s*)/i;
+  /^(?:(?:the\s+)?(?:case|judgment|judgement|matter|decision|order|citation|ruling|law)\s+)+(?:(?:of|in|for|on|about|titled|named|regarding|re)\s+)*/i;
+
+/**
+ * A court named as context for the search, not as a party.
+ *
+ * The first version required punctuation in front of it, which caught
+ * "... vs State of Bihar . Patna High court" and missed "... vs State of Bihar
+ * in Patna High Court" - and the second is the ordinary way to write it.
+ *
+ * A case genuinely brought *against* a court - a writ on the administrative
+ * side - loses its respondent here and the whole extraction returns null, so
+ * the query falls back to an ordinary topic search. That is the right way for
+ * this to fail: a topic search on a cause title still finds the case, while a
+ * name lookup with an empty respondent could not.
+ */
+const TRAILING_COURT =
+  /[\s.,;]+(?:(?:in|from|at|before|of|by)\s+)?(?:the\s+)?[A-Za-z]*\s*\b(?:high\s+court|supreme\s+court|apex\s+court|tribunal|district\s+court|sessions\s+court)\b.*$/i;
 
 /**
  * The separator, in the forms that appear in practice.
@@ -83,10 +106,7 @@ export function extractCaseName(text: string): CaseName | null {
     .trim()
     .replace(LEAD_IN, '')
     .replace(/[.,;]?\s*\(?\b(19|20)\d{2}\)?\s*$/, '')
-    .replace(
-      /[.,;]\s*(?:from\s+)?(?:the\s+)?[A-Za-z ]*\b(?:high\s+court|supreme\s+court|tribunal|district\s+court)\b.*$/i,
-      '',
-    )
+    .replace(TRAILING_COURT, '')
     .trim();
 
   const parts = trimmed.split(SEPARATOR);

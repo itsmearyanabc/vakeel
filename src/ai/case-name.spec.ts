@@ -30,6 +30,58 @@ describe('spotting that a judgment was named', () => {
     expect(extractCaseName(text)).toEqual({ petitioner, respondent });
   });
 
+  it('survives the router rewriting the question before it gets here', () => {
+    /*
+     * The bug this test exists for, and it was my own.
+     *
+     * The detection was reading intent.searchQuery - the router model's rewrite
+     * aimed at retrieval - rather than what the advocate typed. The same
+     * question came back rewritten as "case law for Rajesh Kumar Mittal vs
+     * State of Bihar in Patna High Court", and the parties read out of that as
+     * "law for Rajesh Kumar Mittal" and "State of Bihar in Patna High Court".
+     *
+     * Wrong twice: the junk was quoted back in the heading, and the extra
+     * tokens diluted the score enough that the real judgment would have been
+     * rejected as well.
+     *
+     * The fix is that the intent now carries rawText and this reads that. These
+     * cases stay because the rewrite is not the only source of stray words -
+     * advocates type "case law for X vs Y in the Patna High Court" themselves.
+     */
+    for (const phrasing of [
+      'case law for Rajesh Kumar Mittal vs State of Bihar in Patna High Court',
+      'case of Rajesh Kumar Mittal vs State of Bihar in Patna High Court',
+      'Rajesh Kumar Mittal vs State of Bihar Patna High Court',
+      'case law on Rajesh Kumar Mittal vs State of Bihar',
+    ]) {
+      expect(extractCaseName(phrasing)).toEqual({
+        petitioner: 'Rajesh Kumar Mittal',
+        respondent: 'State of Bihar',
+      });
+    }
+  });
+
+  it('scores the real judgment above the bar from any of those phrasings', () => {
+    // The dilution mattered more than the display. "law for Rajesh Kumar
+    // Mittal" against the genuine title scored 0.5 - the same as the decoy -
+    // so the fix would have reported "not found" for a case that was there.
+    const name = extractCaseName(
+      'case law for Rajesh Kumar Mittal vs State of Bihar in Patna High Court',
+    )!;
+
+    expect(caseNameScore(name, 'Rajesh Kumar Mittal vs The State Of Bihar')).toBe(1);
+    expect(caseNameScore(name, 'Sunil Bharti Mittal vs The State Of Bihar')).toBeLessThan(
+      CASE_NAME_MATCH,
+    );
+  });
+
+  it('gives up rather than guess when the respondent is itself a court', () => {
+    // A writ against the High Court's administrative side loses its respondent
+    // to the court-stripping. Returning null is the right failure: the query
+    // falls back to a topic search, which still finds the case.
+    expect(extractCaseName('X vs Delhi High Court')).toBeNull();
+  });
+
   it('strips the court and year the advocate added as context', () => {
     // "Patna High court" narrows the search; it is not part of the cause title,
     // and leaving it on made the respondent "State of Bihar . Patna High court".

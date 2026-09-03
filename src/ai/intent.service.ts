@@ -22,6 +22,20 @@ export interface ClassifiedIntent {
   actCode: ActCode | null;
   /** Query rewritten in English legal terminology, for retrieval. */
   searchQuery: string;
+  /**
+   * What the advocate actually typed, before the model touched it.
+   *
+   * `searchQuery` is a rewrite aimed at retrieval, and it is the wrong input
+   * for anything that needs to know what was *asked*. "case of Rajesh Kumar
+   * Mittal vs State of Bihar . Patna High court" came back from the router as
+   * "case law for Rajesh Kumar Mittal vs State of Bihar in Patna High Court" -
+   * good for search, and reading a cause title out of it produced the parties
+   * "law for Rajesh Kumar Mittal" and "State of Bihar in Patna High Court".
+   *
+   * Required rather than optional, so a caller cannot silently fall back to
+   * the rewrite and reintroduce that.
+   */
+  rawText: string;
   confidence: number;
 }
 
@@ -154,7 +168,14 @@ export class IntentService {
     const lower = trimmed.toLowerCase();
     const language = /[ऀ-ॿ]/.test(trimmed) ? 'hi' : 'en';
 
-    const base = { language, cnrNumber: cnr, sectionNumber: null, actCode: null, searchQuery: trimmed };
+    const base = {
+      language,
+      cnrNumber: cnr,
+      sectionNumber: null,
+      actCode: null,
+      searchQuery: trimmed,
+      rawText: text,
+    };
 
     if (isMenuWord(lower)) {
       return { ...base, intent: 'MENU_NAVIGATION', confidence: 0.99 };
@@ -212,6 +233,7 @@ export class IntentService {
       sectionNumber: parsed.section_number ? String(parsed.section_number).toUpperCase() : null,
       actCode: normaliseActCode(parsed.act_code ? String(parsed.act_code) : null),
       searchQuery: parsed.search_query ? String(parsed.search_query) : original,
+      rawText: original,
       confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.6,
     };
   }
@@ -260,6 +282,7 @@ export class IntentService {
       sectionNumber: section,
       actCode: act,
       searchQuery: text,
+      rawText: text,
       confidence: 0.3,
     };
   }
