@@ -521,12 +521,14 @@ Each of these is a deliberate call, not an omission.
 
 ## Not built yet
 
-- **Razorpay payments.** The ledger, the order table, the webhook dedupe table
-  and the admin reporting all exist; nothing calls Razorpay. What remains is
-  order creation, checkout, and a signature-verified webhook that calls
-  `credit_grant()` with the payment id as its idempotency key. The
-  "paid but not credited" report in the admin panel is already there, because
-  that is the failure nobody sees until it has happened.
+- **A live Razorpay payment.** The integration is built — `src/payments/` does
+  order creation, checkout confirmation and a signature-verified webhook that
+  calls `credit_grant()` with the payment id as its idempotency key, and the
+  two signatures are distinct (checkout is the API secret over
+  `orderId|paymentId`; the webhook is the webhook secret over the raw body).
+  What has never happened is a real card being charged end to end. Until it
+  has, treat the webhook path as untested against Razorpay's actual payload
+  rather than against the fixture.
 - **A marketing site.** `/` serves the app; there is no public landing page.
 - **ID card upload to Supabase Storage.** The bot accepts the image and queues
   the verification, but does not persist the file. Storing identity documents
