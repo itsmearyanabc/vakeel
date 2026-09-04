@@ -453,20 +453,31 @@ export class PrecedentsService {
 
       const parsed = parseJsonLoose<{ principles?: { n?: number; principle?: string }[] }>(result.text);
       const byNumber = new Map<number, string>();
+      const declined = new Set<number>();
+
       for (const entry of parsed?.principles ?? []) {
         const n = Number(entry?.n);
         const principle = String(entry?.principle ?? '').trim();
-        // "NONE" is the model doing the right thing on an extract that states
-        // nothing, so it is dropped here rather than printed.
-        if (Number.isInteger(n) && principle && principle.toUpperCase() !== 'NONE') {
-          byNumber.set(n, principle);
-        }
+        if (!Number.isInteger(n) || !principle) continue;
+
+        /*
+         * "NONE" is the model doing the right thing on an extract that states
+         * nothing, and it used to be dropped on the floor.
+         *
+         * Dropping it meant the row fell through to the last resort, which
+         * prints the extract itself - so the advocate was shown the very text
+         * the model had just declined to summarise, under a heading claiming it
+         * was the principle of the case. Recorded instead.
+         */
+        if (principle.toUpperCase() === 'NONE') declined.add(n);
+        else byNumber.set(n, principle);
       }
 
       const filled = [...rows];
       needed.forEach(({ index }, n) => {
         const principle = byNumber.get(n + 1);
         if (principle) filled[index] = { ...filled[index], generated_principle: principle };
+        else if (declined.has(n + 1)) filled[index] = { ...filled[index], principle_declined: true };
       });
 
       this.logger.debug(
@@ -685,6 +696,12 @@ export function legalPrinciple(p: PrecedentRow, limit = 200): string | null {
   // Ranked below the court's words and above our own salvage attempt.
   const generated = (p.generated_principle || '').replace(/\s+/g, ' ').trim();
   if (generated) return stripEllipsis(synopsis({ ...p, best_excerpt: generated }, limit));
+
+  // The summariser read the extract and said it states no principle. Printing
+  // that extract anyway - which is what the salvage below does - shows the
+  // advocate the exact text a reader has already rejected, labelled as the
+  // holding. "Not available" is the honest end of this chain.
+  if (p.principle_declined) return null;
 
   const excerpt = (p.best_excerpt || '').replace(/\s+/g, ' ').trim();
   if (!excerpt) return null;

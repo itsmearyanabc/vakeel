@@ -171,6 +171,23 @@ export interface PrecedentRow {
    * Optional so a row read straight from the database is still a PrecedentRow.
    */
   generated_principle?: string | null;
+
+  /**
+   * The summariser read this row's extract and said it states no principle.
+   *
+   * Distinct from `generated_principle` being absent, which also happens when
+   * the model was never called, when the call failed, and when the row already
+   * carried a ratio. Only an explicit refusal sets this.
+   *
+   * It exists because the fallback was backwards. A row whose extract says
+   * nothing fell through to printing that extract - so "Rule 3 of Order 32 of
+   * the CPC , 1908. Sub Rule (5) of Rule 3 of Order 32 of the CPC , 1908 lays
+   * Rule (1) of Rule 3 of Order 32 of the CPC , 1908. 18." was printed under
+   * LEGAL PRINCIPLE, having just been judged to contain no principle. The
+   * model's refusal is the most reliable signal on the card and it was the one
+   * thing being discarded.
+   */
+  principle_declined?: boolean;
 }
 
 /**

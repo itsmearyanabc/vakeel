@@ -396,3 +396,83 @@ describe('a judgment asked for by name and found', () => {
     expect(page).not.toContain('matches that name');
   });
 });
+
+describe('when the summariser says the extract states no principle', () => {
+  /*
+   * Live output, and the fallback was backwards:
+   *
+   *   LEGAL PRINCIPLE: Rule 3 of Order 32 of the CPC , 1908. Sub Rule (5) of
+   *   Rule 3 of Order 32 of the CPC , 1908 lays Rule (1) of Rule 3 of Order 32
+   *   of the CPC , 1908. 18.
+   *
+   * That is Kanoon's raw snippet — the spaces before the commas are what is
+   * left after its <b> tags are stripped. It reached the card because the model
+   * had answered NONE for that row, NONE was discarded, and the row fell
+   * through to the last resort, which prints the extract.
+   *
+   * So the advocate was shown the exact text a reader had just rejected as
+   * stating nothing, under a heading claiming it was the holding. The model's
+   * refusal is the most reliable signal available on that card and it was the
+   * one thing being thrown away.
+   */
+  it('says nothing rather than printing the extract it just rejected', () => {
+    const out = formatPrecedentPage(
+      [
+        row({
+          ratio_decidendi: null,
+          headnote: null,
+          generated_principle: null,
+          principle_declined: true,
+          best_excerpt:
+            'Rule 3 of Order 32 of the CPC , 1908. Sub Rule (5) of Rule 3 of Order 32 of the CPC , 1908 lays Rule (1) of Rule 3 of Order 32 of the CPC , 1908. 18.',
+        }),
+      ],
+      0,
+      5,
+      'q',
+    );
+
+    expect(out).toContain('LEGAL PRINCIPLE: Not available');
+    expect(out).not.toContain('Sub Rule (5)');
+  });
+
+  it('still salvages an extract the summariser never looked at', () => {
+    // A failed model call, or no model at all, leaves principle_declined unset.
+    // The extract is then the best thing available and is still worth printing.
+    const out = formatPrecedentPage(
+      [
+        row({
+          ratio_decidendi: null,
+          headnote: null,
+          generated_principle: null,
+          best_excerpt:
+            'A minor must sue through a next friend, and a decree passed against a minor not so represented is a nullity.',
+        }),
+      ],
+      0,
+      5,
+      'q',
+    );
+
+    expect(out).toContain('next friend');
+  });
+
+  it('prefers what the model wrote over the raw extract', () => {
+    const out = formatPrecedentPage(
+      [
+        row({
+          ratio_decidendi: null,
+          headnote: null,
+          generated_principle: 'A decree against an unrepresented minor is a nullity.',
+          best_excerpt: 'Rule 3 of Order 32 of the CPC , 1908. Sub Rule (5) of Rule 3.',
+        }),
+      ],
+      0,
+      5,
+      'q',
+    );
+
+    expect(out).toContain('A decree against an unrepresented minor is a nullity.');
+    expect(out).not.toContain('Sub Rule (5)');
+  });
+});
