@@ -1,4 +1,5 @@
 import { CASE_NAME_MATCH, caseNameScore, extractCaseName } from './case-name';
+import { ClassifiedIntent } from './intent.service';
 import { kanoonQuery } from './precedents.service';
 
 /**
@@ -187,6 +188,20 @@ describe('scoring a title against the name that was asked for', () => {
   });
 });
 
+/** A ClassifiedIntent with only the fields kanoonQuery reads. */
+function intent(over: Partial<ClassifiedIntent> & { rawText: string }): ClassifiedIntent {
+  return {
+    intent: 'PRECEDENT_SEARCH',
+    language: 'en',
+    cnrNumber: null,
+    sectionNumber: null,
+    actCode: null,
+    searchQuery: over.rawText,
+    confidence: 0.9,
+    ...over,
+  };
+}
+
 describe('what actually gets sent to Indian Kanoon', () => {
   /*
    * The second half of the same report: the bot said "no judgment found" for a
@@ -199,26 +214,106 @@ describe('what actually gets sent to Indian Kanoon', () => {
    * cause title has been recognised, the parties are the query.
    */
   it('searches for the parties, not the sentence around them', () => {
-    expect(kanoonQuery('case law for Rajesh Kumar Mittal vs State of Bihar', 'rewritten')).toBe(
-      'Rajesh Kumar Mittal State of Bihar',
-    );
+    expect(
+      kanoonQuery(
+        intent({ rawText: 'case law for Rajesh Kumar Mittal vs State of Bihar', searchQuery: 'rewritten' }),
+      ),
+    ).toBe('Rajesh Kumar Mittal State of Bihar');
   });
 
   it('keeps the court, because that is what narrows the search', () => {
     // Kanoon's doctypes: restriction is derived from phrases like "Patna High
     // Court". Dropping them turns a High Court lookup into a search of
     // everything, which is how a precise question gets a vague answer.
-    expect(kanoonQuery('case of Rajesh Kumar Mittal vs State of Bihar . Patna High court', 'x')).toBe(
-      'Rajesh Kumar Mittal State of Bihar Patna High court',
-    );
+    expect(
+      kanoonQuery(
+        intent({
+          rawText: 'case of Rajesh Kumar Mittal vs State of Bihar . Patna High court',
+          searchQuery: 'x',
+        }),
+      ),
+    ).toBe('Rajesh Kumar Mittal State of Bihar Patna High court');
     expect(extractCaseName('Vishaka vs State of Rajasthan')?.court).toBeUndefined();
   });
 
   it('leaves an ordinary question with the rewrite, which is what it is for', () => {
     // "anticipatory bail after chargesheet" is better searched in the model's
     // legal vocabulary than in the advocate's phrasing.
-    expect(kanoonQuery('is anticipatory bail maintainable', 'anticipatory bail after chargesheet')).toBe(
-      'anticipatory bail after chargesheet',
-    );
+    expect(
+      kanoonQuery(
+        intent({
+          rawText: 'is anticipatory bail maintainable',
+          searchQuery: 'anticipatory bail after chargesheet',
+        }),
+      ),
+    ).toBe('anticipatory bail after chargesheet');
+  });
+});
+
+describe('searching for a provision', () => {
+  /*
+   * "list of judgements for order 32 cpc" came back as *Royal Sundaram General
+   * Insurance vs Commissioner Of GST* and *Bss Mines & Minerals vs Commissioner
+   * Of Central Excise* — customs and excise tribunal decisions with no
+   * connection to civil procedure.
+   *
+   * The router had rewritten the question to "list of judgments related to
+   * Order 32 of the Civil Procedure Code" and Kanoon scored every word of it.
+   * "order", "code" and "32" are among the commonest tokens in Indian tax and
+   * excise judgments — Order-in-Original, Order No. 32, the Customs Act — so
+   * the documents matching hardest were the ones using those words most.
+   */
+  it('sends the provision as a phrase, with the Act as courts write it', () => {
+    expect(
+      kanoonQuery(
+        intent({
+          rawText: 'list of judgements for order 32 cpc',
+          searchQuery: 'list of judgments related to Order 32 of the Civil Procedure Code',
+          sectionNumber: 'Order 32',
+          actCode: 'CPC',
+        }),
+      ),
+    ).toBe('"Order 32" "Civil Procedure"');
+  });
+
+  it('names a bare number as a section, or the phrase is just a number', () => {
+    expect(
+      kanoonQuery(intent({ rawText: 'judgments on 302 IPC', sectionNumber: '302', actCode: 'IPC' })),
+    ).toBe('"Section 302" "Indian Penal Code"');
+  });
+
+  it('handles an Article of the Constitution the same way', () => {
+    expect(
+      kanoonQuery(
+        intent({ rawText: 'case law on article 226', sectionNumber: 'Article 226', actCode: 'COI' }),
+      ),
+    ).toBe('"Article 226" "Constitution of India"');
+  });
+
+  it('quotes the provision alone when no Act was identified', () => {
+    expect(
+      kanoonQuery(intent({ rawText: 'judgments on section 138', sectionNumber: '138' })),
+    ).toBe('"Section 138"');
+  });
+
+  it('leaves a question naming no provision with the rewrite', () => {
+    expect(
+      kanoonQuery(
+        intent({ rawText: 'precedents on cheque bounce', searchQuery: 'dishonour of cheque' }),
+      ),
+    ).toBe('dishonour of cheque');
+  });
+
+  it('prefers the cause title when the advocate named both', () => {
+    // A named case is more specific than the provision it turns on.
+    expect(
+      kanoonQuery(
+        intent({
+          rawText: 'Rajesh Kumar Mittal vs State of Bihar',
+          sectionNumber: 'Order 32',
+          actCode: 'CPC',
+        }),
+      ),
+    ).toBe('Rajesh Kumar Mittal State of Bihar');
   });
 });

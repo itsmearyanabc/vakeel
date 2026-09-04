@@ -49,12 +49,71 @@ function display(name: CaseName): string {
  * for: "anticipatory bail after chargesheet" is better searched in the model's
  * legal vocabulary than in the advocate's.
  */
-export function kanoonQuery(typed: string, rewritten: string): string {
-  const name = extractCaseName(typed);
-  if (!name) return rewritten;
+export function kanoonQuery(intent: ClassifiedIntent): string {
+  const name = extractCaseName(intent.rawText);
+  if (name) return [name.petitioner, name.respondent, name.court].filter(Boolean).join(' ');
 
-  return [name.petitioner, name.respondent, name.court].filter(Boolean).join(' ');
+  const provision = provisionPhrase(intent);
+  if (provision) return provision;
+
+  return intent.searchQuery;
 }
+
+/**
+ * A provision, as the judgments that apply it actually write it.
+ *
+ * ## Why the rewrite is the wrong query here too
+ *
+ * "list of judgements for order 32 cpc" came back as *Royal Sundaram General
+ * Insurance vs Commissioner Of GST* and *Bss Mines & Minerals vs Commissioner
+ * Of Central Excise* - customs and excise tribunal decisions with no
+ * connection to civil procedure at all.
+ *
+ * The router had rewritten the question to "list of judgments related to Order
+ * 32 of the Civil Procedure Code", and Kanoon scored every word of it. "order",
+ * "code" and "32" are among the most common tokens in Indian tax and excise
+ * judgments - Order-in-Original, Order No. 32, the Customs Act - so the
+ * documents that matched hardest were the ones that used those words most,
+ * which had nothing to do with the question.
+ *
+ * The provision is the query. Quoted, so "Order 32" is matched as a phrase
+ * rather than as the words "order" and "32" appearing anywhere, and paired with
+ * the Act so a stray "Order 32" in a customs matter does not qualify.
+ *
+ * The act phrase is the form courts write, not the abbreviation: judgments say
+ * "the Code of Civil Procedure" or "the Civil Procedure Code" far more often
+ * than "CPC", and "Civil Procedure" is the part common to both.
+ */
+function provisionPhrase(intent: ClassifiedIntent): string | null {
+  const provision = intent.sectionNumber?.trim();
+  if (!provision) return null;
+
+  // "Order 32" and "Article 226" already read as provisions; a bare "302" is a
+  // section and needs the word, or the phrase match is just a number.
+  const head = /^(order|rule|article)\b/i.test(provision) ? provision : `Section ${provision}`;
+  const act = intent.actCode ? ACT_PHRASES[intent.actCode] : null;
+
+  return act ? `"${head}" "${act}"` : `"${head}"`;
+}
+
+/**
+ * How each Act is named in the body of a judgment.
+ *
+ * Searching for the abbreviation finds the minority of judgments that use it.
+ * Courts write the name out, and these are the substrings shared across the
+ * spellings they use - "Civil Procedure" covers both "Code of Civil Procedure"
+ * and "Civil Procedure Code".
+ */
+const ACT_PHRASES: Record<string, string> = {
+  IPC: 'Indian Penal Code',
+  CRPC: 'Criminal Procedure',
+  CPC: 'Civil Procedure',
+  BNS: 'Bharatiya Nyaya Sanhita',
+  BNSS: 'Bharatiya Nagarik Suraksha Sanhita',
+  IEA: 'Evidence Act',
+  BSA: 'Bharatiya Sakshya',
+  COI: 'Constitution of India',
+};
 
 export interface PrecedentSearchResult {
   /** Already sorted newest-first, whichever source produced them. */
@@ -142,10 +201,7 @@ export class PrecedentsService {
 
     if (useKanoon) {
       try {
-        const found = await this.kanoon.search(
-          kanoonQuery(intent.rawText, intent.searchQuery),
-          this.maxResults,
-        );
+        const found = await this.searchKanoon(intent);
         const { precedents, namedCase } = this.forNamedCase(intent.rawText, found);
         return {
           precedents: await this.withPrinciples(precedents),
@@ -171,6 +227,32 @@ export class PrecedentsService {
     }
 
     return this.searchLocal(intent, started);
+  }
+
+  /**
+   * Kanoon, asked the narrow question first and the broad one only if needed.
+   *
+   * The narrowed query is a phrase match - `"Order 32" "Civil Procedure"` - and
+   * phrase syntax is the one part of this that cannot be verified from here
+   * without an API key. If Kanoon does not honour the quotes, or the phrase
+   * genuinely appears in nothing it indexes, the result is zero rows, and zero
+   * rows reads to the advocate as "there is no authority on this" - which is a
+   * far worse answer than the loose one it replaced.
+   *
+   * So the broad query stays as a fallback. It costs one extra billed call, and
+   * only on a search that would otherwise have returned nothing at all.
+   */
+  private async searchKanoon(intent: ClassifiedIntent): Promise<PrecedentRow[]> {
+    const narrow = kanoonQuery(intent);
+    const rows = await this.kanoon.search(narrow, this.maxResults);
+
+    if (rows.length > 0 || narrow === intent.searchQuery) return rows;
+
+    this.logger.info(
+      { narrow, falling_back_to: intent.searchQuery },
+      'Narrowed Kanoon query matched nothing - retrying with the rewritten question',
+    );
+    return this.kanoon.search(intent.searchQuery, this.maxResults);
   }
 
   /** Hybrid dense + lexical search over the ingested Postgres corpus. */
@@ -771,13 +853,19 @@ export function formatPrecedentPage(
       line('BENCH', bench),
       line('EQUIVALENT CITATIONS', equivalents.join('; ')),
       line('COURT', p.court_name),
-      // The judgment itself, which no card offered a way to reach.
-      //
-      // Three of the seven fields come back "Not available" from Indian Kanoon -
-      // it publishes no case number and no citations through its API - so for a
-      // Kanoon result this line is the only route from the card to the text.
-      // Leaving it out made the empty fields a dead end rather than a detour.
-      ...(p.source_url ? [`READ: ${p.source_url}`] : []),
+      /*
+       * No link, and no naming of where the result came from.
+       *
+       * A READ: line pointing at indiankanoon.org was added here on the
+       * reasoning that three of the seven fields come back empty and the card
+       * was otherwise a dead end. That was the wrong trade and the instruction
+       * is explicit: this product never sends an advocate to another site. A
+       * link out is an admission that the answer is elsewhere, printed on every
+       * card, next to a competitor's name.
+       *
+       * The empty fields are a reason to fill them, not a reason to hand the
+       * advocate off. Same rule in VAKEEL_PERSONA for the generated replies.
+       */
       '',
       // "Not available" rather than the document's own header standing in for a
       // holding. Every word of that header is true and it is not what the case

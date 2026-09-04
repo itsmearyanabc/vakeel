@@ -133,21 +133,24 @@ describe('precedent formatting', () => {
       expect(out).toContain('Type *0*');
     });
 
-    it('offers a way to read the judgment when the row has one', () => {
+    it('never sends the advocate to another website', () => {
       /*
-       * This test asserted the opposite - "never leaks an Indian Kanoon URL",
-       * on the reasoning that the advocate asked for judgments, not for links
-       * to a third-party site.
+       * This has now been decided twice, and the second time is the one that
+       * stands: no link out, ever.
        *
-       * That reasoning assumed the card was self-contained, and for an
-       * Indian Kanoon result it is not: Kanoon publishes no case number and no
-       * citations through its API, so CASE NO. and EQUIVALENT CITATIONS are
-       * structurally "Not available" and LEGAL PRINCIPLE is too whenever the
-       * search returns no snippet. Three empty fields and no link is a card
-       * that proves a judgment exists and gives no way to read it.
+       * The argument for one was that Indian Kanoon publishes no case number
+       * and no citations through its API, so three of the seven fields read
+       * "Not available" and the card proves a judgment exists without offering
+       * a way to read it. A READ: line was added on that basis.
        *
-       * Reversed deliberately. It is one line in formatPrecedentPage if the
-       * product decision goes back the other way.
+       * The instruction is explicit and it overrides that: this product never
+       * points an advocate at another service. A link out is an admission that
+       * the answer is somewhere else, printed on every card, next to a
+       * competitor's name. Empty fields are a reason to go and fill them.
+       *
+       * The same rule is in VAKEEL_PERSONA, because the model was doing it in
+       * prose - "you might want to check a legal database or citation tool" -
+       * which is worse than a link.
        */
       const out = formatPrecedentPage(
         [row({ source_url: 'https://indiankanoon.org/doc/70495810/' })],
@@ -155,13 +158,8 @@ describe('precedent formatting', () => {
         5,
         'q',
       );
-      expect(out).toContain('READ: https://indiankanoon.org/doc/70495810/');
-    });
 
-    it('prints no link when the row has none', () => {
-      // Local corpus rows carry no source_url, and an empty "READ:" line would
-      // be one more dead label on a card that already has too many.
-      const out = formatPrecedentPage([row({ source_url: null })], 0, 5, 'q');
+      expect(out).not.toMatch(/indiankanoon|https?:\/\//i);
       expect(out).not.toContain('READ:');
     });
 

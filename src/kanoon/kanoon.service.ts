@@ -158,8 +158,32 @@ export class KanoonService {
 
     const rows = toPrecedentRows(docs, total ?? docs.length, maxResults);
 
+    /*
+     * The field names on the first document, verbatim.
+     *
+     * Every live search so far has produced "LEGAL PRINCIPLE: Not available" on
+     * every card, and best_excerpt comes from one field - `headline`. Whether
+     * that field is absent from these responses, or present and empty, or
+     * present under another name, is not something the mapped rows can answer:
+     * by then it is a null either way.
+     *
+     * Logged once per search rather than reasoned about. Also `bench` and
+     * `author`, which fill the BENCH line and have been intermittent in the
+     * same way.
+     */
+    const sample = docs[0];
     this.logger.info(
-      { query, pages: pageCount, received: docs.length, returned: rows.length, total },
+      {
+        query,
+        pages: pageCount,
+        received: docs.length,
+        returned: rows.length,
+        total,
+        fields: sample ? Object.keys(sample).sort() : [],
+        hasHeadline: Boolean(sample?.headline),
+        hasAuthor: Boolean(sample?.author),
+        headlineLength: sample?.headline?.length ?? 0,
+      },
       'Kanoon search complete',
     );
 
