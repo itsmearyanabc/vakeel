@@ -1146,7 +1146,7 @@ export class ConversationService {
     const body = formatPrecedentPage(result.precedents, 0, pageSize, intent.searchQuery, {
       lexicalOnly: result.lexicalOnly,
       source: result.source,
-      namedCaseNotFound: result.namedCaseNotFound,
+      namedCase: result.namedCase,
     });
     await this.api.sendText(job.from, body);
 
@@ -1170,7 +1170,7 @@ export class ConversationService {
             precedentRows: result.precedents,
             precedentLexicalOnly: result.lexicalOnly,
             precedentSource: result.source,
-            precedentNamedCaseNotFound: result.namedCaseNotFound,
+            precedentNamedCase: result.namedCase,
           }
         : CLEARED_PRECEDENTS;
 
@@ -1236,7 +1236,7 @@ export class ConversationService {
       formatPrecedentPage(rows, offset, pageSize, context.precedentQuery ?? 'your search', {
         lexicalOnly: context.precedentLexicalOnly,
         source: context.precedentSource,
-        namedCaseNotFound: context.precedentNamedCaseNotFound,
+        namedCase: context.precedentNamedCase,
       }),
     );
 

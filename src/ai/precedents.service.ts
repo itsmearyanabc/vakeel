@@ -66,15 +66,17 @@ export interface PrecedentSearchResult {
   /** Which backend actually answered - shown to the user and logged. */
   source: 'local' | 'kanoon';
   /**
-   * Set when the advocate asked for a judgment by name and nothing in the
-   * results is that judgment.
+   * Set when the advocate asked for a judgment by name.
+   *
+   * `found` says whether it is in these rows, and both cases need saying. A
+   * miss must not wear the successful search's heading; a hit must not be
+   * padded out with nine unrelated judgments to fill a page.
    *
    * Carried rather than inferred at render time, because deciding it needs the
    * name they gave and the titles that came back - and the second page has
-   * neither. Without it, page two of a failed lookup reads like a successful
-   * topic search.
+   * neither.
    */
-  namedCaseNotFound?: string;
+  namedCase?: { name: string; found: boolean };
   latencyMs: number;
 }
 
@@ -144,10 +146,10 @@ export class PrecedentsService {
           kanoonQuery(intent.rawText, intent.searchQuery),
           this.maxResults,
         );
-        const { precedents, namedCaseNotFound } = this.forNamedCase(intent.rawText, found);
+        const { precedents, namedCase } = this.forNamedCase(intent.rawText, found);
         return {
           precedents: await this.withPrinciples(precedents),
-          namedCaseNotFound,
+          namedCase,
           totalMatches: precedents[0]?.total_matches ?? precedents.length,
           // Kanoon runs its own relevance ranking; the local dense/lexical
           // distinction does not apply, so this is never a degraded state.
@@ -200,7 +202,7 @@ export class PrecedentsService {
 
     return {
       precedents: await this.withPrinciples(named.precedents),
-      namedCaseNotFound: named.namedCaseNotFound,
+      namedCase: named.namedCase,
       totalMatches: precedents[0]?.total_matches ?? precedents.length,
       lexicalOnly: !embedding,
       source: 'local',
@@ -247,7 +249,7 @@ export class PrecedentsService {
      */
     typed: string,
     rows: PrecedentRow[],
-  ): { precedents: PrecedentRow[]; namedCaseNotFound?: string } {
+  ): { precedents: PrecedentRow[]; namedCase?: { name: string; found: boolean } } {
     const name = extractCaseName(typed);
     if (!name || rows.length === 0) return { precedents: rows };
 
@@ -259,16 +261,30 @@ export class PrecedentsService {
         { petitioner: name.petitioner, respondent: name.respondent, candidates: rows.length },
         'Named case not found in the results - the reply will say so',
       );
-      return { precedents: rows, namedCaseNotFound: display(name) };
+      return { precedents: rows, namedCase: { name: display(name), found: false } };
     }
 
-    // Best match first, then the rest in the order retrieval produced. The
-    // chronological requirement is for a topic search; somebody who named one
-    // case wants that case at the top, not the newest thing sharing a surname.
-    const rest = scored.filter((s) => s.score < CASE_NAME_MATCH).map((s) => s.row);
-    return {
-      precedents: [...matches.sort((a, b) => b.score - a.score).map((s) => s.row), ...rest],
-    };
+    /*
+     * Only the matches. The rest are dropped, not demoted.
+     *
+     * Ranking them below the hit was the first attempt and it still reads
+     * wrong: the advocate asked for one judgment, got it at number one, and
+     * then got nine more under the heading "Case law - 10 precedents" - among
+     * them *State Of Himachal Pradesh vs Chander Sharma*, which shares neither
+     * a party nor a court nor a subject with the question. They are there
+     * because Kanoon returns ten results, not because anything connects them.
+     *
+     * Padding an exact answer with near misses makes the answer look like a
+     * guess. A topic search is one question away when they want authorities.
+     */
+    const found = matches.sort((a, b) => b.score - a.score).map((s) => s.row);
+
+    this.logger.info(
+      { petitioner: name.petitioner, matched: found.length, discarded: rows.length - found.length },
+      'Named case found - showing only the matching judgments',
+    );
+
+    return { precedents: found, namedCase: { name: display(name), found: true } };
   }
 
   /**
@@ -305,7 +321,32 @@ export class PrecedentsService {
       .filter(({ row }) => !(row.ratio_decidendi || row.headnote || '').trim())
       .filter(({ row }) => (row.best_excerpt || '').trim().length > 0);
 
-    if (needed.length === 0) return rows;
+    if (needed.length === 0) {
+      /*
+       * Logged rather than returned silently.
+       *
+       * Every card in a live search came back "LEGAL PRINCIPLE: Not available",
+       * and from the outside that is indistinguishable from four different
+       * causes: the model failing, the parse failing, the rows already having a
+       * ratio, or - what this counts - Indian Kanoon returning no `headline`
+       * for the documents it matched, which leaves nothing to summarise.
+       *
+       * `withoutExtract` is the number that decides it. If it equals the row
+       * count, the summariser is starving, not broken, and the fix is upstream
+       * at the search - not here.
+       */
+      this.logger.info(
+        {
+          rows: rows.length,
+          withoutExtract: rows.filter((row) => !(row.best_excerpt || '').trim()).length,
+          alreadyAuthored: rows.filter((row) =>
+            (row.ratio_decidendi || row.headnote || '').trim(),
+          ).length,
+        },
+        'No legal principles to summarise - nothing had an extract to summarise from',
+      );
+      return rows;
+    }
 
     try {
       const extracts = needed
@@ -612,7 +653,11 @@ export function formatPrecedentPage(
   offset: number,
   pageSize: number,
   query: string,
-  opts: { lexicalOnly?: boolean; source?: 'local' | 'kanoon'; namedCaseNotFound?: string } = {},
+  opts: {
+    lexicalOnly?: boolean;
+    source?: 'local' | 'kanoon';
+    namedCase?: { name: string; found: boolean };
+  } = {},
 ): string {
   if (all.length === 0) {
     return [
@@ -640,21 +685,32 @@ export function formatPrecedentPage(
    * are. And the sentence stops short of "no such case": absence from the index
    * is not absence from the reports, and that is not a claim this can make.
    */
-  const header = opts.namedCaseNotFound
-    ? [
-        `*No judgment found named "${opts.namedCaseNotFound}"*`,
-        '',
-        'I could not find that case. It may be reported under a slightly ' +
-          'different cause title, or not be in the searchable record.',
-        '',
-        `*Closest matches by name* — showing ${offset + 1}–${shownTo} of ${all.length}.`,
-      ]
-    : [
-        `*Case law — ${all.length} precedent${all.length === 1 ? '' : 's'}*`,
-        `_${query}_`,
-        '',
-        `Showing ${offset + 1}–${shownTo} of ${all.length}, newest first.`,
-      ];
+  const named = opts.namedCase;
+
+  const header =
+    named && !named.found
+      ? [
+          `*No judgment found named "${named.name}"*`,
+          '',
+          'I could not find that case. It may be reported under a slightly ' +
+            'different cause title, or not be in the searchable record.',
+          '',
+          `*Closest matches by name* — showing ${offset + 1}–${shownTo} of ${all.length}.`,
+        ]
+      : named
+        ? [
+            `*${named.name}*`,
+            '',
+            all.length === 1
+              ? 'One judgment matches that name.'
+              : `${all.length} judgments match that name — showing ${offset + 1}–${shownTo}.`,
+          ]
+        : [
+            `*Case law — ${all.length} precedent${all.length === 1 ? '' : 's'}*`,
+            `_${query}_`,
+            '',
+            `Showing ${offset + 1}–${shownTo} of ${all.length}, newest first.`,
+          ];
 
   if (opts.lexicalOnly) {
     // Say so rather than quietly returning worse results.
@@ -715,6 +771,13 @@ export function formatPrecedentPage(
       line('BENCH', bench),
       line('EQUIVALENT CITATIONS', equivalents.join('; ')),
       line('COURT', p.court_name),
+      // The judgment itself, which no card offered a way to reach.
+      //
+      // Three of the seven fields come back "Not available" from Indian Kanoon -
+      // it publishes no case number and no citations through its API - so for a
+      // Kanoon result this line is the only route from the card to the text.
+      // Leaving it out made the empty fields a dead end rather than a detour.
+      ...(p.source_url ? [`READ: ${p.source_url}`] : []),
       '',
       // "Not available" rather than the document's own header standing in for a
       // holding. Every word of that header is true and it is not what the case

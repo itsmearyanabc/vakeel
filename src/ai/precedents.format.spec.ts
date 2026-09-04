@@ -133,10 +133,36 @@ describe('precedent formatting', () => {
       expect(out).toContain('Type *0*');
     });
 
-    it('never leaks an Indian Kanoon URL', () => {
-      // The advocate asked for judgments, not for links to a third-party site.
-      const out = formatPrecedentPage([row({ source_url: 'https://indiankanoon.org/doc/70495810/' })], 0, 5, 'q');
-      expect(out).not.toMatch(/indiankanoon|https?:\/\//i);
+    it('offers a way to read the judgment when the row has one', () => {
+      /*
+       * This test asserted the opposite - "never leaks an Indian Kanoon URL",
+       * on the reasoning that the advocate asked for judgments, not for links
+       * to a third-party site.
+       *
+       * That reasoning assumed the card was self-contained, and for an
+       * Indian Kanoon result it is not: Kanoon publishes no case number and no
+       * citations through its API, so CASE NO. and EQUIVALENT CITATIONS are
+       * structurally "Not available" and LEGAL PRINCIPLE is too whenever the
+       * search returns no snippet. Three empty fields and no link is a card
+       * that proves a judgment exists and gives no way to read it.
+       *
+       * Reversed deliberately. It is one line in formatPrecedentPage if the
+       * product decision goes back the other way.
+       */
+      const out = formatPrecedentPage(
+        [row({ source_url: 'https://indiankanoon.org/doc/70495810/' })],
+        0,
+        5,
+        'q',
+      );
+      expect(out).toContain('READ: https://indiankanoon.org/doc/70495810/');
+    });
+
+    it('prints no link when the row has none', () => {
+      // Local corpus rows carry no source_url, and an empty "READ:" line would
+      // be one more dead label on a card that already has too many.
+      const out = formatPrecedentPage([row({ source_url: null })], 0, 5, 'q');
+      expect(out).not.toContain('READ:');
     });
 
     it('strips the ellipses Kanoon leaves in truncated titles', () => {
@@ -293,7 +319,7 @@ describe('a judgment asked for by name and not found', () => {
 
   it('says so instead of calling them precedents', () => {
     const page = formatPrecedentPage(rows, 0, 5, 'Rajesh Kumar Mittal vs State of Bihar', {
-      namedCaseNotFound: 'Rajesh Kumar Mittal vs State of Bihar',
+      namedCase: { name: 'Rajesh Kumar Mittal vs State of Bihar', found: false },
     });
 
     expect(page).toContain('No judgment found named "Rajesh Kumar Mittal vs State of Bihar"');
@@ -303,7 +329,7 @@ describe('a judgment asked for by name and not found', () => {
   it('offers the near misses as near misses', () => {
     // Still worth showing: cause titles get misremembered, and the right case
     // is often two words away. Just not presented as what was asked for.
-    const page = formatPrecedentPage(rows, 0, 5, 'q', { namedCaseNotFound: 'A vs B' });
+    const page = formatPrecedentPage(rows, 0, 5, 'q', { namedCase: { name: 'A vs B', found: false } });
 
     expect(page).toContain('Closest matches by name');
     expect(page).toContain('Sunil Bharti Mittal');
@@ -312,7 +338,7 @@ describe('a judgment asked for by name and not found', () => {
   it('does not claim the case does not exist', () => {
     // Absence from the searchable record is not absence from the law reports,
     // and an advocate cannot check a claim like that.
-    const page = formatPrecedentPage(rows, 0, 5, 'q', { namedCaseNotFound: 'A vs B' });
+    const page = formatPrecedentPage(rows, 0, 5, 'q', { namedCase: { name: 'A vs B', found: false } });
 
     expect(page).toMatch(/could not find that case/i);
     expect(page).not.toMatch(/does not exist|no such case/i);
@@ -321,7 +347,7 @@ describe('a judgment asked for by name and not found', () => {
   it('keeps the caveat on the second page too', () => {
     // Without the flag carried through the session, page two reverted to the
     // confident heading and read like a search that had worked.
-    const page = formatPrecedentPage(rows, 1, 5, 'q', { namedCaseNotFound: 'A vs B' });
+    const page = formatPrecedentPage(rows, 1, 5, 'q', { namedCase: { name: 'A vs B', found: false } });
 
     expect(page).toContain('No judgment found named');
   });
@@ -331,5 +357,44 @@ describe('a judgment asked for by name and not found', () => {
 
     expect(page).toContain('Case law —');
     expect(page).not.toContain('No judgment found named');
+  });
+});
+
+describe('a judgment asked for by name and found', () => {
+  /*
+   * "Rajesh Kumar Mittal vs State Of Bihar on 18 January, 2005" returned the
+   * right judgment at number one - and then nine more under the heading "Case
+   * law - 10 precedents", among them *State Of Himachal Pradesh vs Chander
+   * Sharma*, which shares neither a party nor a court nor a subject with the
+   * question. They were there because Kanoon returns ten results, not because
+   * anything connected them.
+   *
+   * Padding an exact answer with near misses makes the answer look like a
+   * guess. The matches are the reply now; the rest are dropped, not demoted.
+   */
+  const hit = row({ case_title: 'Rajesh Kumar Mittal vs State Of Bihar' });
+  const found = { name: 'Rajesh Kumar Mittal vs State of Bihar', found: true };
+
+  it('leads with the name, not a precedent count', () => {
+    const page = formatPrecedentPage([hit], 0, 5, 'q', { namedCase: found });
+
+    expect(page).toContain('*Rajesh Kumar Mittal vs State of Bihar*');
+    expect(page).toContain('One judgment matches that name.');
+    expect(page).not.toContain('Case law —');
+    expect(page).not.toContain('newest first');
+  });
+
+  it('counts them when a name genuinely matches more than one', () => {
+    // Same parties litigating twice is ordinary. Both are the answer.
+    const page = formatPrecedentPage([hit, hit], 0, 5, 'q', { namedCase: found });
+
+    expect(page).toContain('2 judgments match that name');
+  });
+
+  it('still reads as a topic search when no name was given', () => {
+    const page = formatPrecedentPage([hit], 0, 5, 'anticipatory bail');
+
+    expect(page).toContain('Case law —');
+    expect(page).not.toContain('matches that name');
   });
 });

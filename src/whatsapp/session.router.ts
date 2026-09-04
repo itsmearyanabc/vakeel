@@ -80,13 +80,13 @@ export interface SessionContext {
   /** Which backend answered. Repeated for the same reason. */
   precedentSource?: 'local' | 'kanoon';
   /**
-   * The advocate named a judgment and it is not in these results.
+   * The advocate named a judgment, and whether it was found.
    *
    * Carried for the same reason as the two above: it changes the heading, and
-   * without it page two of a failed name lookup reverts to "Case law - 10
-   * precedents" and reads like a search that worked.
+   * without it page two of a name lookup reverts to "Case law - 10 precedents"
+   * and reads like a topic search that worked.
    */
-  precedentNamedCaseNotFound?: string;
+  precedentNamedCase?: { name: string; found: boolean };
 }
 
 export interface SessionUser {
@@ -140,7 +140,7 @@ export const CLEARED_PRECEDENTS: Partial<SessionContext> = {
   precedentRows: undefined,
   precedentLexicalOnly: undefined,
   precedentSource: undefined,
-  precedentNamedCaseNotFound: undefined,
+  precedentNamedCase: undefined,
 };
 
 /** "0" always means "take me back to the menu", from every state. */
