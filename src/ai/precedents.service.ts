@@ -5,6 +5,7 @@ import { AppEnv } from '../config/env';
 import { CorpusRepository } from '../database/repositories/corpus.repository';
 import { PrecedentRow } from '../database/types';
 import { KanoonNotConfiguredError, KanoonService } from '../kanoon/kanoon.service';
+import { courtFilter } from '../kanoon/kanoon.mapper';
 import { SettingsService } from '../settings/settings.service';
 // The formatter below emits WhatsApp markup and is only ever rendered into a
 // WhatsApp message, so sharing the closing copy is the honest dependency.
@@ -51,12 +52,40 @@ function display(name: CaseName): string {
  */
 export function kanoonQuery(intent: ClassifiedIntent): string {
   const name = extractCaseName(intent.rawText);
-  if (name) return [name.petitioner, name.respondent, name.court].filter(Boolean).join(' ');
+  if (name) return namedCaseQuery(name);
 
   const provision = provisionPhrase(intent);
   if (provision) return provision;
 
   return intent.searchQuery;
+}
+
+/**
+ * The parties, and the court as a filter rather than as words to match.
+ *
+ * ## Why the court's name cannot be left in the query
+ *
+ * It was, so that applyCourtFilter could see "Patna High Court" and add its
+ * `doctypes:` restriction - and that put three tokens into the relevance text
+ * which every judgment of that court also contains. Searching a Patna-only
+ * result set for "Patna High court" scores nothing and crowds out the two words
+ * that identify the case.
+ *
+ * The measured difference, on the same judgment:
+ *
+ *   "Rajesh Kumar Mittal State Of Bihar"                       -> found
+ *   "Rajesh Kumar Mittal State of Bihar Patna High court ..."  -> not in ten
+ *
+ * So the slug is resolved here and appended as the operator alone. The court
+ * still narrows the search; it just stops competing with the parties for rank.
+ *
+ * applyCourtFilter sees no "high court" phrase in what comes back and adds
+ * nothing further, so the restriction is not applied twice.
+ */
+function namedCaseQuery(name: CaseName): string {
+  const parties = `${name.petitioner} ${name.respondent}`;
+  const slug = name.court ? courtFilter(name.court) : null;
+  return slug ? `${parties} doctypes:${slug}` : parties;
 }
 
 /**
@@ -245,6 +274,37 @@ export class PrecedentsService {
   private async searchKanoon(intent: ClassifiedIntent): Promise<PrecedentRow[]> {
     const narrow = kanoonQuery(intent);
     const rows = await this.kanoon.search(narrow, this.maxResults);
+
+    /*
+     * A named case that ten results did not contain is not yet a missing case.
+     *
+     * "No judgment found named ..." is a strong thing to tell an advocate, and
+     * the first attempt is the narrow one - parties plus a court restriction.
+     * Either half can hide a judgment that is really there: the court may be
+     * misremembered, or filed under a bench Kanoon slugs differently. Dropping
+     * the restriction and asking for the parties alone costs one call and is
+     * the difference between "not in this court" and "not anywhere".
+     *
+     * Only on a miss, so an ordinary hit still costs exactly one search.
+     */
+    const name = extractCaseName(intent.rawText);
+    if (name) {
+      const hit = (candidates: PrecedentRow[]): boolean =>
+        candidates.some((row) => caseNameScore(name, row.case_title) >= CASE_NAME_MATCH);
+
+      const parties = `${name.petitioner} ${name.respondent}`;
+      if (!hit(rows) && parties !== narrow) {
+        this.logger.info(
+          { narrow, retry: parties },
+          'Named case not in the narrowed results - retrying without the court restriction',
+        );
+        const wider = await this.kanoon.search(parties, this.maxResults);
+        // The wider set replaces the narrow one only if it actually found the
+        // case. Otherwise the narrow results are the better near misses.
+        if (hit(wider)) return wider;
+      }
+      return rows;
+    }
 
     if (rows.length > 0 || narrow === intent.searchQuery) return rows;
 

@@ -38,10 +38,11 @@ export interface CaseName {
   /**
    * The court the advocate named, as they wrote it - "Patna High court".
    *
-   * Stripped out of the parties, and kept rather than discarded, because it is
-   * the one part of the surrounding text that is worth sending to the search:
-   * Kanoon derives its `doctypes:` restriction from these words, and dropping
-   * them turns a Patna High Court lookup into a search of everything.
+   * Stripped out of the parties, and kept rather than discarded, because it
+   * still narrows the search - but as a `doctypes:` restriction resolved from
+   * it, never as words in the query. Leaving "Patna High Court" in the text
+   * being matched puts three tokens into it that every judgment of that court
+   * also contains, which crowds out the parties. See namedCaseQuery.
    */
   court?: string;
 }
@@ -72,6 +73,16 @@ const NOISE = new Set([
  */
 const LEAD_IN =
   /^(?:(?:the\s+)?(?:case|judgment|judgement|matter|decision|order|citation|ruling|law)\s+)+(?:(?:of|in|for|on|about|titled|named|regarding|re)\s+)*/i;
+
+/**
+ * The date Kanoon puts in its own titles, which advocates paste back verbatim.
+ *
+ * Every Kanoon result is titled "X vs Y on 18 January, 2005", so the fastest
+ * way for somebody to ask about one is to copy that line - and the respondent
+ * then came out as "State Of Bihar on 18 January", which is quoted back in the
+ * heading and diluted the score with two tokens that identify nothing.
+ */
+const TRAILING_DATE = /\s+on\s+\d{1,2}\s+[A-Za-z]+,?\s*(?:(?:19|20)\d{2})?\s*$/i;
 
 /**
  * A court named as context for the search, not as a party.
@@ -117,7 +128,10 @@ export function extractCaseName(text: string): CaseName | null {
     .replace(/[.,;]?\s*\(?\b(19|20)\d{2}\)?\s*$/, '');
 
   const courtMatch = TRAILING_COURT.exec(withoutLeadIn);
-  const trimmed = withoutLeadIn.replace(TRAILING_COURT, '').trim();
+  const trimmed = withoutLeadIn
+    .replace(TRAILING_COURT, '')
+    .replace(TRAILING_DATE, '')
+    .trim();
 
   const parts = trimmed.split(SEPARATOR);
   if (parts.length !== 2) return null;

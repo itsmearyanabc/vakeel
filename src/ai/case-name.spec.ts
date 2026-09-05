@@ -221,10 +221,23 @@ describe('what actually gets sent to Indian Kanoon', () => {
     ).toBe('Rajesh Kumar Mittal State of Bihar');
   });
 
-  it('keeps the court, because that is what narrows the search', () => {
-    // Kanoon's doctypes: restriction is derived from phrases like "Patna High
-    // Court". Dropping them turns a High Court lookup into a search of
-    // everything, which is how a precise question gets a vague answer.
+  it('narrows by court with the operator, never with the court name', () => {
+    /*
+     * This assertion said the opposite, and shipping it broke the lookup that
+     * had just started working.
+     *
+     * Leaving "Patna High court" in the query text was how applyCourtFilter
+     * saw a court to restrict on - but it also put three tokens into the text
+     * being scored that *every* judgment of that court contains. In a
+     * Patna-only result set they identify nothing and crowd out the parties.
+     * Measured on the same judgment:
+     *
+     *   "Rajesh Kumar Mittal State Of Bihar"                      -> found
+     *   "Rajesh Kumar Mittal State of Bihar Patna High court"     -> not in ten
+     *
+     * The slug is resolved here instead and appended as the operator alone, so
+     * the court still narrows the search without competing for rank.
+     */
     expect(
       kanoonQuery(
         intent({
@@ -232,8 +245,27 @@ describe('what actually gets sent to Indian Kanoon', () => {
           searchQuery: 'x',
         }),
       ),
-    ).toBe('Rajesh Kumar Mittal State of Bihar Patna High court');
+    ).toBe('Rajesh Kumar Mittal State of Bihar doctypes:patna');
+  });
+
+  it('sends the parties alone when no court was named', () => {
     expect(extractCaseName('Vishaka vs State of Rajasthan')?.court).toBeUndefined();
+    expect(kanoonQuery(intent({ rawText: 'Vishaka vs State of Rajasthan' }))).toBe(
+      'Vishaka State of Rajasthan',
+    );
+  });
+
+  it('drops the date out of a title pasted straight from a result', () => {
+    /*
+     * Kanoon titles every result "X vs Y on 18 January, 2005", so copying that
+     * line is the fastest way to ask about one - and it made the respondent
+     * "State Of Bihar on 18 January". Two tokens that identify nothing, quoted
+     * back in the heading and diluting the score.
+     */
+    expect(extractCaseName('Rajesh Kumar Mittal vs State Of Bihar on 18 January, 2005')).toEqual({
+      petitioner: 'Rajesh Kumar Mittal',
+      respondent: 'State Of Bihar',
+    });
   });
 
   it('leaves an ordinary question with the rewrite, which is what it is for', () => {
