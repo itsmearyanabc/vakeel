@@ -234,6 +234,22 @@ const envSchema = z.object({
   KANOON_API_KEY: z.string().default(''),
   KANOON_BASE_URL: z.string().default('https://api.indiankanoon.org'),
   KANOON_TIMEOUT_MS: z.coerce.number().int().min(1000).default(15000),
+
+  /**
+   * How many results per page get their full document fetched.
+   *
+   * Indian Kanoon exposes no case number and no coram as fields - the search
+   * result carries `bench: [888, 1990]`, which are author ids nobody can read.
+   * Both live in the judgment's own header, and reaching them means fetching
+   * the document: one extra billed call per row, and the sample document was
+   * 1.1 MB.
+   *
+   * So it is capped at the page size rather than the result set. Five rows are
+   * shown at a time and enriching the other ten would be paid for and never
+   * seen. Set to 0 to turn it off entirely, at the cost of CASE NO. and BENCH
+   * going back to "Not available".
+   */
+  KANOON_ENRICH_MAX: z.coerce.number().int().min(0).max(20).default(5),
   KANOON_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).default(86_400),
   KANOON_BREAKER_THRESHOLD: z.coerce.number().int().min(1).default(5),
   KANOON_BREAKER_RESET_MS: z.coerce.number().int().min(1000).default(60_000),

@@ -21,6 +21,17 @@ import { ProviderRegistry } from './providers/provider.registry';
 /** Named so the extract builder below reads as prose rather than escapes. */
 const NEWLINE = '\n';
 
+/**
+ * Kanoon's document id, out of the namespaced judgment id.
+ *
+ * Rows from the ingested corpus have UUIDs and no document to fetch, so null is
+ * the answer for them and the enrichment skips over.
+ */
+function kanoonTid(judgmentId: string): number | null {
+  const match = /^kanoon:(\d+)$/.exec(judgmentId);
+  return match ? Number(match[1]) : null;
+}
+
 /** The name as the advocate would recognise it, for quoting back to them. */
 function display(name: CaseName): string {
   return `${name.petitioner} vs ${name.respondent}`;
@@ -233,7 +244,7 @@ export class PrecedentsService {
         const found = await this.searchKanoon(intent);
         const { precedents, namedCase } = this.forNamedCase(intent.rawText, found);
         return {
-          precedents: await this.withPrinciples(precedents),
+          precedents: await this.withPrinciples(await this.withHeaders(precedents)),
           namedCase,
           totalMatches: precedents[0]?.total_matches ?? precedents.length,
           // Kanoon runs its own relevance ranking; the local dense/lexical
@@ -313,6 +324,63 @@ export class PrecedentsService {
       'Narrowed Kanoon query matched nothing - retrying with the rewritten question',
     );
     return this.kanoon.search(intent.searchQuery, this.maxResults);
+  }
+
+  /**
+   * Fill CASE NO. and BENCH from the judgments themselves.
+   *
+   * ## Why a second call per row is the only way
+   *
+   * Indian Kanoon's search response, captured live, is: authorid, bench,
+   * catids, docsize, docsource, doctype, fragment, headline, numcitedby,
+   * numcites, publishdate, tid, title. There is no case number in it, and
+   * `bench` is `[888, 1990]` - author ids, not names, which is why BENCH read
+   * "Not available" on every card whose `author` happened to be absent.
+   *
+   * Both are in the judgment's own header, which means fetching the document.
+   *
+   * ## Why only the first page
+   *
+   * The sample document was 1.1 MB and each one is a billed call. Rows past the
+   * first page are frequently never read - the advocate finds what they need in
+   * the first five - so enriching all fifteen would be paid for and thrown
+   * away. KANOON_ENRICH_MAX caps it, and 0 turns it off.
+   *
+   * Fetched in parallel: five sequential round trips would add seconds to a
+   * reply an advocate is waiting on in a corridor.
+   *
+   * Only Kanoon rows are touched. Ingested corpus judgments already carry a
+   * neutral citation and a real bench, and have no document to fetch.
+   */
+  private async withHeaders(rows: PrecedentRow[]): Promise<PrecedentRow[]> {
+    const limit = this.env.KANOON_ENRICH_MAX;
+    if (limit === 0 || rows.length === 0) return rows;
+
+    const enriched = [...rows];
+
+    await Promise.all(
+      rows.slice(0, limit).map(async (row, index) => {
+        const tid = kanoonTid(row.judgment_id);
+        if (tid === null) return;
+
+        const header = await this.kanoon.documentHeader(tid);
+        if (!header.caseNumber && header.bench.length === 0) return;
+
+        enriched[index] = {
+          ...enriched[index],
+          // Kanoon publishes no neutral citation, so CASE NO. has been empty on
+          // every card. The registry's own number is what an advocate quotes to
+          // a court registry anyway.
+          neutral_citation: enriched[index].neutral_citation ?? header.caseNumber,
+          // Names beat the single `author` the search sometimes carries, and
+          // beat the numeric ids it always carries.
+          bench: header.bench.length > 0 ? header.bench : enriched[index].bench,
+          bench_strength: header.bench.length || enriched[index].bench_strength,
+        };
+      }),
+    );
+
+    return enriched;
   }
 
   /** Hybrid dense + lexical search over the ingested Postgres corpus. */

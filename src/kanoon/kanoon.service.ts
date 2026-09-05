@@ -9,6 +9,7 @@ import { AppEnv } from '../config/env';
 import { PrecedentRow } from '../database/types';
 import { SettingsService } from '../settings/settings.service';
 import { applyCourtFilter, toPrecedentRows } from './kanoon.mapper';
+import { DocumentHeader, parseDocumentHeader } from './document.parser';
 import { KanoonSearchDoc, KanoonSearchResponse } from './kanoon.types';
 import { parseFoundCount } from './kanoon.mapper';
 
@@ -57,6 +58,15 @@ export class KanoonService {
    * is killed; 500 searches is far more than any one advocate produces in a day.
    */
   private readonly hot = new LruCache<PrecedentRow[]>(500, 86_400);
+
+  /**
+   * Parsed document headers, keyed by Kanoon's document id.
+   *
+   * Larger than the search cache and far cheaper per entry - two short strings
+   * against a page of rows - because the same judgment turns up across many
+   * different searches and each miss costs a billed call and a megabyte.
+   */
+  private readonly hotHeaders = new LruCache<DocumentHeader>(2_000, 86_400);
 
   constructor(
     private readonly cache: CacheRepository,
@@ -236,6 +246,79 @@ export class KanoonService {
    * cache working without putting the question itself in a place nobody
    * remembers to redact.
    */
+  /**
+   * The case number and the coram, from the judgment itself.
+   *
+   * ## Why this needs a second call
+   *
+   * Neither is a field. The live API returns, for a search result: authorid,
+   * bench, catids, docsize, docsource, doctype, fragment, headline, numcitedby,
+   * numcites, publishdate, tid, title - and `bench` is a list of numeric author
+   * ids, not names. The document adds `doc`, the judgment as HTML, and the
+   * case number and the real coram are inside its header.
+   *
+   * ## What is cached, and what is not
+   *
+   * The parsed header, never the document. The sample was 1.1 MB and there is
+   * no version of putting that in a Postgres cache table, once per judgment,
+   * that ends well. Everything downstream needs is two short strings.
+   *
+   * Never throws. A judgment whose header cannot be read still has a title, a
+   * date and a court, and losing the whole card over a missing case number
+   * would be a poor trade - so a failure leaves those two fields empty and the
+   * search carries on.
+   */
+  async documentHeader(tid: number): Promise<DocumentHeader> {
+    const empty: DocumentHeader = { caseNumber: null, bench: [] };
+    if (!this.isConfigured) return empty;
+
+    const key = `kanoon:doc:${tid}`;
+
+    const hot = this.hotHeaders.get(key);
+    if (hot) return hot;
+
+    const stored = await this.cache.get<DocumentHeader>(key).catch(() => null);
+    if (stored) {
+      this.hotHeaders.set(key, stored, this.cacheTtl);
+      return stored;
+    }
+
+    try {
+      const response = await this.breaker.execute(() => this.fetchDocument(tid));
+      const header = parseDocumentHeader(response);
+
+      // Cached even when empty. A judgment whose header states no case number
+      // will not grow one, and re-buying that answer on every search is the
+      // expensive way to learn it twice.
+      this.hotHeaders.set(key, header, this.cacheTtl);
+      await this.cache.set(key, header, this.cacheTtl).catch(() => undefined);
+
+      this.logger.debug(
+        { tid, caseNumber: header.caseNumber, judges: header.bench.length },
+        'Kanoon document header read',
+      );
+      return header;
+    } catch (err) {
+      this.logger.warn({ err, tid }, 'Could not read the Kanoon document header');
+      return empty;
+    }
+  }
+
+  private async fetchDocument(tid: number): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/doc/${tid}/`, {
+      method: 'POST',
+      headers: { authorization: `Token ${this.apiKey}`, accept: 'application/json' },
+      signal: AbortSignal.timeout(this.env.KANOON_TIMEOUT_MS),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Indian Kanoon returned ${response.status} for document ${tid}`);
+    }
+
+    const payload = (await response.json()) as { doc?: string };
+    return payload.doc ?? '';
+  }
+
   private cacheKey(query: string, maxResults: number): string {
     const digest = createHash('sha256').update(`${query}|${maxResults}`).digest('hex').slice(0, 32);
     return `kanoon:search:${digest}`;
