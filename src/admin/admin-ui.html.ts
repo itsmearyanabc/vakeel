@@ -970,15 +970,38 @@ function viewUsers() {
                 u.paid_credits + ' durable">' +
                 (u.role === 'GUEST_LAWYER'
                   ? (u.free_credits + u.paid_credits)
-                  : '<span style="color:var(--muted)">∞</span>') + '</td>' +
+                  : '<span style="color:var(--muted)">∞</span>') +
+                /*
+                 * Adjusting credits belonged to the account, and lived on
+                 * another screen behind a UUID.
+                 *
+                 * Granting was reachable only from the Credits page, which asks
+                 * for a user id in a prompt - so the actual procedure was: find
+                 * the advocate here, press "id" to copy the UUID, navigate
+                 * away, press Grant, paste. Five steps and a clipboard for
+                 * something whose natural place is the row you are already
+                 * looking at.
+                 */
+                ' <button class="btn secondary sm" style="padding:1px 6px;font-size:10px" ' +
+                'onclick="adjustCredits(\'' + u.id + '\', \'' +
+                  esc((u.full_name || u.email || u.phone_number || 'this account')).replace(/'/g, '') +
+                  '\')" title="Add or remove credits">±</button>' +
+                '</td>' +
               '<td>' + num(u.query_count) + '</td>' +
               '<td>' + when(u.last_active_at) + '</td>' +
               '<td><select class="mono" style="font-size:11px;padding:3px" ' +
               'onchange="setRole(\'' + u.id + '\', this.value)">' +
-              ['GUEST_LAWYER','VERIFIED_ADVOCATE','LEGAL_AUDITOR','SUPER_ADMIN'].map(function (r) {
-                return '<option value="' + r + '"' + (r === u.role ? ' selected' : '') + '>' +
-                       r.replace(/_/g, ' ').toLowerCase() + '</option>';
-              }).join('') + '</select></td></tr>';
+              // SUPER_ADMIN is not offered. It is total control of this panel,
+              // and it was one click away from "guest lawyer" on every row. The
+              // server refuses it too - the dropdown is the reminder, not the
+              // guard. It still appears when the row already holds it, so the
+              // select shows the truth and demotion stays possible.
+              (u.role === 'SUPER_ADMIN' ? ['SUPER_ADMIN'] : [])
+                .concat(['GUEST_LAWYER','VERIFIED_ADVOCATE','LEGAL_AUDITOR'])
+                .map(function (r) {
+                  return '<option value="' + r + '"' + (r === u.role ? ' selected' : '') + '>' +
+                         r.replace(/_/g, ' ').toLowerCase() + '</option>';
+                }).join('') + '</select></td></tr>';
           }).join('') + '</tbody></table></div>'
         : empty('No users yet', 'Users are created automatically on their first WhatsApp message.')) +
       pager('users', rows.length) +
@@ -1009,6 +1032,45 @@ function copyId(id) {
     // Older browsers, and any page not served over https, have no clipboard API.
     prompt('Copy this user id:', id);
   }
+}
+
+/**
+ * Add or remove credits, on the account whose row was clicked.
+ *
+ * One prompt rather than two, and signed: 25 grants, -25 takes back. The two
+ * endpoints stay separate because the ledger records them differently and a
+ * deduction floors at the balance, but that is a distinction the ledger cares
+ * about and the person pressing the button does not.
+ */
+function adjustCredits(id, who) {
+  var raw = prompt('Credits for ' + who + '.\n\nA number to add, or a negative number to take back:', '10');
+  if (!raw) return;
+
+  var amount = Number(raw);
+  if (!amount || !isFinite(amount) || amount !== Math.trunc(amount)) {
+    toast('Enter a whole number, positive or negative.', true);
+    return;
+  }
+
+  var taking = amount < 0;
+  var reason = prompt('Reason (the advocate sees this in their credit history):',
+                      taking ? 'Correction' : 'Goodwill credit');
+  if (reason === null) return;
+
+  // Generated per press, not per retry - a key invented inside api() would
+  // differ on every attempt, which is what the key exists to prevent.
+  var key = (taking ? 'deduct-' : 'grant-') + Date.now() + '-' +
+            Math.random().toString(36).slice(2, 10);
+
+  api(taking ? '/credits/deduct' : '/credits/grant', {
+    method: 'POST',
+    body: { userId: id, amount: Math.abs(amount), reason: reason, idempotencyKey: key }
+  }).then(function (result) {
+    if (!result.applied) { toast('Already applied — nothing changed.'); return; }
+    toast((taking ? 'Took back ' + result.deducted : 'Added ' + Math.abs(amount)) +
+          '. Balance is now ' + (result.free + result.paid) + '.');
+    go('users');
+  }).catch(function (e) { toast(e.message, true); });
 }
 
 function setRole(id, role) {

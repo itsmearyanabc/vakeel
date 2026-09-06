@@ -13,6 +13,15 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { maskPhone } from '../common/logger';
+
+/**
+ * The roles this panel may hand out.
+ *
+ * SUPER_ADMIN is deliberately absent - see setRole. LEGAL_AUDITOR is here
+ * because the citation review workflow needs somebody in it and that is a job,
+ * not a privilege over the panel itself.
+ */
+const ASSIGNABLE_ROLES = ['GUEST_LAWYER', 'VERIFIED_ADVOCATE', 'LEGAL_AUDITOR'];
 import { CreditPlanPeriod } from '../database/types';
 import { CreditsService } from '../credits/credits.service';
 import { DatabaseService } from '../database/database.service';
@@ -227,14 +236,53 @@ export class AdminController {
     return { updated: true, notified: Boolean(user.phone_number) };
   }
 
-  /** Promote a user, e.g. to LEGAL_AUDITOR for the review workflow. */
+  /**
+   * Change a user's role.
+   *
+   * ## SUPER_ADMIN cannot be granted here, and the body was not checked at all
+   *
+   * This took `body.role` and handed it straight to the repository. Two
+   * separate problems in one line.
+   *
+   * The role was never validated, so any string reached the column - a typo, or
+   * anything a caller chose to send. Every guard in the panel then compares
+   * against role names that no longer match anything, and the account is locked
+   * out of features nobody can see it should have.
+   *
+   * And SUPER_ADMIN was offered like any other option, in a dropdown on every
+   * row of the user table, one click away from "guest lawyer". That is total
+   * control of this panel - settings, pricing, every account's credits -
+   * granted by a misclick on the wrong row, to somebody who reached the panel
+   * with an ordinary admin session.
+   *
+   * Promotion to super admin is a deliberate act with a real audit trail behind
+   * it, not a select element. It belongs in a database migration or a
+   * provisioning script where somebody has to mean it.
+   *
+   * Demotion stays allowed. Removing an administrator who should no longer be
+   * one is the urgent direction, and refusing it would be the wrong failure.
+   */
   @Post('users/:userId/role')
-  async setRole(
-    @Param('userId') userId: string,
-    @Body() body: { role: 'GUEST_LAWYER' | 'VERIFIED_ADVOCATE' | 'LEGAL_AUDITOR' | 'SUPER_ADMIN' },
-  ) {
-    await this.userRepo.setRole(userId, body.role);
-    return { updated: true };
+  async setRole(@Param('userId') userId: string, @Body() body: { role?: string }) {
+    const role = String(body?.role ?? '').trim().toUpperCase();
+
+    if (role === 'SUPER_ADMIN') {
+      throw new BadRequestException({
+        code: 'ROLE_NOT_ASSIGNABLE',
+        message:
+          'Super admin cannot be granted from the panel. Promote the account directly in the database.',
+      });
+    }
+
+    if (!ASSIGNABLE_ROLES.includes(role)) {
+      throw new BadRequestException({
+        code: 'UNKNOWN_ROLE',
+        message: `Role must be one of ${ASSIGNABLE_ROLES.join(', ')}.`,
+      });
+    }
+
+    await this.userRepo.setRole(userId, role as 'GUEST_LAWYER');
+    return { updated: true, role };
   }
 
   // --- Settings -------------------------------------------------------------
