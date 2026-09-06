@@ -476,3 +476,40 @@ describe('when the summariser says the extract states no principle', () => {
     expect(out).not.toContain('Sub Rule (5)');
   });
 });
+
+describe('the summary under a judgment asked for by name', () => {
+  /*
+   * The LEGAL PRINCIPLE line answers "what did this decide" in forty words,
+   * which is what a ten-result page has room for. Somebody who named one
+   * judgment is not scanning a list - they want what the first page of it would
+   * have told them.
+   */
+  it('prints below the principle, not instead of it', () => {
+    const out = formatPrecedentPage(
+      [
+        row({
+          ratio_decidendi: null,
+          headnote: null,
+          generated_principle: 'A quashing petition under Section 482 lies where the dispute is civil.',
+          generated_summary:
+            'The petitioner sought quashing of criminal proceedings arising from an alleged seizure of forest produce. The court found the dispute to be documentary.',
+        }),
+      ],
+      0,
+      5,
+      'q',
+    );
+
+    expect(out).toContain('LEGAL PRINCIPLE: A quashing petition');
+    expect(out).toContain('SUMMARY: The petitioner sought quashing');
+    expect(out.indexOf('LEGAL PRINCIPLE')).toBeLessThan(out.indexOf('SUMMARY'));
+  });
+
+  it('is absent from an ordinary topic search', () => {
+    // Ten of these would run past WhatsApp's 4096-character limit and bury the
+    // list they are meant to describe.
+    const out = formatPrecedentPage([row({ generated_summary: null })], 0, 5, 'bail');
+
+    expect(out).not.toContain('SUMMARY:');
+  });
+});

@@ -46,6 +46,21 @@ export interface DocumentHeader {
   /** Judge names, in the order the coram lists them. */
   bench: string[];
   /**
+   * The court's own neutral citation - "2024:PHHC:012345", "2023 INSC 456".
+   *
+   * The one citation an Indian judgment can carry that nobody sells. AIR, SCC
+   * and PLJR citations are the product those reporters license and Kanoon
+   * exposes none of them, at either endpoint - but neutral citations are
+   * assigned by the courts themselves and printed in the judgment, so where one
+   * exists it is free to read.
+   *
+   * Null on anything older than roughly 2023: the Supreme Court began the
+   * scheme that year and the High Courts adopted it over 2023-24, so a 2005
+   * judgment has none and never will.
+   */
+  neutralCitation: string | null;
+
+  /**
    * The judgment's own opening reasoning, as plain text.
    *
    * The LEGAL PRINCIPLE line was being written from Kanoon's `headline`, which
@@ -126,15 +141,39 @@ function looksLikeCaseType(token: string): boolean {
  * with a plausible wrong case number is worse than either.
  */
 export function parseDocumentHeader(html: string | null | undefined): DocumentHeader {
-  if (!html) return { caseNumber: null, bench: [], extract: '' };
+  if (!html) return { caseNumber: null, neutralCitation: null, bench: [], extract: '' };
 
   const head = html.slice(0, HEADER_CHARS);
 
   return {
     caseNumber: findCaseNumber(head),
+    neutralCitation: findNeutralCitation(head),
     bench: findBench(head),
     extract: extractOpening(html),
   };
+}
+
+/**
+ * The neutral citation, in the two shapes the courts actually use.
+ *
+ * `2023 INSC 456` is the Supreme Court's. Every High Court uses the colon form
+ * - `2024:PHHC:012345`, `2023:DHC:1234-DB` - where the middle segment is the
+ * court's own code and the trailing `-DB`/`-FB` marks a Division or Full Bench.
+ *
+ * The court codes are not enumerated on purpose. There are twenty-five High
+ * Courts, several of them with benches that carry their own codes, and a list
+ * that is missing one silently drops a real citation. The shape is distinctive
+ * enough on its own: a year, a short all-capitals code, and a serial.
+ */
+const NEUTRAL_CITATION =
+  /\b((?:19|20)\d{2}\s*:\s*[A-Z]{2,10}\s*:\s*\d{1,7}(?:\s*-\s*[A-Z]{2})?|(?:19|20)\d{2}\s+INSC\s+\d{1,5})\b/i;
+
+function findNeutralCitation(head: string): string | null {
+  const match = NEUTRAL_CITATION.exec(stripHtml(head));
+  if (!match) return null;
+
+  // Normalised: courts print these with inconsistent spacing around the colons.
+  return match[1].replace(/\s*:\s*/g, ':').replace(/\s*-\s*/g, '-').replace(/\s+/g, ' ').toUpperCase();
 }
 
 /**

@@ -269,7 +269,7 @@ export class KanoonService {
    * search carries on.
    */
   async documentHeader(tid: number): Promise<DocumentHeader> {
-    const empty: DocumentHeader = { caseNumber: null, bench: [], extract: '' };
+    const empty: DocumentHeader = { caseNumber: null, neutralCitation: null, bench: [], extract: '' };
     if (!this.isConfigured) return empty;
 
     const key = `kanoon:doc:${tid}`;

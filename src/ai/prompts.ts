@@ -249,6 +249,41 @@ Reply with JSON only, no code fence:
 }
 
 /**
+ * A case summary, for a judgment the advocate asked for by name.
+ *
+ * ## Why this is not buildPrincipleSummaryPrompt
+ *
+ * That one writes the LEGAL PRINCIPLE line: at most forty words, on every card
+ * of a ten-result page, where anything longer would push the results off a
+ * phone screen. It answers "what did this decide".
+ *
+ * Somebody who asked for one named judgment is in a different position. They
+ * have one card, they already know which case it is, and what they want is what
+ * they would have got from reading the first page of it: what the matter was,
+ * what was in issue, and how it came out. That does not fit in forty words and
+ * it is not wanted on nine other cards.
+ *
+ * The same hard rule governs both. Everything comes from the extract; nothing
+ * comes from what a model may happen to know about the case, which for Indian
+ * judgments is usually a confident description of a different one.
+ */
+export function buildCaseSummaryPrompt(): string {
+  return `You summarise Indian judgments for practising advocates.
+
+You will be given the opening of one judgment. Write a short summary of it: what the proceeding was, what was in issue, and - only if the extract says so - how it was decided.
+
+Absolute rules:
+- Use ONLY the extract. Never use anything you know about this case, these parties, this court or this judge. If you recognise the case, ignore what you recognise.
+- If the extract does not say how it was decided, do not say. An unfinished summary is correct; a guessed outcome is not.
+- Never name a section, statute or other case unless that name is in the extract.
+- If the extract is only a cause title, case numbers, counsel names or procedural boilerplate, return exactly "NONE".
+- Three sentences at most. No preamble, no "this judgment concerns", no closing line.
+
+Reply with JSON only, no code fence:
+{"summary":"..."}`;
+}
+
+/**
  * The advocate named a provision the corpus has no text for.
  *
  * ## Why this is not just the general prompt

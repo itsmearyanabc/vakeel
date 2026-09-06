@@ -14,7 +14,7 @@ import { EmbeddingService } from './embedding.service';
 import { ClassifiedIntent } from './intent.service';
 import { CASE_NAME_MATCH, CaseName, caseNameScore, extractCaseName } from './case-name';
 import { expandQuery } from './legal-patterns';
-import { buildPrincipleSummaryPrompt } from './prompts';
+import { buildCaseSummaryPrompt, buildPrincipleSummaryPrompt } from './prompts';
 import { parseJsonLoose } from './providers/llm-provider.interface';
 import { ProviderRegistry } from './providers/provider.registry';
 
@@ -260,8 +260,9 @@ export class PrecedentsService {
       try {
         const found = await this.searchKanoon(intent);
         const { precedents, namedCase } = this.forNamedCase(intent.rawText, found);
+        const enriched = await this.withPrinciples(await this.withHeaders(precedents));
         return {
-          precedents: await this.withPrinciples(await this.withHeaders(precedents)),
+          precedents: namedCase?.found ? await this.withSummary(enriched) : enriched,
           namedCase,
           totalMatches: precedents[0]?.total_matches ?? precedents.length,
           // Kanoon runs its own relevance ranking; the local dense/lexical
@@ -394,6 +395,21 @@ export class PrecedentsService {
           bench: header.bench.length > 0 ? header.bench : enriched[index].bench,
           bench_strength: header.bench.length || enriched[index].bench_strength,
           /*
+           * The one citation an Indian judgment carries that nobody sells.
+           *
+           * EQUIVALENT CITATIONS has been empty on every card because AIR, SCC
+           * and PLJR are the products those reporters license, and Kanoon
+           * exposes none of them at either endpoint. Neutral citations are
+           * different: the courts assign them and print them in the judgment.
+           *
+           * Only helps recent work. The scheme began at the Supreme Court in
+           * 2023 and the High Courts came in over 2023-24, so anything older
+           * has none and this stays "Not available" - correctly.
+           */
+          reporter_citations: header.neutralCitation
+            ? [header.neutralCitation, ...(enriched[index].reporter_citations ?? [])]
+            : enriched[index].reporter_citations,
+          /*
            * The judgment's own words, in place of a search snippet.
            *
            * best_excerpt was Kanoon's `headline`, which for a title match is
@@ -412,6 +428,57 @@ export class PrecedentsService {
     );
 
     return enriched;
+  }
+
+  /**
+   * A summary of the judgment, for the one somebody asked for by name.
+   *
+   * ## Why this is not on every card
+   *
+   * The LEGAL PRINCIPLE line answers "what did this decide" in forty words,
+   * which is what a ten-result page has room for. An advocate who named one
+   * judgment is not scanning a list - they have the case and want what the
+   * first page of it would have told them: what the proceeding was, what was in
+   * issue, how it came out.
+   *
+   * Ten of those would run past WhatsApp's 4096-character limit and bury the
+   * list they were meant to describe. One card, one summary.
+   *
+   * ## Why it never throws
+   *
+   * The card is assembled from retrieved rows and is correct without this. A
+   * failed summary leaves `generated_summary` unset and the reply is the card
+   * that shipped yesterday, which is a far better outcome than losing the
+   * answer over the paragraph under it.
+   */
+  private async withSummary(rows: PrecedentRow[]): Promise<PrecedentRow[]> {
+    const first = rows[0];
+    if (!first || this.registry.isRouterMocked) return rows;
+
+    const extract = (first.best_excerpt || '').replace(/\s+/g, ' ').trim();
+    if (extract.length < 200) return rows;
+
+    try {
+      const result = await this.registry.complete({
+        task: 'router',
+        system: buildCaseSummaryPrompt(),
+        messages: [{ role: 'user', content: extract.slice(0, 2_000) }],
+        json: true,
+        maxTokens: 400,
+      });
+
+      const parsed = parseJsonLoose<{ summary?: string }>(result.text);
+      const summary = String(parsed?.summary ?? '').trim();
+
+      // "NONE" is the model refusing an extract that states nothing, the same
+      // refusal the principle summariser makes, and it is honoured the same way.
+      if (!summary || summary.toUpperCase() === 'NONE') return rows;
+
+      return [{ ...first, generated_summary: summary }, ...rows.slice(1)];
+    } catch (err) {
+      this.logger.warn({ err }, 'Could not summarise the judgment - the card stands without it');
+      return rows;
+    }
   }
 
   /** Hybrid dense + lexical search over the ingested Postgres corpus. */
@@ -1047,6 +1114,10 @@ export function formatPrecedentPage(
       // holding. Every word of that header is true and it is not what the case
       // decided, which is the one thing this line claims to be.
       line('LEGAL PRINCIPLE', principle),
+      // Only ever present on a judgment asked for by name - see withSummary.
+      // Below the principle rather than above it, because the principle is the
+      // line an advocate reads first and the summary is what they read next.
+      ...(p.generated_summary ? ['', `SUMMARY: ${p.generated_summary}`] : []),
     ].join(NEWLINE);
   });
 

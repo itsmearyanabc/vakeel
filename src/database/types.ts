@@ -188,6 +188,15 @@ export interface PrecedentRow {
    * thing being discarded.
    */
   principle_declined?: boolean;
+
+  /**
+   * A fuller summary, written only for a judgment asked for by name.
+   *
+   * Not a column, like `generated_principle`. Deliberately absent from an
+   * ordinary topic search: ten of these would run past WhatsApp's message
+   * limit and bury the list they are meant to describe. One card, one summary.
+   */
+  generated_summary?: string | null;
 }
 
 /**

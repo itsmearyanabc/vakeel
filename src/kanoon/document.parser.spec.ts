@@ -58,8 +58,9 @@ describe('the shapes different registries use', () => {
   });
 
   it('survives an empty or missing document', () => {
-    expect(parseDocumentHeader('')).toEqual({ caseNumber: null, bench: [], extract: '' });
-    expect(parseDocumentHeader(null)).toEqual({ caseNumber: null, bench: [], extract: '' });
+    const empty = { caseNumber: null, neutralCitation: null, bench: [], extract: '' };
+    expect(parseDocumentHeader('')).toEqual(empty);
+    expect(parseDocumentHeader(null)).toEqual(empty);
   });
 
   it('reads an unlinked coram, which older documents have', () => {
@@ -145,5 +146,38 @@ describe('the extract is the question the court had to decide', () => {
       '<p>Present: Mr. A. K. Gupta, Advocate, for the petitioner and Ms. B. Sharma for the State.</p></div>';
 
     expect(parseDocumentHeader(headerOnly).extract).toBe('');
+  });
+});
+
+describe('the one citation nobody sells', () => {
+  const withHeader = (body: string): string =>
+    `<h2 class="doc_title">X vs Y on 1 January, 2024</h2><div>${body}</div>`;
+
+  /*
+   * EQUIVALENT CITATIONS has been empty on every card, and for AIR, SCC and
+   * PLJR it always will be: those are the products those reporters license and
+   * Kanoon exposes none of them at either endpoint.
+   *
+   * Neutral citations are different. The courts assign them and print them in
+   * the judgment, so where one exists it is free to read.
+   */
+  it.each([
+    ['Neutral Citation No. 2024:PHHC:012345', '2024:PHHC:012345'],
+    ['2023:DHC:1234-DB', '2023:DHC:1234-DB'],
+    ['Reportable 2023 INSC 456', '2023 INSC 456'],
+    ['2024 : ORHC : 9876', '2024:ORHC:9876'],
+  ])('reads %p', (written, expected) => {
+    expect(parseDocumentHeader(withHeader(written)).neutralCitation).toBe(expected);
+  });
+
+  it('finds none on a judgment older than the scheme', () => {
+    // The Supreme Court began in 2023 and the High Courts came in over 2023-24.
+    // A 2005 judgment has no neutral citation and never will, so "Not
+    // available" on that card is the truth rather than a gap.
+    expect(parseDocumentHeader(fixture.doc).neutralCitation).toBeNull();
+  });
+
+  it('does not read a case number as a citation', () => {
+    expect(parseDocumentHeader(withHeader('CWP No. 2843/2019')).neutralCitation).toBeNull();
   });
 });
