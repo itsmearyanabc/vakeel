@@ -107,6 +107,20 @@ export type Action =
   | { kind: 'searchPrecedents'; query: string; charge: number }
   | { kind: 'nextPrecedentPage' }
   /**
+   * Write the chosen language to the account.
+   *
+   * This action did not exist, and that was the whole bug behind the language
+   * prompt. `routeLanguage` put the choice in the session context, under
+   * `language` and `languageLabel` - two fields that nothing in the codebase
+   * ever read. So picking "2. हिंदी" moved the advocate to the menu and changed
+   * nothing else, the session expired half an hour later, and the prompt asked
+   * again.
+   *
+   * Persisted now, so the answer outlives the session that gave it and the
+   * question is asked once.
+   */
+  | { kind: 'setLanguage'; code: string }
+  /**
    * Hand the message to the classifier and let it decide.
    *
    * Carries no charge because the cost is not knowable here: small talk and
@@ -200,11 +214,24 @@ export function route(
       };
     }
 
+    /*
+     * A known advocate is greeted and put at the menu, not questioned.
+     *
+     * This returned AWAITING_LANGUAGE, so every session began by asking for a
+     * language - and a session lasts SESSION_TTL_SECONDS, half an hour. An
+     * advocate using this through a working day was shown the same three
+     * options five or six times, before it would answer anything.
+     *
+     * Asking once is right. Asking every session was the consequence of storing
+     * the answer on the session, which in turn was because nothing read it.
+     * The language is on the account now and the greeting names the way to
+     * change it.
+     */
     return {
       actions: [
-        { kind: 'reply', text: Replies.greetingReturning(user.fullName, creditLine, site) },
+        { kind: 'reply', text: Replies.greetingReturningToMenu(user.fullName, creditLine, site) },
       ],
-      nextState: SESSION_STATE.AWAITING_LANGUAGE,
+      nextState: SESSION_STATE.MAIN_MENU,
       contextPatch: {},
     };
   }
@@ -420,6 +447,10 @@ function routeLanguage(text: string, user: SessionUser, creditLine: string): Rou
 
   return {
     actions: [
+      // Written to the account, not just to the session. The session copy was
+      // the only record of this choice and nothing read it, so the choice was
+      // discarded the moment it was made.
+      { kind: 'setLanguage', code: language.code },
       {
         kind: 'reply',
         text: Replies.menuAfterLanguage(user.fullName, language.label, creditLine),

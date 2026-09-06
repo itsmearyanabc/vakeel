@@ -35,12 +35,25 @@ describe('session start', () => {
     expect(out.nextState).toBe(SESSION_STATE.AWAITING_PROFILE);
   });
 
-  it('welcomes a returning user back by name and asks for language', () => {
+  it('welcomes a returning user back and puts them at the menu, asking nothing', () => {
+    /*
+     * This expected the language prompt, and that expectation was the bug.
+     *
+     * A session lasts SESSION_TTL_SECONDS - half an hour - so every gap in a
+     * working day started a new one, and every new one opened by asking the
+     * same advocate to pick a language before it would answer anything. Five
+     * or six times a day, for a choice they had already made.
+     *
+     * It was asked every session because the answer was kept on the session,
+     * and it was kept there because nothing read it. The answer is on the
+     * account now and the greeting names the word that changes it.
+     */
     const out = route('hi', { state: null }, KNOWN_USER, CREDITS);
 
     expect(replies(out.actions)).toContain('Welcome back Ramesh Kumar');
-    expect(replies(out.actions)).toContain('Select your language');
-    expect(out.nextState).toBe(SESSION_STATE.AWAITING_LANGUAGE);
+    expect(replies(out.actions)).not.toContain('Select your language');
+    expect(replies(out.actions)).toContain('Type *language*');
+    expect(out.nextState).toBe(SESSION_STATE.MAIN_MENU);
   });
 
   it('never acts on the message that starts a session', () => {
@@ -435,8 +448,9 @@ describe('the website link', () => {
 
     expect(text).toContain(CREDITS);
     expect(text).toContain(SITE);
-    // The language prompt is the ask, so it stays last.
-    expect(text.indexOf(SITE)).toBeLessThan(text.indexOf('Select your language'));
+    // The menu is what they act on, so it stays below the link rather than
+    // above it. There is no language prompt here any more to anchor against.
+    expect(text.indexOf(SITE)).toBeLessThan(text.indexOf('Reply with *1*'));
   });
 
   it('says nothing at all when no public URL is configured', () => {
@@ -493,5 +507,46 @@ describe('a question during onboarding', () => {
         SESSION_STATE.AWAITING_PROFILE,
       );
     }
+  });
+});
+
+describe('the language is chosen once and remembered', () => {
+  /*
+   * Two halves of one bug.
+   *
+   * The prompt was shown at the start of every session, and a session lasts
+   * half an hour - so an advocate working through a day saw it repeatedly. And
+   * when they answered it, the answer went into the session context under
+   * `language` and `languageLabel`, which nothing in the codebase read. It was
+   * discarded the moment it was given, which is why it had to be asked again.
+   */
+  it('writes the choice to the account, not only to the session', () => {
+    const out = route('2', { state: SESSION_STATE.AWAITING_LANGUAGE }, KNOWN_USER, CREDITS);
+
+    expect(out.actions).toContainEqual({ kind: 'setLanguage', code: 'hi' });
+  });
+
+  it.each([
+    ['1', 'en'],
+    ['hindi', 'hi'],
+    ['ಕನ್ನಡ', 'kn'],
+  ])('records %p as %p', (input, code) => {
+    const out = route(input, { state: SESSION_STATE.AWAITING_LANGUAGE }, KNOWN_USER, CREDITS);
+
+    expect(out.actions).toContainEqual({ kind: 'setLanguage', code });
+  });
+
+  it('writes nothing when the answer was not a language', () => {
+    const out = route('asdfgh', { state: SESSION_STATE.AWAITING_LANGUAGE }, KNOWN_USER, CREDITS);
+
+    expect(out.actions.some((a) => a.kind === 'setLanguage')).toBe(false);
+  });
+
+  it('is still asked once, during onboarding', () => {
+    // Not asking a brand-new advocate at all would be the opposite mistake.
+    const out = route('Ramesh Kumar, D/1234/2015, Patna, Bihar', { state: SESSION_STATE.AWAITING_PROFILE }, NEW_USER, CREDITS);
+
+    expect(replies(out.actions)).toContain('Select your language');
+    expect(out.nextState).toBe(SESSION_STATE.AWAITING_LANGUAGE);
   });
 });

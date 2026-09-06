@@ -154,6 +154,43 @@ export function greetingNewUser(site = ''): string {
  * question every returning user has and the one they would otherwise spend a
  * message asking.
  */
+/**
+ * A known advocate, starting a new session, who is not asked anything.
+ *
+ * ## Why this is separate from greetingReturning
+ *
+ * The session row expires after SESSION_TTL_SECONDS - half an hour by default -
+ * and the next message starts a new session. That put "Select your language:
+ * 1. English 2. हिंदी 3. ಕನ್ನಡ" in front of the same advocate several times a
+ * day, every day, before it would answer anything.
+ *
+ * It was asked every session because the answer was stored on the session, and
+ * it was stored on the session because nothing ever read it - see the note on
+ * the setLanguage action in session.router.ts. The language is on the account,
+ * it is remembered, and the way to change it is one word.
+ */
+export function greetingReturningToMenu(
+  name: string | null,
+  credits = '',
+  site = '',
+): string {
+  const who = name ? ` ${name.split(',')[0].trim()}` : '';
+  return [
+    '*Jai Hind!*',
+    '',
+    `Welcome back${who} to *Vakeel Saathi*. I can help you with:`,
+    '1. Case Status (send CNR)',
+    '2. Law Sections (e.g., IPC 420)',
+    '3. Case Law / Precedents',
+    ...(credits ? ['', `_${credits}_`] : []),
+    ...siteLine(site, 'Full app:'),
+    '',
+    'Reply with *1*, *2* or *3* — or just type your question.',
+    '',
+    '_Type *language* to reply in Hindi or Kannada._',
+  ].join('\n');
+}
+
 export function greetingReturning(name: string | null, credits = '', site = ''): string {
   const who = name ? ` ${name.split(',')[0].trim()}` : '';
   return [

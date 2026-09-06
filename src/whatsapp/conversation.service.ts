@@ -341,6 +341,18 @@ export class ConversationService {
       );
       return;
     }
+    /*
+     * The way back to the language choice, now that it is not asked every
+     * session.
+     *
+     * It was always reachable through the interactive list menu, which is two
+     * taps and easy to miss. A word costs nothing and the greeting names it.
+     */
+    if (['language', 'lang', 'bhasha', 'भाषा'].includes(lower)) {
+      await this.sendLanguageMenu(user);
+      return;
+    }
+
     if (['verify', 'verification'].includes(lower)) {
       await this.beginVerification(user);
       return;
@@ -447,6 +459,11 @@ export class ConversationService {
           }
           break;
         }
+
+        case 'setLanguage':
+          await this.users.setLanguage(acting.id, action.code);
+          acting = { ...acting, preferred_language: action.code };
+          break;
 
         case 'lookupCase':
           // Charged here rather than inside answerCaseStatus, which the
