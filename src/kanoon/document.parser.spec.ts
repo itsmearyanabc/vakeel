@@ -58,8 +58,8 @@ describe('the shapes different registries use', () => {
   });
 
   it('survives an empty or missing document', () => {
-    expect(parseDocumentHeader('')).toEqual({ caseNumber: null, bench: [] });
-    expect(parseDocumentHeader(null)).toEqual({ caseNumber: null, bench: [] });
+    expect(parseDocumentHeader('')).toEqual({ caseNumber: null, bench: [], extract: '' });
+    expect(parseDocumentHeader(null)).toEqual({ caseNumber: null, bench: [], extract: '' });
   });
 
   it('reads an unlinked coram, which older documents have', () => {
@@ -88,5 +88,62 @@ describe('the criminal side, where the abbreviations are not all capitals', () =
     // Honorifics are short and dotted, which is exactly what the dot rule now
     // accepts, so they are named and excluded.
     expect(parseDocumentHeader(withHeader('Present: Mr. 16 of 2022')).caseNumber).toBeNull();
+  });
+});
+
+describe('reading what the judgment is actually about', () => {
+  /*
+   * LEGAL PRINCIPLE read "Not available" on every card, and the reason was the
+   * input rather than the summariser. It was being given Kanoon's `headline`,
+   * which for a title match is the cause title echoed back with the query words
+   * emboldened. Asked to find a principle in a cause title, the model correctly
+   * answered that there was none.
+   *
+   * The document has been fetched for the case number by then, so the court's
+   * own words are already in hand.
+   */
+  const opening = parseDocumentHeader(fixture.doc).extract;
+
+  it('skips the cause title, the coram and the case-number list', () => {
+    // The sample's header runs to fifty case numbers in one paragraph, and the
+    // paragraph after it is a page of counsel names.
+    expect(opening).not.toContain('CWPOA');
+    expect(opening).not.toContain('6943');
+    expect(opening).not.toMatch(/^Present:/);
+  });
+
+  it('skips the appearances, which are names and nothing else', () => {
+    expect(opening).not.toContain('Sanjeev Bhushan');
+  });
+
+  it('is bounded, because the judgment is a megabyte', () => {
+    expect(opening.length).toBeLessThanOrEqual(2000);
+  });
+});
+
+describe('the extract is the question the court had to decide', () => {
+  const opening = parseDocumentHeader(fixture.doc).extract;
+
+  it('reaches the reasoning', () => {
+    // What an advocate scanning ten results wants is not the outcome - "the
+    // petition is allowed" - but what the case was about.
+    expect(opening).toContain('daily-waged');
+    expect(opening).toContain('regularisation');
+  });
+
+  it('returns nothing rather than furniture when there is no reasoning', () => {
+    /*
+     * The first version fell back to the plain body when no paragraph passed
+     * the filter. What that returns is the cause title, fifty case numbers and
+     * a page of counsel names - and this string is what LEGAL PRINCIPLE prints.
+     * "Not available" is true; a list of case numbers presented as the holding
+     * is not.
+     */
+    const headerOnly =
+      '<h2 class="doc_title">X vs Y on 1 January, 2020</h2>' +
+      '<div><p>CWP No. 1/2020, CWP No. 2/2020, CWP No. 3/2020, CWP No. 4/2020, CWP No. 5/2020</p>' +
+      '<p>Present: Mr. A. K. Gupta, Advocate, for the petitioner and Ms. B. Sharma for the State.</p></div>';
+
+    expect(parseDocumentHeader(headerOnly).extract).toBe('');
   });
 });

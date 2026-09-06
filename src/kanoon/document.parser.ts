@@ -45,6 +45,20 @@ export interface DocumentHeader {
   caseNumber: string | null;
   /** Judge names, in the order the coram lists them. */
   bench: string[];
+  /**
+   * The judgment's own opening reasoning, as plain text.
+   *
+   * The LEGAL PRINCIPLE line was being written from Kanoon's `headline`, which
+   * is a search snippet: for a title match it is the title echoed back with
+   * <b> tags round the query words, and there is no principle to be had from
+   * that. Every card in a live search read "Not available" for exactly that
+   * reason.
+   *
+   * Once the document has been fetched for the case number, the whole judgment
+   * is already in hand and the summariser can read the court's own words
+   * instead. This is the part of it worth reading - see extractOpening.
+   */
+  extract: string;
 }
 
 /**
@@ -112,11 +126,82 @@ function looksLikeCaseType(token: string): boolean {
  * with a plausible wrong case number is worse than either.
  */
 export function parseDocumentHeader(html: string | null | undefined): DocumentHeader {
-  if (!html) return { caseNumber: null, bench: [] };
+  if (!html) return { caseNumber: null, bench: [], extract: '' };
 
   const head = html.slice(0, HEADER_CHARS);
 
-  return { caseNumber: findCaseNumber(head), bench: findBench(head) };
+  return {
+    caseNumber: findCaseNumber(head),
+    bench: findBench(head),
+    extract: extractOpening(html),
+  };
+}
+
+/**
+ * What the judgment is about, in the court's own words.
+ *
+ * ## Why the opening rather than the end
+ *
+ * The operative order is at the end and reads "the petition is allowed" - true,
+ * and useless on a card. The opening paragraphs are where an Indian judgment
+ * states what it has to decide, and that is what an advocate scanning results
+ * wants: not the outcome, the question.
+ *
+ * ## What has to be skipped to get there
+ *
+ * A judgment does not start with reasoning. It starts with the cause title, the
+ * coram, a list of case numbers that in the sample ran to fifty, and the
+ * appearances - "Present: Mr. Sanjeev Bhushan, Sr. Advocate with M/s ..." -
+ * which is a paragraph of counsel names. All of that is skipped by shape rather
+ * than by position, because how much of it there is varies enormously.
+ */
+function extractOpening(html: string): string {
+  // A megabyte is far more than the opening needs, and regex over all of it is
+  // wasteful when everything wanted is at the front.
+  const body = html.slice(0, 40_000);
+
+  const paragraphs: string[] = [];
+  const tag = /<p\b[^>]*>([\s\S]*?)<\/p>/gi;
+  let match = tag.exec(body);
+
+  while (match && paragraphs.length < 12) {
+    const text = stripHtml(match[1]);
+    if (isSubstantive(text)) paragraphs.push(text);
+    match = tag.exec(body);
+  }
+
+  /*
+   * Nothing, rather than the furniture.
+   *
+   * The first version fell back to the plain body when no paragraph passed the
+   * filter, on the reasoning that older unmarked documents still have text
+   * worth reading. What that actually returns is the cause title, fifty case
+   * numbers and a page of counsel names - and this string is what LEGAL
+   * PRINCIPLE prints. An empty extract leaves the card saying "Not available",
+   * which is true; the fallback would have printed a list of case numbers as
+   * the holding of the case.
+   */
+  return paragraphs.join(' ').slice(0, 2_000).trim();
+}
+
+/** Is this paragraph reasoning, or is it the furniture in front of it? */
+function isSubstantive(text: string): boolean {
+  if (text.length < 80) return false;
+
+  // The appearances block. Long, and entirely names.
+  if (/^(present|coram|for the (petitioner|respondent|appellant)|mr\.|ms\.|counsel)\b/i.test(text)) {
+    return false;
+  }
+
+  // The connected-matters list: mostly digits, commas and slashes. The sample
+  // ran to fifty case numbers in a single paragraph.
+  const digits = (text.match(/\d/g) ?? []).length;
+  if (digits / text.length > 0.25) return false;
+
+  // A cause title repeated as a paragraph, which Kanoon documents often do.
+  if (/\bvs?\.?\s/i.test(text) && text.length < 200) return false;
+
+  return true;
 }
 
 /**

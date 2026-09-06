@@ -22,6 +22,23 @@ import { ProviderRegistry } from './providers/provider.registry';
 const NEWLINE = '\n';
 
 /**
+ * The better of the row's own excerpt and the judgment's opening.
+ *
+ * Kanoon's `headline` is kept when it is a real body snippet - it is chosen
+ * around the query terms, so it is more likely to be on point than a fixed
+ * opening. It is discarded when it is the document's own header, which
+ * isDocumentHeader already recognises because that same string was being
+ * printed under LEGAL PRINCIPLE for months.
+ */
+function preferExtract(row: PrecedentRow, extract: string): string {
+  const current = (row.best_excerpt || '').trim();
+  if (!extract) return current;
+  if (!current) return extract;
+
+  return isDocumentHeader(current, row.case_title) ? extract : current;
+}
+
+/**
  * Kanoon's document id, out of the namespaced judgment id.
  *
  * Rows from the ingested corpus have UUIDs and no document to fetch, so null is
@@ -364,7 +381,7 @@ export class PrecedentsService {
         if (tid === null) return;
 
         const header = await this.kanoon.documentHeader(tid);
-        if (!header.caseNumber && header.bench.length === 0) return;
+        if (!header.caseNumber && header.bench.length === 0 && !header.extract) return;
 
         enriched[index] = {
           ...enriched[index],
@@ -376,6 +393,20 @@ export class PrecedentsService {
           // beat the numeric ids it always carries.
           bench: header.bench.length > 0 ? header.bench : enriched[index].bench,
           bench_strength: header.bench.length || enriched[index].bench_strength,
+          /*
+           * The judgment's own words, in place of a search snippet.
+           *
+           * best_excerpt was Kanoon's `headline`, which for a title match is
+           * the title echoed back with the query words emboldened - so the
+           * summariser was being asked to find a principle in a cause title,
+           * and correctly answered that there was none. That is why LEGAL
+           * PRINCIPLE read "Not available" on cards whose judgment we now have
+           * in full.
+           *
+           * Only when the row has nothing better. A corpus judgment's own
+           * headnote or a genuine body snippet both outrank this.
+           */
+          best_excerpt: preferExtract(enriched[index], header.extract),
         };
       }),
     );

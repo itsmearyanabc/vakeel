@@ -269,7 +269,7 @@ export class KanoonService {
    * search carries on.
    */
   async documentHeader(tid: number): Promise<DocumentHeader> {
-    const empty: DocumentHeader = { caseNumber: null, bench: [] };
+    const empty: DocumentHeader = { caseNumber: null, bench: [], extract: '' };
     if (!this.isConfigured) return empty;
 
     const key = `kanoon:doc:${tid}`;
@@ -294,7 +294,12 @@ export class KanoonService {
       await this.cache.set(key, header, this.cacheTtl).catch(() => undefined);
 
       this.logger.debug(
-        { tid, caseNumber: header.caseNumber, judges: header.bench.length },
+        {
+          tid,
+          caseNumber: header.caseNumber,
+          judges: header.bench.length,
+          extractChars: header.extract.length,
+        },
         'Kanoon document header read',
       );
       return header;
