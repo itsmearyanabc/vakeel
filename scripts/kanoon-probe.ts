@@ -18,6 +18,19 @@
  *
  *   npx ts-node -r tsconfig-paths/register scripts/kanoon-probe.ts
  *   npx ts-node -r tsconfig-paths/register scripts/kanoon-probe.ts "your query"
+ *   npx ts-node -r tsconfig-paths/register scripts/kanoon-probe.ts --tid 257876
+ *
+ * ## What the second version looks for
+ *
+ * The first run showed no citation field in /search/ or /doc/, and that was
+ * reported as final. It was not: Kanoon's documentation lists two things that
+ * run never touched. /docmeta/<docid>/ has an undocumented response, and the
+ * search API accepts a `cite:` filter - "cite: 1993 AIR" - which can only work
+ * if the index holds reporter citations somewhere. So this also calls docmeta,
+ * and asks /doc/ for citeList and citedbyList, which are only sent on request.
+ *
+ * The default query is a reported Supreme Court judgment, because a case with
+ * no AIR or SCC citation cannot show whether a citation field exists.
  *
  * It prints field names and truncated values. Nothing is written anywhere, no
  * credit is spent by the app, and the API key is read from .env and never
@@ -36,7 +49,10 @@ try {
 
 const BASE = (process.env.KANOON_BASE_URL || 'https://api.indiankanoon.org').replace(/\/$/, '');
 const KEY = process.env.KANOON_API_KEY || '';
-const QUERY = process.argv[2] || 'Rajesh Kumar Mittal State Of Bihar';
+const tidFlag = process.argv.indexOf('--tid');
+const TID = tidFlag >= 0 ? process.argv[tidFlag + 1] : null;
+const QUERY =
+  (tidFlag < 0 && process.argv[2]) || 'Kesavananda Bharati vs State Of Kerala doctypes:supremecourt';
 
 /** Truncated, single-line, so a whole judgment does not fill the terminal. */
 function preview(value: unknown, limit = 220): string {
@@ -77,26 +93,48 @@ async function main(): Promise<void> {
   if (!KEY) throw new Error('KANOON_API_KEY is not set in .env');
 
   console.log(`base:  ${BASE}`);
-  console.log(`query: ${QUERY}`);
 
-  const search = await call(`/search/?formInput=${encodeURIComponent(QUERY)}&pagenum=0`);
-  const docs = (search.docs as Record<string, unknown>[] | undefined) ?? [];
+  let tid: unknown = TID;
+  if (!tid) {
+    console.log(`query: ${QUERY}`);
+    const search = await call(`/search/?formInput=${encodeURIComponent(QUERY)}&pagenum=0`);
+    const docs = (search.docs as Record<string, unknown>[] | undefined) ?? [];
 
-  console.log(`\nfound: ${preview(search.found)}   docs: ${docs.length}`);
-  if (docs.length === 0) {
-    console.log('No documents matched - try a different query.');
-    return;
+    console.log(`\nfound: ${preview(search.found)}   docs: ${docs.length}`);
+    if (docs.length === 0) {
+      console.log('No documents matched - try a different query.');
+      return;
+    }
+    dump('SEARCH RESULT [0]', docs[0]);
+    tid = docs[0].tid;
   }
 
-  dump('SEARCH RESULT [0]', docs[0]);
+  /*
+   * /docmeta/ first - the candidate. Its response is undocumented, which is
+   * precisely why it has to be looked at rather than reasoned about.
+   */
+  console.log(`\nfetching /docmeta/${String(tid)}/ …`);
+  try {
+    const meta = await call(`/docmeta/${String(tid)}/`);
+    dump(`DOCMETA ${String(tid)}`, meta);
+    console.log('\n=== DOCMETA RAW (first 1500 chars) ===\n');
+    console.log(JSON.stringify(meta).slice(0, 1500));
+  } catch (err) {
+    console.log(`docmeta failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
-  // The one that decides whether CASE NO. and the citations are reachable at
-  // all. The search result carries neither; if the document does not either,
-  // there is nothing to parse and the fields are not a bug.
-  const tid = docs[0].tid;
-  console.log(`\nfetching /doc/${String(tid)}/ …`);
-  const doc = await call(`/doc/${String(tid)}/`);
+  // citeList and citedbyList are only sent when asked for. They are other
+  // judgments - what this one relies on and what relies on it - not equivalent
+  // citations, and they are printed so that difference is visible, not assumed.
+  console.log(`\nfetching /doc/${String(tid)}/?maxcites=5&maxcitedby=5 …`);
+  const doc = await call(`/doc/${String(tid)}/?maxcites=5&maxcitedby=5`);
   dump(`DOCUMENT ${String(tid)}`, doc);
+
+  for (const list of ['citeList', 'citedbyList']) {
+    const entries = (doc[list] as Record<string, unknown>[] | undefined) ?? [];
+    console.log(`\n=== ${list}: ${entries.length} entries ===`);
+    if (entries[0]) dump(`${list}[0]`, entries[0]);
+  }
 
   /*
    * The judgment's own header, where a case number lives if it lives anywhere.

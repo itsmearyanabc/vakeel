@@ -23,6 +23,16 @@ export interface CaseStatus {
    * the same. On the first real record they were "9623/2024" and "138/2024".
    */
   filingNumber: string | null;
+  /**
+   * eCourts' own case number - "213400001382024".
+   *
+   * Fifteen digits: the establishment's case-type code, the registration
+   * serial, the year. It was deliberately left off the card on the reasoning
+   * that it "appears on no document anybody holds", and that is only half true:
+   * it is not on an order sheet, but it is exactly what the eCourts portal's
+   * case-number search keys on, and advocates were asking for it by name.
+   */
+  cnrCaseNumber: string | null;
   caseType: string | null;
   filingDate: string | null;
   registrationDate: string | null;
@@ -392,13 +402,25 @@ export class EcourtsService {
     // - not the internal 15-digit `caseNumber`, which appears on nothing.
     const caseTypeLabel =
       label('caseType', text(data, 'caseType')) ?? text(data, 'caseTypeRaw', 'caseType', 'case_type');
-    const registration = text(data, 'registrationNumber', 'filingNumber', 'case_number', 'caseNumber');
+    /*
+     * The registration number, and only the registration number.
+     *
+     * This fell back to `filingNumber` and then to `caseNumber` when the
+     * registration field was absent - so a record without one printed its
+     * filing number under "Registration Number" and asserted the two were the
+     * same, which is the exact mistake the card's two separate lines exist to
+     * avoid. Absent is "Not available", not a different number wearing its label.
+     */
+    const registration = text(data, 'registrationNumber', 'registration_number', 'case_number');
 
     const mapped: CaseStatus = {
       cnr,
       caseNumber:
         caseTypeLabel && registration ? `${caseTypeLabel} ${registration}` : registration,
       filingNumber: text(data, 'filingNumber', 'filing_number'),
+      // `cnrCaseNumber` first so that if the provider ever names it that - which
+      // is what its documentation is being read as calling it - that name wins.
+      cnrCaseNumber: text(data, 'cnrCaseNumber', 'cnr_case_number', 'caseNumber'),
       caseType: caseTypeLabel,
       filingDate: day(text(data, 'filingDate', 'filing_date')),
       registrationDate: day(text(data, 'registrationDate', 'registration_date')),
@@ -493,6 +515,7 @@ export class EcourtsService {
       cnr,
       caseNumber: `CC/${1000 + (seed % 8999)}/${year}`,
       filingNumber: `F/${2000 + (seed % 7999)}/${year}`,
+      cnrCaseNumber: `${1000 + (seed % 8999)}${String(seed % 9999999).padStart(7, '0')}${year}`,
       caseType: seed % 2 === 0 ? 'Criminal Case' : 'Civil Suit',
       filingDate: `${year}-0${(seed % 9) + 1}-1${seed % 9}`,
       registrationDate: `${year}-0${(seed % 9) + 1}-2${seed % 8}`,

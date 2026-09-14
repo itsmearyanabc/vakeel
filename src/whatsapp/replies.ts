@@ -562,6 +562,8 @@ export function formatCaseStatus(status: CaseStatus): string {
     `• Registration Number: ${value(status.caseNumber)}`,
     `• Registration Date: ${value(status.registrationDate)}`,
     `• CNR Number: ${status.cnr}`,
+    // eCourts' 15-digit case number - what the portal's case-number search takes.
+    `• CNR Case Number: ${value(status.cnrCaseNumber)}`,
     // Was printing lastHearingDate under a "First Hearing" label. The two are
     // the same day only on a case that has been heard once.
     `• First Hearing Date: ${value(status.firstHearingDate)}`,

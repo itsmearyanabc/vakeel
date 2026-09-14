@@ -280,3 +280,54 @@ describe('a base URL pointing at the wrong thing', () => {
     expect(service.configurationError).toBeNull();
   });
 });
+
+describe('the three numbers an advocate quotes', () => {
+  /*
+   * Filing number, registration number and eCourts' own case number. The first
+   * two were already on the card; the third was left off deliberately, on the
+   * reasoning that a 15-digit string "appears on no document anybody holds".
+   * Half true - it is not on an order sheet - but it is exactly what the
+   * eCourts portal's case-number search keys on, and advocates asked for it.
+   */
+  const status = mapWith(realResponse);
+
+  it('carries eCourts own 15-digit case number', () => {
+    expect(status.cnrCaseNumber).toBe('213400001382024');
+  });
+
+  it('keeps all three distinct, because on real records they are', () => {
+    expect(status.filingNumber).toBe('9623/2024');
+    expect(status.caseNumber).toBe('Writ Petition (Civil) 138/2024');
+    expect(new Set([status.filingNumber, status.caseNumber, status.cnrCaseNumber]).size).toBe(3);
+  });
+
+  it('never prints the filing number under Registration when registration is missing', () => {
+    // The registration fallback used to reach for filingNumber, then for the
+    // 15-digit caseNumber - so a record without a registration number showed a
+    // different number wearing that label. Absent is "Not available".
+    const copy = JSON.parse(JSON.stringify(realResponse));
+    delete copy.data.courtCaseData.registrationNumber;
+    const mapped = mapWith(copy);
+
+    expect(mapped.caseNumber).toBeFalsy();
+    expect(mapped.filingNumber).toBe('9623/2024');
+    expect(formatCaseStatus(mapped)).toContain('• Registration Number: Not available');
+  });
+
+  it('takes a field literally named cnrCaseNumber if the provider sends one', () => {
+    // The mapping reads the documented name first, so if the docs mean a field
+    // other than caseNumber, sending it is enough - no code change.
+    const copy = JSON.parse(JSON.stringify(realResponse));
+    copy.data.courtCaseData.cnrCaseNumber = '999900000012024';
+
+    expect(mapWith(copy).cnrCaseNumber).toBe('999900000012024');
+  });
+
+  it('prints all three on the WhatsApp card', () => {
+    const card = formatCaseStatus(status);
+
+    expect(card).toContain('• Filing Number: 9623/2024');
+    expect(card).toContain('• Registration Number: Writ Petition (Civil) 138/2024');
+    expect(card).toContain('• CNR Case Number: 213400001382024');
+  });
+});

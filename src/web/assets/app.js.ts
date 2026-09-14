@@ -1217,11 +1217,15 @@ function renderCaseStatus(data) {
     ['Stage', data.stage],
     ['Court', data.court],
     ['Judge', data.judge],
-    ['Registration number', data.caseNumber],
-    // A different number from the registration one, and on the record the
-    // provider returns they genuinely differ.
+    ['Case type', data.caseType],
+    // The three numbers an advocate quotes, in the order the WhatsApp card
+    // prints them. Filing and registration genuinely differ on real records -
+    // "9623/2024" and "138/2024" on the first one - so they are never merged.
     ['Filing number', data.filingNumber],
+    ['Registration number', data.caseNumber],
+    ['CNR case number', data.cnrCaseNumber],
     ['Filed', data.filingDate],
+    ['Registered', data.registrationDate],
     ['First hearing', data.firstHearingDate],
     ['Next hearing', data.nextHearingDate],
     ['Last hearing', data.lastHearingDate],
