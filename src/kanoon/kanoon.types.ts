@@ -10,8 +10,13 @@
  *  - `headline` is a search-result snippet with `<b>` highlight tags around the
  *    query terms - it is not a headnote, and it is not plain text.
  *
- * There is no citation field anywhere in this API. Not in `/search/`, not in
- * `/doc/`. See kanoon.service.ts for how that is handled honestly.
+ * Citations are there, but only for judgments a reporter carried. This header
+ * used to say there was no citation field anywhere in the API, and that was
+ * wrong: it was concluded from one unreported 2022 High Court judgment, whose
+ * response simply had nothing to put in one. A reported Supreme Court judgment
+ * (tid 257876, captured 2026-09-14) carries `citation` on the search result and
+ * the full list in the document's `doc_citations` heading. See
+ * document.parser.ts.
  */
 
 export interface KanoonSearchDoc {
@@ -25,6 +30,14 @@ export interface KanoonSearchDoc {
   headline?: string;
   /** e.g. "Calcutta High Court (Appellete Side)" - Kanoon's own spelling. */
   docsource?: string;
+  /**
+   * The first reporter citation - "AIR 1973 SUPREME COURT 1461".
+   *
+   * Absent, not null, on a judgment no reporter carried, which is most High
+   * Court judgments. Only the first citation: the document's `doc_citations`
+   * heading has the rest ("..., 1973 4 SCC 225").
+   */
+  citation?: string;
   /** Author IDs, NOT names. Length is usable as bench strength. */
   bench?: number[];
   /** The authoring judge's name, e.g. "A K Banerjee". This one IS a name. */

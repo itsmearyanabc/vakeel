@@ -138,10 +138,11 @@ describe('precedent formatting', () => {
        * This has now been decided twice, and the second time is the one that
        * stands: no link out, ever.
        *
-       * The argument for one was that Indian Kanoon publishes no case number
-       * and no citations through its API, so three of the seven fields read
-       * "Not available" and the card proves a judgment exists without offering
-       * a way to read it. A READ: line was added on that basis.
+       * The argument for one was that three of the seven fields read "Not
+       * available" - Kanoon was then believed to publish no case number and no
+       * citations, which turned out to be half wrong - so the card proved a
+       * judgment existed without offering a way to read it. A READ: line was
+       * added on that basis.
        *
        * The instruction is explicit and it overrides that: this product never
        * points an advocate at another service. A link out is an admission that

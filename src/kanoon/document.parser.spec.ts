@@ -58,7 +58,13 @@ describe('the shapes different registries use', () => {
   });
 
   it('survives an empty or missing document', () => {
-    const empty = { caseNumber: null, neutralCitation: null, bench: [], extract: '' };
+    const empty = {
+      caseNumber: null,
+      neutralCitation: null,
+      equivalentCitations: [],
+      bench: [],
+      extract: '',
+    };
     expect(parseDocumentHeader('')).toEqual(empty);
     expect(parseDocumentHeader(null)).toEqual(empty);
   });
@@ -154,12 +160,9 @@ describe('the one citation nobody sells', () => {
     `<h2 class="doc_title">X vs Y on 1 January, 2024</h2><div>${body}</div>`;
 
   /*
-   * EQUIVALENT CITATIONS has been empty on every card, and for AIR, SCC and
-   * PLJR it always will be: those are the products those reporters license and
-   * Kanoon exposes none of them at either endpoint.
-   *
-   * Neutral citations are different. The courts assign them and print them in
-   * the judgment, so where one exists it is free to read.
+   * The courts' own citation, printed in the judgment. Separate from the
+   * reporters' AIR and SCC citations, which Kanoon prints under their own
+   * heading - see citations.spec.ts.
    */
   it.each([
     ['Neutral Citation No. 2024:PHHC:012345', '2024:PHHC:012345'],

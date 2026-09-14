@@ -36,11 +36,12 @@ export class KanoonNotConfiguredError extends Error {
  *
  * ## What this can and cannot give you
  *
- * Kanoon's search returns a snippet, a title, a court and a date. It does NOT
- * return citations, headnotes, the ratio, or the statutory provisions at issue -
- * those fields come back null, and the WhatsApp card offers the indiankanoon.org
- * link instead. Fabricating a citation-shaped string here would be worse than
- * useless: it would look quotable in a filing and not be real.
+ * Kanoon's search returns a snippet, a title, a court, a date - and, for a
+ * judgment a reporter carried, its first citation. It returns no headnote, no
+ * ratio and no statutory provisions. The case number, the coram and the full
+ * citation list are in the judgment itself; see documentHeader. Fabricating a
+ * citation-shaped string anywhere here would be worse than useless: it would
+ * look quotable in a filing and not be real.
  *
  * ## Failure behaviour
  *
@@ -269,18 +270,37 @@ export class KanoonService {
    * search carries on.
    */
   async documentHeader(tid: number): Promise<DocumentHeader> {
-    const empty: DocumentHeader = { caseNumber: null, neutralCitation: null, bench: [], extract: '' };
+    const empty: DocumentHeader = {
+      caseNumber: null,
+      neutralCitation: null,
+      equivalentCitations: [],
+      bench: [],
+      extract: '',
+    };
     if (!this.isConfigured) return empty;
 
-    const key = `kanoon:doc:${tid}`;
+    /*
+     * Versioned, because what is cached here has changed shape.
+     *
+     * Headers cached before the citation field existed are valid for a day and
+     * carry no citations. Read under the old key, every reported judgment an
+     * advocate had already looked up would keep printing "Not available" until
+     * its entry expired - the exact field this change is for, silently empty,
+     * on the cases most likely to be searched again.
+     */
+    const key = `kanoon:doc:v2:${tid}`;
 
     const hot = this.hotHeaders.get(key);
     if (hot) return hot;
 
-    const stored = await this.cache.get<DocumentHeader>(key).catch(() => null);
+    const stored = await this.cache.get<Partial<DocumentHeader>>(key).catch(() => null);
     if (stored) {
-      this.hotHeaders.set(key, stored, this.cacheTtl);
-      return stored;
+      // Defaults under whatever was stored, so an entry missing a field reads as
+      // an empty field rather than as `undefined.length` halfway through a
+      // search - which rejects the whole Promise.all and loses every card.
+      const header: DocumentHeader = { ...empty, ...stored };
+      this.hotHeaders.set(key, header, this.cacheTtl);
+      return header;
     }
 
     try {

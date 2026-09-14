@@ -46,7 +46,13 @@ function build(over: { rows?: PrecedentRow[]; enrichMax?: number; header?: unkno
     isDegraded: false,
     search: jest.fn().mockResolvedValue(rows),
     documentHeader: jest.fn().mockResolvedValue(
-      over.header ?? { caseNumber: 'CWP No. 2843/2019', bench: ['Tarlok Singh Chauhan', 'Virender Singh'] },
+      over.header ?? {
+        caseNumber: 'CWP No. 2843/2019',
+        neutralCitation: null,
+        equivalentCitations: [],
+        bench: ['Tarlok Singh Chauhan', 'Virender Singh'],
+        extract: '',
+      },
     ),
   };
 
@@ -138,5 +144,79 @@ describe('filling the two fields Kanoon has no field for', () => {
 
     expect(result.precedents).toHaveLength(1);
     expect(result.precedents[0].case_title).toContain('Rajender Kumar');
+  });
+});
+
+describe('EQUIVALENT CITATIONS, from the judgment Kanoon printed them in', () => {
+  /*
+   * Empty on every card for months and explained as impossible. It was
+   * concluded from probing one unreported judgment. A reported one carries its
+   * citations on the search result and, in full, in the document's
+   * doc_citations heading.
+   */
+  const reported = {
+    caseNumber: 'Writ Petition (civil) 135 of 1970',
+    neutralCitation: null,
+    equivalentCitations: ['AIR 1973 SUPREME COURT 1461', '1973 4 SCC 225'],
+    bench: ['S.M. Sikri'],
+    extract: '',
+  };
+
+  it('fills the field from the document', async () => {
+    const { service } = build({ header: reported });
+
+    const result = await service.search(intent() as never);
+
+    expect(result.precedents[0].reporter_citations).toEqual([
+      'AIR 1973 SUPREME COURT 1461',
+      '1973 4 SCC 225',
+    ]);
+  });
+
+  it('does not print the citation twice when the search result carried it too', async () => {
+    // The search result sends the first citation and the document sends all of
+    // them, so the first one arrives from both.
+    const { service } = build({
+      rows: [kanoonRow({ reporter_citations: ['AIR 1973 SUPREME COURT 1461'] })],
+      header: reported,
+    });
+
+    const result = await service.search(intent() as never);
+
+    expect(result.precedents[0].reporter_citations).toEqual([
+      'AIR 1973 SUPREME COURT 1461',
+      '1973 4 SCC 225',
+    ]);
+  });
+
+  it('lists a reporter citation ahead of a neutral one', async () => {
+    const { service } = build({
+      header: {
+        caseNumber: null,
+        neutralCitation: '2024:PHHC:012345',
+        equivalentCitations: ['2024 SCC OnLine P&H 99'],
+        bench: [],
+        extract: '',
+      },
+    });
+
+    const result = await service.search(intent() as never);
+
+    expect(result.precedents[0].reporter_citations).toEqual([
+      '2024 SCC OnLine P&H 99',
+      '2024:PHHC:012345',
+    ]);
+  });
+
+  it('still enriches a row whose only new information is a citation', async () => {
+    // The early return used to require a case number, a bench or an extract,
+    // so a header carrying nothing but citations was discarded.
+    const { service } = build({
+      header: { caseNumber: null, neutralCitation: null, equivalentCitations: ['AIR 1990 SC 1'], bench: [], extract: '' },
+    });
+
+    const result = await service.search(intent() as never);
+
+    expect(result.precedents[0].reporter_citations).toEqual(['AIR 1990 SC 1']);
   });
 });

@@ -1,0 +1,30 @@
+{
+  "_comment": "Captured from api.indiankanoon.org on 2026-09-14 by scripts/kanoon-probe.ts, for tid 257876 (Kesavananda Bharati, a reported Supreme Court judgment). `search` and `docmeta` are verbatim. In `doc`, the doc_title and doc_citations headings are verbatim; the real field is 2,954,953 characters and the probe printed it only as plain text after that point, so the bench heading and the labelled CASE NO. block are rebuilt from that print, in the markup the verbatim HP High Court capture (kanoon-document.json) uses. Field names are unchanged.",
+  "search": {
+    "authorid": null,
+    "bench": [1732, 2140, 2096, 2143, 2144, 2135, 2145, 2139, 2097, 2141, 2146, 2098],
+    "catids": null,
+    "citation": "AIR 1973 SUPREME COURT 1461",
+    "docsize": 2982594,
+    "docsource": "Supreme Court of India",
+    "doctype": 1000,
+    "fragment": true,
+    "headline": "<b>Kesavananda</b> <b>Bharati</b> Sripadagalvaru ... <b>vs</b> <b>State</b> Of <b>Kerala</b> And Anr on 24 April, 1973 Equivalent citations: AIR 1973 SUPREME COURT 1461, 1973 4 SCC 225 Bench ... Appellants: His Holiness",
+    "numcitedby": 999,
+    "numcites": 573,
+    "publishdate": "1973-04-24",
+    "tid": 257876,
+    "title": "<b>Kesavananda</b> <b>Bharati</b> Sripadagalvaru ... <b>vs</b> <b>State</b> Of <b>Kerala</b> And Anr on 24 April, 1973"
+  },
+  "docmeta": {
+    "tid": 257876,
+    "publishdate": "1973-04-24",
+    "doctype": "Supreme Court of India",
+    "relurl": "judis.nic.in/1973-04-24/Kesavananda Bharati Sripadagalvaru and Ors Vs. State of Kerala and Anr",
+    "caseno": null,
+    "numcites": 573,
+    "numcitedby": 999,
+    "title": "Kesavananda Bharati Sripadagalvaru ... vs State Of Kerala And Anr on 24 April, 1973"
+  },
+  "doc": "<h2 class=\"doc_title\">Kesavananda Bharati Sripadagalvaru ... vs State Of Kerala And Anr on 24 April, 1973</h2> <h3 class=\"doc_citations\">Equivalent citations: AIR 1973 SUPREME COURT 1461, 1973 4 SCC 225</h3> <h3 class=\"doc_bench\">Bench: <a href=\"/search/?formInput=benchid:s-m-sikri\">S.M. Sikri</a> , <a href=\"/search/?formInput=benchid:a-n-grover\">A.N. Grover</a> , <a href=\"/search/?formInput=benchid:a-n-ray\">A.N. Ray</a> , <a href=\"/search/?formInput=benchid:d-g-palekar\">D.G. Palekar</a> , <a href=\"/search/?formInput=benchid:h-r-khanna\">H.R. Khanna</a> , <a href=\"/search/?formInput=benchid:j-m-shelat\">J.M. Shelat</a> , <a href=\"/search/?formInput=benchid:k-k-mathew\">K.K. Mathew</a> , <a href=\"/search/?formInput=benchid:k-s-hegde\">K.S. Hegde</a> , <a href=\"/search/?formInput=benchid:m-h-beg\">M.H. Beg</a> , <a href=\"/search/?formInput=benchid:p-jaganmohan-reddy\">P. Jaganmohan Reddy</a> , <a href=\"/search/?formInput=benchid:s-n-dwivedi\">S.N. Dwivedi</a> , <a href=\"/search/?formInput=benchid:y-v-chandrachud\">Y.V.Chandrachud</a></h3> <pre>CASE NO.:\nWrit Petition (civil) 135 of 1970\n\nPETITIONER:\nKesavananda Bharati Sripadagalvaru and Ors\n\nRESPONDENT:\nState of Kerala and Anr\n\nDATE OF JUDGMENT: 24/04/1973\n\nBENCH:\nS.M. Sikri &amp; A.N. Grover &amp; A.N. Ray &amp; D.G. Palekar &amp; H.R. Khanna &amp; J.M. Shelat &amp; K.K. Mathew &amp; K.S. Hegde &amp; M.H. Beg &amp; P. Jaganmohan Reddy &amp; S.N. Dwivedi &amp; Y.V.Chandrachud\n\nJUDGMENT:\nJUDGMENT W.P.(C) 135 OF 1970 Appellants: His Holiness Kesavananda Bharati Sripadagalvaru and Ors. Vs. Respondent: State of Kerala and Anr. Decided On: 24.04.1973</pre>"
+}

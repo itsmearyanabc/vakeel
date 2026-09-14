@@ -11,11 +11,12 @@ import { KanoonSearchDoc } from './kanoon.types';
  *
  * ## The honesty rule
  *
- * Kanoon exposes no citation of any kind. Where the local corpus would carry a
- * neutral citation ("2024 INSC 452"), these rows carry `null`, and the source
- * URL is offered instead. Synthesising a citation-shaped string from the title
- * would produce something that looks quotable in a filing and is not - the one
- * failure mode this whole product is built to avoid.
+ * Every citation on a row is one Kanoon printed. A reported judgment arrives
+ * with `citation` on the search result, and that is carried; an unreported one
+ * arrives without it, and the row says so with an empty list. Nothing is ever
+ * assembled from a title - a citation-shaped string built that way looks
+ * quotable in a filing and is not, which is the one failure this product exists
+ * to prevent.
  */
 
 /**
@@ -44,6 +45,34 @@ export function stripHtml(input: string | undefined | null): string {
     .replace(/&#(\d+);/g, (_, code: string) => String.fromCharCode(Number(code)))
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * A citations string, as a clean list.
+ *
+ * Kanoon joins a judgment's citations with commas - "AIR 1973 SUPREME COURT
+ * 1461, 1973 4 SCC 225". Split, whitespace collapsed, duplicates dropped
+ * without regard to case, and anything with no digit in it discarded: every
+ * reporter citation has a year or a volume, and a fragment without one is a
+ * stray label, not a citation.
+ */
+export function splitCitations(value: string | null | undefined): string[] {
+  if (!value) return [];
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+
+  for (const part of stripHtml(value).split(/[,;]/)) {
+    const citation = part.replace(/\s+/g, ' ').trim();
+    if (!citation || !/\d/.test(citation)) continue;
+
+    const key = citation.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(citation);
+  }
+
+  return out;
 }
 
 /**
@@ -203,9 +232,17 @@ export function toPrecedentRow(
     judgment_id: `kanoon:${doc.tid}`,
     case_title: cleanTitle(doc.title),
 
-    // Kanoon has no citations. Saying so with null is the point.
+    /*
+     * The citation the search result already carries, when there is one.
+     *
+     * This was hard-coded empty on the belief that Kanoon exposes no citations,
+     * which came from probing an unreported judgment. A reported one sends
+     * `citation: "AIR 1973 SUPREME COURT 1461"` on the search result itself - so
+     * every reported row gets EQUIVALENT CITATIONS with no document fetch at
+     * all, including the rows past the first page that are never enriched.
+     */
     neutral_citation: null,
-    reporter_citations: [],
+    reporter_citations: splitCitations(doc.citation),
 
     court_name: doc.docsource ?? null,
     court_type: inferCourtType(doc.docsource),

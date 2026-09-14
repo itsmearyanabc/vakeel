@@ -1,4 +1,4 @@
-import { stripHtml } from './kanoon.mapper';
+import { splitCitations, stripHtml } from './kanoon.mapper';
 
 /**
  * The two fields Indian Kanoon holds but does not expose as fields.
@@ -14,8 +14,10 @@ import { stripHtml } from './kanoon.mapper';
  *   document: citetid courtcopy divtype doc docsource numcitedby numcites
  *             publishdate query_alert relatedqs tid title
  *
- * Neither carries a case number and neither carries a citation. `citetid` is
- * not a citation - it is the document's own id repeated.
+ * Neither carries a case number as a field. `citetid` is not a citation - it is
+ * the document's own id repeated. Citations *are* carried, for a reported
+ * judgment: see `equivalentCitations` below. That was missed at first because
+ * the judgment first probed had never been reported.
  *
  * What the *document* has that the search result does not is `doc`: the whole
  * judgment as HTML, roughly 1.1 MB of it, whose header carries both things a
@@ -31,9 +33,9 @@ import { stripHtml } from './kanoon.mapper';
  *
  * ## What this deliberately does not do
  *
- * It does not invent a citation. There is none to find, at either endpoint, and
- * a citation-shaped string assembled from a title would be the exact failure
- * this product exists to prevent.
+ * It does not invent a citation. It reads the ones Kanoon prints under
+ * "Equivalent citations" and nothing else; a citation-shaped string assembled
+ * from a title would be the exact failure this product exists to prevent.
  *
  * It also reads only the head of the document. The body is a megabyte of
  * judgment text and every pattern below belongs to the header; scanning the
@@ -48,17 +50,25 @@ export interface DocumentHeader {
   /**
    * The court's own neutral citation - "2024:PHHC:012345", "2023 INSC 456".
    *
-   * The one citation an Indian judgment can carry that nobody sells. AIR, SCC
-   * and PLJR citations are the product those reporters license and Kanoon
-   * exposes none of them, at either endpoint - but neutral citations are
-   * assigned by the courts themselves and printed in the judgment, so where one
-   * exists it is free to read.
+   * Assigned by the courts themselves and printed in the judgment. Distinct from
+   * `equivalentCitations`, which are the reporters' - AIR, SCC - and which
+   * Kanoon prints in their own heading.
    *
    * Null on anything older than roughly 2023: the Supreme Court began the
    * scheme that year and the High Courts adopted it over 2023-24, so a 2005
    * judgment has none and never will.
    */
   neutralCitation: string | null;
+
+  /**
+   * Reporter citations - "AIR 1973 SUPREME COURT 1461", "1973 4 SCC 225".
+   *
+   * From the `doc_citations` heading, which Kanoon prints on every judgment a
+   * reporter carried and omits on every one none did. Empty is therefore the
+   * truth for an unreported judgment, not a parsing failure - and it was an
+   * unreported judgment that led to this field being declared impossible.
+   */
+  equivalentCitations: string[];
 
   /**
    * The judgment's own opening reasoning, as plain text.
@@ -102,7 +112,7 @@ const HEADER_CHARS = 4000;
  * the same breath as "CWP No. 2843/2019".
  */
 const CASE_NUMBER =
-  /\b([A-Z][A-Za-z.]{0,11}(?:\s*\([A-Za-z.]{1,6}\))?)\s*(?:Nos?\.?\s*)?(\d{1,6})\s*(?:\/|\s+of\s+)\s*((?:19|20)?\d{2})\b/;
+  /\b([A-Z][A-Za-z.]{0,11}(?:\s*\([A-Za-z.]{1,6}\))?)\s*(?:Nos?\.?\s*)?(\d{1,6})\s*(?:\/|\s+[oO][fF]\s+)\s*((?:19|20)?\d{2})\b/;
 
 /**
  * Case-type abbreviations we accept.
@@ -141,13 +151,16 @@ function looksLikeCaseType(token: string): boolean {
  * with a plausible wrong case number is worse than either.
  */
 export function parseDocumentHeader(html: string | null | undefined): DocumentHeader {
-  if (!html) return { caseNumber: null, neutralCitation: null, bench: [], extract: '' };
+  if (!html) {
+    return { caseNumber: null, neutralCitation: null, equivalentCitations: [], bench: [], extract: '' };
+  }
 
   const head = html.slice(0, HEADER_CHARS);
 
   return {
     caseNumber: findCaseNumber(head),
     neutralCitation: findNeutralCitation(head),
+    equivalentCitations: findEquivalentCitations(head),
     bench: findBench(head),
     extract: extractOpening(html),
   };
@@ -167,6 +180,31 @@ export function parseDocumentHeader(html: string | null | undefined): DocumentHe
  */
 const NEUTRAL_CITATION =
   /\b((?:19|20)\d{2}\s*:\s*[A-Z]{2,10}\s*:\s*\d{1,7}(?:\s*-\s*[A-Z]{2})?|(?:19|20)\d{2}\s+INSC\s+\d{1,5})\b/i;
+
+/**
+ * The reporter citations, from the heading Kanoon prints them under.
+ *
+ * Captured verbatim from a reported judgment:
+ *
+ *   <h3 class="doc_citations">Equivalent citations: AIR 1973 SUPREME COURT 1461, 1973 4 SCC 225</h3>
+ *
+ * Read from the heading rather than searched for in the text, because a
+ * judgment's body is full of citations to *other* judgments and the first
+ * "AIR ..." in the body is almost never this one's own. The plain-text label is
+ * a fallback for documents that print it without the heading markup.
+ */
+function findEquivalentCitations(head: string): string[] {
+  const heading = /<h3[^>]*class="[^"]*doc_citations[^"]*"[^>]*>([\s\S]*?)<\/h3>/i.exec(head);
+  if (heading) {
+    return splitCitations(stripHtml(heading[1]).replace(/^equivalent\s+citations?\s*:?\s*/i, ''));
+  }
+
+  const labelled =
+    /\bequivalent\s+citations?\s*:\s*(.+?)(?=\s+(?:bench|author|case\s+no\.?|petitioner|respondent)\s*:|$)/i.exec(
+      stripHtml(head),
+    );
+  return labelled ? splitCitations(labelled[1]) : [];
+}
 
 function findNeutralCitation(head: string): string | null {
   const match = NEUTRAL_CITATION.exec(stripHtml(head));
@@ -226,6 +264,17 @@ function extractOpening(html: string): string {
 /** Is this paragraph reasoning, or is it the furniture in front of it? */
 function isSubstantive(text: string): boolean {
   if (text.length < 80) return false;
+
+  // The reporting system's labelled header - "CASE NO.: ... PETITIONER: ...
+  // BENCH: ..." - on older judgments. Long enough, and low enough in digits,
+  // to pass every other test here as reasoning, and summarising it would print
+  // a list of parties as what the case was about.
+  if (/^(case\s+no|petitioner|respondent|appellant|date\s+of\s+judgment|bench|equivalent\s+citations|decided\s+on|judgment\s*:)/i.test(text)) {
+    return false;
+  }
+  if ((text.match(/\b(?:case\s+no\.?|petitioner|respondent|date\s+of\s+judgment|bench)\s*:/gi) ?? []).length >= 2) {
+    return false;
+  }
 
   // The appearances block. Long, and entirely names.
   if (/^(present|coram|for the (petitioner|respondent|appellant)|mr\.|ms\.|counsel)\b/i.test(text)) {
@@ -289,6 +338,30 @@ function findCaseNumber(head: string): string | null {
   // Tags become spaces so a number split across them does not fuse with the
   // word before it, which is how "…matters .CWP" would have read.
   const text = stripHtml(head);
+
+  /*
+   * The labelled form first, where the judgment has one.
+   *
+   * Older Supreme Court judgments carry the reporting system's own block -
+   * "CASE NO.: Writ Petition (civil) 135 of 1970 PETITIONER: ... RESPONDENT:".
+   * That is the case number stated outright, and it is quoted as written rather
+   * than rebuilt, because "Writ Petition (civil) 135 of 1970" is how it appears
+   * on the judgment an advocate will be holding.
+   *
+   * The pattern below would not have found it: "Writ Petition (civil)" is not
+   * an abbreviation, and the later "W.P.(C) 135 OF 1970" used a capital OF that
+   * the pattern did not accept.
+   */
+  const labelled =
+    /\bcase\s+no\.?\s*:\s*(.+?)(?=\s+(?:petitioner|appellant|respondent|date\s+of\s+judgment|bench)\s*:|$)/i.exec(
+      text,
+    );
+  if (labelled) {
+    const value = labelled[1].replace(/\s+/g, ' ').trim();
+    // Bounded: an unterminated label runs to the end of the header, and a
+    // paragraph is not a case number.
+    if (value && /\d/.test(value) && value.length <= 80) return value;
+  }
 
   // Skipping the cause title avoids reading a year out of "on 16 August, 2022".
   const afterTitle = text.replace(/^.*?\bon\s+\d{1,2}\s+[A-Za-z]+,?\s*\d{4}/i, '');

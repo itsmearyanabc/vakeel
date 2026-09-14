@@ -22,6 +22,31 @@ import { ProviderRegistry } from './providers/provider.registry';
 const NEWLINE = '\n';
 
 /**
+ * Citation lists joined in order, duplicates dropped without regard to case or
+ * spacing - "AIR 1973 SUPREME COURT 1461" arrives from both the search result
+ * and the document, and printing it twice would read as two reports.
+ */
+function mergeCitations(...sources: (string[] | string | null | undefined)[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+
+  for (const source of sources) {
+    const list = Array.isArray(source) ? source : source ? [source] : [];
+    for (const raw of list) {
+      const citation = raw.replace(/\s+/g, ' ').trim();
+      if (!citation) continue;
+
+      const key = citation.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(citation);
+    }
+  }
+
+  return out;
+}
+
+/**
  * The better of the row's own excerpt and the judgment's opening.
  *
  * Kanoon's `headline` is kept when it is a real body snippet - it is chosen
@@ -350,8 +375,10 @@ export class PrecedentsService {
    * ## Why a second call per row is the only way
    *
    * Indian Kanoon's search response, captured live, is: authorid, bench,
-   * catids, docsize, docsource, doctype, fragment, headline, numcitedby,
-   * numcites, publishdate, tid, title. There is no case number in it, and
+   * catids, citation, docsize, docsource, doctype, fragment, headline,
+   * numcitedby, numcites, publishdate, tid, title - `citation` only on a
+   * reported judgment, and only the first of its citations. There is no case
+   * number in it, and
    * `bench` is `[888, 1990]` - author ids, not names, which is why BENCH read
    * "Not available" on every card whose `author` happened to be absent.
    *
@@ -382,7 +409,16 @@ export class PrecedentsService {
         if (tid === null) return;
 
         const header = await this.kanoon.documentHeader(tid);
-        if (!header.caseNumber && header.bench.length === 0 && !header.extract) return;
+        const citations = header.equivalentCitations ?? [];
+        if (
+          !header.caseNumber &&
+          (header.bench ?? []).length === 0 &&
+          !header.extract &&
+          citations.length === 0 &&
+          !header.neutralCitation
+        ) {
+          return;
+        }
 
         enriched[index] = {
           ...enriched[index],
@@ -395,20 +431,25 @@ export class PrecedentsService {
           bench: header.bench.length > 0 ? header.bench : enriched[index].bench,
           bench_strength: header.bench.length || enriched[index].bench_strength,
           /*
-           * The one citation an Indian judgment carries that nobody sells.
+           * EQUIVALENT CITATIONS, from every source Kanoon has.
            *
-           * EQUIVALENT CITATIONS has been empty on every card because AIR, SCC
-           * and PLJR are the products those reporters license, and Kanoon
-           * exposes none of them at either endpoint. Neutral citations are
-           * different: the courts assign them and print them in the judgment.
+           * The document's `doc_citations` heading first, because it is the
+           * complete list; then whatever the search result carried, which is
+           * only its first entry and is normally a duplicate; then the court's
+           * neutral citation, last, because an advocate reaches for AIR or SCC
+           * before a neutral one when both exist.
            *
-           * Only helps recent work. The scheme began at the Supreme Court in
-           * 2023 and the High Courts came in over 2023-24, so anything older
-           * has none and this stays "Not available" - correctly.
+           * This field was empty on every card for months, and was explained
+           * as impossible - Kanoon "exposes no citations". That was concluded
+           * from probing one unreported judgment. Reported ones carry them.
+           * An unreported judgment still reads "Not available", and that is now
+           * a statement about the judgment rather than about this code.
            */
-          reporter_citations: header.neutralCitation
-            ? [header.neutralCitation, ...(enriched[index].reporter_citations ?? [])]
-            : enriched[index].reporter_citations,
+          reporter_citations: mergeCitations(
+            citations,
+            enriched[index].reporter_citations,
+            header.neutralCitation,
+          ),
           /*
            * The judgment's own words, in place of a search snippet.
            *
