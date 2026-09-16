@@ -1217,7 +1217,10 @@ function renderCaseStatus(data) {
 
   const rows = el('dl', 'case-rows');
   const fields = [
-    ['Status', data.status],
+    ['Status', data.statusLabel || data.status],
+    ['Decided', data.decisionDate],
+    ['Nature of disposal', data.disposalNature],
+    ['FIR', data.fir],
     ['Stage', data.stage],
     ['Court', data.court],
     ['Judge', data.judge],
@@ -1235,6 +1238,7 @@ function renderCaseStatus(data) {
     ['Last hearing', data.lastHearingDate],
     ['Petitioner advocate', data.petitionerAdvocate],
     ['Respondent advocate', data.respondentAdvocate],
+    ['Record updated', data.recordUpdated],
   ];
 
   for (const [label, value] of fields) {

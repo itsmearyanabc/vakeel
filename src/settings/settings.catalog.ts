@@ -364,7 +364,7 @@ export const SETTING_DEFINITIONS: readonly SettingDefinition[] = [
     label: 'Mode',
     type: 'select',
     options: [
-      { value: 'mock', label: 'Mock - deterministic sample case data' },
+      { value: 'mock', label: 'Mock - invented sample data (refused in production)' },
       { value: 'http', label: 'HTTP - call a real eCourts API provider' },
     ],
     help: 'Leave on mock until you have a provider. In mock mode a valid CNR returns realistic but fabricated case details, clearly labelled as sample data in the reply.',

@@ -1,0 +1,77 @@
+{
+  "_comment": "The example response from https://ecourtsindia.com/api/docs for GET /api/partner/case/DLND020047882015, read on 2026-09-16. NOT a live capture - it is the provider's documented example. Kept because it is the only record we hold that carries cnrCaseNumber, disposalTypeRaw and firDetails, which the live High Court capture (ecourtsindia-case.json) omits. historyOfCaseHearings and businessOnDateEntries are shortened to their first and last entries; every other field the mapper reads is verbatim.",
+  "data": {
+    "courtCaseData": {
+      "caseNumber": "202400248072016",
+      "district": "New Delhi",
+      "state": "DL",
+      "stateCode": "26",
+      "districtCode": "7",
+      "courtCode": 2,
+      "caseTypeSub": "Criminal Procedure Code.",
+      "courtName": "Chief Metropolitan Magistrate, New Delhi, PHC",
+      "courtNo": 2,
+      "firDetails": { "caseNumber": "273", "policeStation": "Central Crime Branch-CCB I", "year": "2018" },
+      "historyOfCaseHearings": [
+        { "judge": "", "businessOnDate": "2016-01-05", "hearingDate": "2016-04-07", "purposeOfListing": "Misc./ Appearance" },
+        { "judge": "Addl. Chief Metropolitan Magistrate", "businessOnDate": "2018-07-07", "purposeOfListing": "Disposed" }
+      ],
+      "filedDocuments": [],
+      "subordinateCourt": {},
+      "linkCases": [],
+      "purpose": "Plaintiff/Petitioner Evidence",
+      "disposalType": "DISMISSED_AS_WITHDRAWN",
+      "disposalTypeRaw": "DISMISSED AS WITHDRAWN",
+      "contestedStatus": "UNCONTESTED",
+      "lastHearingDate": "2018-07-07",
+      "interimOrders": [],
+      "processes": [],
+      "cnr": "DLND020047882015",
+      "cnrCourtCode": "DLND02",
+      "courtComplexCode": "DLND02",
+      "cnrCaseNumber": "0047882015",
+      "cnrYear": "2015",
+      "caseType": "CC",
+      "caseTypeRaw": "Ct Cases",
+      "caseStatus": "DISPOSED",
+      "filingNumber": "27843/2015",
+      "filingDate": "2015-12-21",
+      "registrationNumber": "24807/2016",
+      "registrationDate": "2015-12-21",
+      "firstHearingDate": "2016-01-05",
+      "nextHearingDate": "2018-07-07",
+      "decisionDate": "2018-07-07",
+      "caseDurationDays": 929,
+      "judges": [],
+      "petitioners": ["MR.ARUN JAITLEY"],
+      "petitionerAdvocates": [],
+      "respondents": ["MR. ARVIND KEJRIWAL"],
+      "respondentAdvocates": [],
+      "judgmentOrders": [
+        { "orderDate": "2018-07-07", "orderType": "COPY OF ORDER", "orderUrl": "order-10.pdf" }
+      ]
+    },
+    "entityInfo": {
+      "cnr": "DLND020047882015",
+      "nextDateOfHearing": "2018-07-07T00:00:00Z",
+      "lastDateOfHearing": "2018-07-07T00:00:00Z",
+      "dateCreated": "2026-02-18T15:33:18.064345Z",
+      "dateModified": "2026-05-01T09:38:35.670942Z"
+    },
+    "files": { "files": [] },
+    "descriptions": {
+      "enumFields": ["caseType", "caseStatus", "courtCode", "judicialSection", "caseCategory", "benchType", "stateCode"],
+      "enumLookup": {
+        "caseType": { "CC": "Criminal Complaint Case" },
+        "caseStatus": { "DISPOSED": "Disposed" },
+        "courtCode": { "DLND02": "Chief Metropolitan Magistrate, New Delhi, PHC" },
+        "judicialSection": {},
+        "caseCategory": {},
+        "benchType": {},
+        "stateCode": {}
+      }
+    },
+    "caseAiAnalysis": null
+  },
+  "meta": { "request_id": "400006a5-0010-d800-b63f-84710c7967bb" }
+}

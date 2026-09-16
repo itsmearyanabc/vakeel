@@ -24,15 +24,41 @@ export interface CaseStatus {
    */
   filingNumber: string | null;
   /**
-   * eCourts' own case number - "213400001382024".
+   * The CNR's own case-number part - "0047882015".
    *
-   * Fifteen digits: the establishment's case-type code, the registration
-   * serial, the year. It was deliberately left off the card on the reasoning
-   * that it "appears on no document anybody holds", and that is only half true:
-   * it is not on an order sheet, but it is exactly what the eCourts portal's
-   * case-number search keys on, and advocates were asking for it by name.
+   * The eCourtsIndia documentation defines a CNR as court code plus case number
+   * plus year, and returns the parts separately: cnr "DLND020047882015",
+   * cnrCourtCode "DLND02", cnrCaseNumber "0047882015".
+   *
+   * This was mapped to `caseNumber` - "213400001382024", the provider's internal
+   * fifteen-digit identifier - on the belief that no field named cnrCaseNumber
+   * existed. It does. So the card printed an internal database key under a
+   * label advocates read as part of their CNR.
    */
   cnrCaseNumber: string | null;
+  /**
+   * The provider's own words for the status - "Disposed", "Dismissed".
+   *
+   * `status` is a three-way flag the code reasons with. It is the wrong thing to
+   * print: the documented enum includes DISMISSED, which the flag had no room
+   * for, so a dismissed case was shown as "UNKNOWN".
+   */
+  statusLabel: string | null;
+  /** The day the case was decided. */
+  decisionDate: string | null;
+  /** How it was disposed of - "DISMISSED AS WITHDRAWN". */
+  disposalNature: string | null;
+  /** "FIR 273/2018, Central Crime Branch-CCB I" - criminal matters only. */
+  fir: string | null;
+  /**
+   * When the provider last refreshed this record from the court.
+   *
+   * The documentation is explicit that case data is a scrape, with a separate
+   * refresh endpoint to fetch it again. A next hearing date read from a record
+   * last updated months ago is a stale date, and an advocate has to be able to
+   * see that before they turn up to court on it.
+   */
+  recordUpdated: string | null;
   caseType: string | null;
   filingDate: string | null;
   registrationDate: string | null;
@@ -80,6 +106,39 @@ export class CnrNotFoundError extends Error {
  * configuration that was wrong, and eCourts was working perfectly the whole
  * time.
  */
+/**
+ * The case-number part of a CNR, as the eCourtsIndia documentation defines it.
+ *
+ * A CNR is a six-character court code followed by the case number and year:
+ * "DLND020047882015" is "DLND02" + "0047882015". Taken only when the record's
+ * own court code confirms the split, so a CNR in some other shape yields null
+ * rather than a plausible-looking wrong number.
+ */
+function cnrCaseNumberFrom(cnr: string, courtCode: string | null): string | null {
+  if (!/^[A-Z]{4}\d{12}$/.test(cnr)) return null;
+  if (courtCode && !cnr.startsWith(courtCode.toUpperCase())) return null;
+  return cnr.slice(6);
+}
+
+/**
+ * "FIR 273/2018, Central Crime Branch-CCB I" from the documented firDetails
+ * object - { caseNumber, policeStation, year }. Null when there is none, which
+ * is every civil matter.
+ */
+function firFrom(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const fir = value as Record<string, unknown>;
+  const str = (key: string): string =>
+    typeof fir[key] === 'string' || typeof fir[key] === 'number' ? String(fir[key]).trim() : '';
+
+  const number = str('caseNumber');
+  if (!number) return null;
+
+  const year = str('year');
+  const station = str('policeStation');
+  return `FIR ${number}${year ? `/${year}` : ''}${station ? `, ${station}` : ''}`;
+}
+
 export class EcourtsMisconfiguredError extends Error {
   constructor(readonly detail: string) {
     super(`eCourts is not correctly configured: ${detail}`);
@@ -188,6 +247,25 @@ export class EcourtsService {
   }
 
   private async dispatch(cnr: string): Promise<CaseStatus> {
+    /*
+     * Never invented court records in production.
+     *
+     * Mock mode returns a plausible case - parties, a judge, hearing dates - for
+     * any valid CNR, and it was the *default*: a deployment that never set
+     * ECOURTS_MODE served fabricated court records to advocates. The reply
+     * carried a sample-data warning, which is a line of small text under a card
+     * of confident fields, about a matter somebody may be preparing for.
+     *
+     * Refused outright rather than warned about. A lookup that fails says the
+     * record is unavailable and refunds the credit; a lookup that succeeds with
+     * invented data is the one outcome this product cannot have.
+     */
+    if (this.mode === 'mock' && this.env.NODE_ENV === 'production') {
+      throw new EcourtsMisconfiguredError(
+        'ECOURTS_MODE is "mock", which returns invented case records and is refused in production. Set ECOURTS_MODE=http with ECOURTS_BASE_URL and ECOURTS_API_KEY.',
+      );
+    }
+
     return this.mode === 'mock'
         ? this.mockLookup(cnr)
         : await this.breaker.execute(
@@ -418,9 +496,22 @@ export class EcourtsService {
       caseNumber:
         caseTypeLabel && registration ? `${caseTypeLabel} ${registration}` : registration,
       filingNumber: text(data, 'filingNumber', 'filing_number'),
-      // `cnrCaseNumber` first so that if the provider ever names it that - which
-      // is what its documentation is being read as calling it - that name wins.
-      cnrCaseNumber: text(data, 'cnrCaseNumber', 'cnr_case_number', 'caseNumber'),
+      /*
+       * The documented field, and never the internal one.
+       *
+       * Where a record omits it - the High Court writ in the captured fixture
+       * does - it is read off the CNR itself, which the documentation defines as
+       * exactly this: the sixteen characters after a six-character court code.
+       * That is the same value, not an approximation of it, and it is only taken
+       * when the record's own court code confirms where the split falls.
+       */
+      cnrCaseNumber:
+        text(data, 'cnrCaseNumber', 'cnr_case_number') ?? cnrCaseNumberFrom(cnr, text(data, 'cnrCourtCode')),
+      statusLabel: label('caseStatus', rawStatus) ?? rawStatus,
+      decisionDate: day(text(data, 'decisionDate', 'decision_date', 'disposalDate')),
+      disposalNature: text(data, 'disposalTypeRaw', 'disposal_type', 'disposalType'),
+      fir: firFrom(data.firDetails),
+      recordUpdated: day(text(entity, 'dateModified')),
       caseType: caseTypeLabel,
       filingDate: day(text(data, 'filingDate', 'filing_date')),
       registrationDate: day(text(data, 'registrationDate', 'registration_date')),
@@ -446,7 +537,13 @@ export class EcourtsService {
        * case can carry a stale listing, and a pending case between hearings has
        * no next date at all. This response says DISPOSED outright.
        */
-      status: /dispos/i.test(rawStatus ?? '')
+      /*
+       * DISMISSED is in the documented caseStatus enum, and matched none of
+       * these, so a dismissed case fell through to UNKNOWN. It is decided, and
+       * everything that treats a decided case differently - suppressing a stale
+       * next hearing date, most of all - has to see it that way.
+       */
+      status: /dispos|dismiss|withdraw|decided/i.test(rawStatus ?? '')
         ? 'DISPOSED'
         : /pend/i.test(rawStatus ?? '') || nextHearing
           ? 'PENDING'
@@ -515,7 +612,12 @@ export class EcourtsService {
       cnr,
       caseNumber: `CC/${1000 + (seed % 8999)}/${year}`,
       filingNumber: `F/${2000 + (seed % 7999)}/${year}`,
-      cnrCaseNumber: `${1000 + (seed % 8999)}${String(seed % 9999999).padStart(7, '0')}${year}`,
+      cnrCaseNumber: cnr.slice(6),
+      statusLabel: 'Pending',
+      decisionDate: null,
+      disposalNature: null,
+      fir: null,
+      recordUpdated: null,
       caseType: seed % 2 === 0 ? 'Criminal Case' : 'Civil Suit',
       filingDate: `${year}-0${(seed % 9) + 1}-1${seed % 9}`,
       registrationDate: `${year}-0${(seed % 9) + 1}-2${seed % 8}`,
@@ -542,7 +644,20 @@ export class EcourtsService {
  * counting them would make every failed mapping look partially successful.
  */
 function mappedAnything(status: CaseStatus): boolean {
-  const { cnr: _cnr, mocked: _mocked, status: _status, ...fromProvider } = status;
+  /*
+   * cnrCaseNumber is excluded with the CNR itself, because it can be read off
+   * the CNR - which is our own input, not anything the provider sent. Left in,
+   * it was never empty, so a response this mapper could not read at all still
+   * "mapped something", the safety net never fired, and the advocate was
+   * charged for a card of "Not available".
+   */
+  const {
+    cnr: _cnr,
+    mocked: _mocked,
+    status: _status,
+    cnrCaseNumber: _cnrCaseNumber,
+    ...fromProvider
+  } = status;
   return Object.values(fromProvider).some((value) => value !== null && value !== '');
 }
 

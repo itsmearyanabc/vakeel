@@ -291,8 +291,18 @@ describe('the three numbers an advocate quotes', () => {
    */
   const status = mapWith(realResponse);
 
-  it('carries eCourts own 15-digit case number', () => {
-    expect(status.cnrCaseNumber).toBe('213400001382024');
+  it('carries the CNR case number, not the provider internal one', () => {
+    /*
+     * This asserted "213400001382024" - the provider's internal fifteen-digit
+     * caseNumber - on the belief that no cnrCaseNumber field existed. The
+     * documentation shows it does, defined as the CNR after its court code:
+     * cnr "DLND020047882015", cnrCourtCode "DLND02", cnrCaseNumber "0047882015".
+     *
+     * This record omits the field, so it is read off the CNR the same way, and
+     * only because the record's own cnrCourtCode confirms where the split falls.
+     */
+    expect(status.cnrCaseNumber).toBe('0001232024');
+    expect(status.cnrCaseNumber).not.toBe('213400001382024');
   });
 
   it('keeps all three distinct, because on real records they are', () => {
@@ -328,6 +338,133 @@ describe('the three numbers an advocate quotes', () => {
 
     expect(card).toContain('• Filing Number: 9623/2024');
     expect(card).toContain('• Registration Number: Writ Petition (Civil) 138/2024');
-    expect(card).toContain('• CNR Case Number: 213400001382024');
+    expect(card).toContain('• CNR Case Number: 0001232024');
+  });
+});
+
+describe('the documented example response', () => {
+  /*
+   * The eCourtsIndia documentation's own example for Case Detail. Not a live
+   * capture - but the only record we hold that carries cnrCaseNumber,
+   * disposalTypeRaw and firDetails, which the live High Court capture omits.
+   * Each assertion here is a field the card used to drop or mislabel.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const documented = require('./__fixtures__/ecourtsindia-docs-example.json');
+  const status = (() => {
+    const service = new EcourtsService({} as never, {} as never);
+    return (
+      service as unknown as {
+        mapProviderResponse(cnr: string, body: Record<string, unknown>): CaseStatus;
+      }
+    ).mapProviderResponse('DLND020047882015', documented);
+  })();
+
+  it('reads cnrCaseNumber from the field when the record has it', () => {
+    expect(status.cnrCaseNumber).toBe('0047882015');
+  });
+
+  it('never shows the internal fifteen-digit caseNumber under that label', () => {
+    expect(status.cnrCaseNumber).not.toBe('202400248072016');
+  });
+
+  it('carries the decision date and how the case was disposed of', () => {
+    expect(status.decisionDate).toBe('2018-07-07');
+    expect(status.disposalNature).toBe('DISMISSED AS WITHDRAWN');
+  });
+
+  it('carries the FIR for a criminal matter', () => {
+    expect(status.fir).toBe('FIR 273/2018, Central Crime Branch-CCB I');
+  });
+
+  it('carries when the provider last refreshed the record', () => {
+    // A scrape of the court's own site. A hearing date from a record refreshed
+    // months ago is a stale date, and the card has to be able to say so.
+    expect(status.recordUpdated).toBe('2026-05-01');
+  });
+
+  it('prints the provider status label rather than the internal flag', () => {
+    expect(status.statusLabel).toBe('Disposed');
+  });
+
+  it('prints all of it on the WhatsApp card', () => {
+    const card = formatCaseStatus(status);
+
+    expect(card).toContain('• Case Status: Disposed');
+    expect(card).toContain('• Disposal Date: 2018-07-07');
+    expect(card).toContain('• Nature of Disposal: DISMISSED AS WITHDRAWN');
+    expect(card).toContain('• FIR: FIR 273/2018, Central Crime Branch-CCB I');
+    expect(card).toContain('Record last updated from eCourts: 2026-05-01');
+  });
+});
+
+describe('a dismissed case', () => {
+  /*
+   * DISMISSED is in the documented caseStatus enum and matched none of the
+   * patterns, so a dismissed case fell through to UNKNOWN - and was printed
+   * that way, with a stale next hearing date still showing.
+   */
+  const dismissed = mapWith({
+    data: {
+      courtCaseData: { cnr: 'DLHC010001232024', caseStatus: 'DISMISSED', petitioners: ['A'] },
+      descriptions: { enumLookup: { caseStatus: { DISMISSED: 'Dismissed' } } },
+    },
+  });
+
+  it('is treated as decided', () => {
+    expect(dismissed.status).toBe('DISPOSED');
+  });
+
+  it('says Dismissed, in the provider words', () => {
+    expect(dismissed.statusLabel).toBe('Dismissed');
+    expect(formatCaseStatus(dismissed)).toContain('• Case Status: Dismissed');
+  });
+});
+
+describe('a pending case', () => {
+  it('does not print disposal lines that cannot apply to it', () => {
+    // "Disposal Date: Not available" on a pending case reads as a missing date
+    // rather than one that does not exist yet.
+    const pending = mapWith({
+      data: { courtCaseData: { cnr: 'DLHC010001232024', caseStatus: 'PENDING', petitioners: ['A'] } },
+    });
+
+    const card = formatCaseStatus(pending);
+    expect(card).not.toContain('Disposal Date');
+    expect(card).not.toContain('Nature of Disposal');
+  });
+
+  it('does not print an FIR line on a matter that has none', () => {
+    const civil = mapWith({
+      data: { courtCaseData: { cnr: 'DLHC010001232024', caseStatus: 'PENDING', petitioners: ['A'] } },
+    });
+
+    expect(formatCaseStatus(civil)).not.toContain('FIR');
+  });
+});
+
+describe('invented case records', () => {
+  /*
+   * Mock mode returns a plausible case for any valid CNR, and it was the
+   * default - so a deployment that never set ECOURTS_MODE served fabricated
+   * court records, under a line of small text saying so.
+   */
+  function service(env: Record<string, unknown>) {
+    const settings = { get: () => '', getNumber: (_k: string, d: number) => d };
+    return new EcourtsService(env as never, settings as never);
+  }
+
+  it('are refused in production', async () => {
+    await expect(
+      service({ NODE_ENV: 'production', ECOURTS_MODE: 'mock' }).lookup('DLHC010001232024'),
+    ).rejects.toBeInstanceOf(EcourtsMisconfiguredError);
+  });
+
+  it('are still available for local work and tests', async () => {
+    const result = await service({ NODE_ENV: 'development', ECOURTS_MODE: 'mock' }).lookup(
+      'DLHC010001232024',
+    );
+
+    expect(result.mocked).toBe(true);
   });
 });

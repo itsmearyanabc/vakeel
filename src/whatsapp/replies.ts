@@ -569,7 +569,17 @@ export function formatCaseStatus(status: CaseStatus): string {
     `• First Hearing Date: ${value(status.firstHearingDate)}`,
     `• Last Hearing Date: ${value(status.lastHearingDate)}`,
     `• Next Hearing Date: ${nextHearing}`,
-    `• Case Status: ${value(status.status)}`,
+    // The provider's own label - "Dismissed" - not the three-way flag, which
+    // printed a dismissed case as UNKNOWN.
+    `• Case Status: ${value(status.statusLabel ?? status.status)}`,
+    // Decided matters only. On a pending case these are empty by definition,
+    // and a "Not available" there reads as though the date is missing.
+    ...(status.status === 'DISPOSED'
+      ? [
+          `• Disposal Date: ${value(status.decisionDate)}`,
+          `• Nature of Disposal: ${value(status.disposalNature)}`,
+        ]
+      : []),
     `• Stage of Case: ${value(status.stage)}`,
     // The court was mapped and then never printed - so a card told an advocate
     // everything about a matter except which court it is in.
@@ -577,6 +587,12 @@ export function formatCaseStatus(status: CaseStatus): string {
     `• Judge: ${value(status.judge)}`,
     `• Petitioner and Advocate: ${pair(status.petitioner, status.petitionerAdvocate)}`,
     `• Respondent and Advocate: ${pair(status.respondent, status.respondentAdvocate)}`,
+    // Criminal matters only - a civil case has no FIR, and saying so on every
+    // civil card is noise.
+    ...(status.fir ? [`• FIR: ${status.fir}`] : []),
+    // How old this record is. The data is a scrape of the court's site, and a
+    // hearing date from a record last refreshed months ago is a stale date.
+    ...(status.recordUpdated ? ['', `_Record last updated from eCourts: ${status.recordUpdated}_`] : []),
     '',
     status.mocked
       ? '_⚠️ Sample data — no eCourts provider is configured, so this is not a real case record._\n'

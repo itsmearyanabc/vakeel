@@ -388,7 +388,10 @@ const envSchema = z.object({
   GST_RATE_BPS: z.coerce.number().int().min(0).max(10_000).default(1800),
 
   // --- eCourts --------------------------------------------------------------
-  ECOURTS_MODE: z.enum(['mock', 'http']).default('mock'),
+  // `http` by default. `mock` invents case records, and was the default, so a
+  // deployment that never set this served fabricated court data. It is still
+  // available for tests and local work, and refused in production.
+  ECOURTS_MODE: z.enum(['mock', 'http']).default('http'),
   ECOURTS_BASE_URL: z.string().default(''),
   ECOURTS_API_KEY: z.string().default(''),
   ECOURTS_TIMEOUT_MS: z.coerce.number().int().min(1000).default(15000),
