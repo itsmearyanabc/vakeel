@@ -296,7 +296,23 @@ export class PrecedentsService {
     return this.settings.get('PRECEDENT_SOURCE') || this.env.PRECEDENT_SOURCE;
   }
 
-  async search(intent: ClassifiedIntent): Promise<PrecedentSearchResult> {
+  /**
+   * `homeState` decides which judgments are promoted, and it belongs here
+   * rather than at the call site.
+   *
+   * Both callers used to reorder the rows themselves, after this method
+   * returned - and this method enriches only the first page, because each
+   * document is a billed call. So the promotion moved home-court judgments from
+   * positions six to fifteen into positions one to three, and those are exactly
+   * the rows no document was ever fetched for.
+   *
+   * The advocate's own High Court binds them, so those are the cards they read
+   * first - and they were the cards with "Not available" for the case number,
+   * the bench and the citations, while the persuasive judgments below them were
+   * complete. Ordering has to happen before enrichment, which means it has to
+   * happen in here.
+   */
+  async search(intent: ClassifiedIntent, homeState?: string | null): Promise<PrecedentSearchResult> {
     const started = Date.now();
     const mode = this.source;
 
@@ -309,7 +325,10 @@ export class PrecedentsService {
       try {
         const found = await this.searchKanoon(intent);
         const { precedents, namedCase } = this.forNamedCase(intent.rawText, found);
-        const enriched = await this.withPrinciples(await this.withHeaders(precedents));
+        // Promote first, enrich second. The other way round pays for documents
+        // the advocate will never see and leaves the top of the page empty.
+        const ordered = prioritiseHomeCourt(precedents, homeState);
+        const enriched = await this.withPrinciples(await this.withHeaders(ordered));
         return {
           precedents: namedCase?.found ? await this.withSummary(enriched) : enriched,
           namedCase,
@@ -333,7 +352,7 @@ export class PrecedentsService {
       }
     }
 
-    return this.searchLocal(intent, started);
+    return this.searchLocal(intent, started, homeState);
   }
 
   /**
@@ -547,7 +566,11 @@ export class PrecedentsService {
   }
 
   /** Hybrid dense + lexical search over the ingested Postgres corpus. */
-  private async searchLocal(intent: ClassifiedIntent, started: number): Promise<PrecedentSearchResult> {
+  private async searchLocal(
+    intent: ClassifiedIntent,
+    started: number,
+    homeState?: string | null,
+  ): Promise<PrecedentSearchResult> {
     const expanded = expandQuery(intent.searchQuery);
     const embedding = await this.embeddings.embedQuery(expanded);
 
@@ -574,7 +597,9 @@ export class PrecedentsService {
     const named = this.forNamedCase(intent.rawText, precedents);
 
     return {
-      precedents: await this.withPrinciples(named.precedents),
+      // Ordered here too, so both sources hand back a list in the order it will
+      // be read and neither caller has to remember to do it.
+      precedents: await this.withPrinciples(prioritiseHomeCourt(named.precedents, homeState)),
       namedCase: named.namedCase,
       totalMatches: precedents[0]?.total_matches ?? precedents.length,
       lexicalOnly: !embedding,

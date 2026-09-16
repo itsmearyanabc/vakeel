@@ -220,3 +220,60 @@ describe('EQUIVALENT CITATIONS, from the judgment Kanoon printed them in', () =>
     expect(result.precedents[0].reporter_citations).toEqual(['AIR 1990 SC 1']);
   });
 });
+
+describe('which rows get the document fetched', () => {
+  /*
+   * Enrichment pays for one page of documents, and the home-court promotion ran
+   * afterwards, at the call site - so it lifted judgments from positions six to
+   * fifteen into positions one to three, and those are exactly the rows no
+   * document had been fetched for.
+   *
+   * The advocate's own High Court binds them, so those are the cards read
+   * first. They were the ones showing "Not available" for the case number, the
+   * bench and the citations, while the persuasive judgments below them were
+   * complete.
+   */
+  function mixed() {
+    return Array.from({ length: 15 }, (_, i) =>
+      kanoonRow({
+        judgment_id: `kanoon:${i + 1}`,
+        // The advocate's own court sits well past the enriched page.
+        court_name: i === 10 ? 'Karnataka High Court' : 'Himachal Pradesh High Court',
+      }),
+    );
+  }
+
+  it('fetches the document for the judgment it is about to put first', async () => {
+    const { service, kanoon } = build({ rows: mixed(), enrichMax: 5 });
+
+    await service.search(intent() as never, 'Karnataka');
+
+    const fetched = kanoon.documentHeader.mock.calls.map((call) => call[0]);
+    expect(fetched).toContain(11);
+  });
+
+  it('puts it first', async () => {
+    const { service } = build({ rows: mixed(), enrichMax: 5 });
+
+    const result = await service.search(intent() as never, 'Karnataka');
+
+    expect(result.precedents[0].court_name).toBe('Karnataka High Court');
+  });
+
+  it('still pays for only one page', async () => {
+    const { service, kanoon } = build({ rows: mixed(), enrichMax: 5 });
+
+    await service.search(intent() as never, 'Karnataka');
+
+    expect(kanoon.documentHeader).toHaveBeenCalledTimes(5);
+  });
+
+  it('changes nothing when the advocate has no home court on record', async () => {
+    const { service, kanoon } = build({ rows: mixed(), enrichMax: 5 });
+
+    await service.search(intent() as never, null);
+
+    const fetched = kanoon.documentHeader.mock.calls.map((call) => call[0]);
+    expect(fetched).toEqual([1, 2, 3, 4, 5]);
+  });
+});

@@ -5,7 +5,7 @@ import { IntentService } from '../ai/intent.service';
 import { extractCnr } from '../ai/legal-patterns';
 import { looksLikeCnrAttempt, looksLikeEnrolmentAttempt } from './onboarding';
 import { ChatMemoryService } from '../ai/memory/chat-memory.service';
-import { PrecedentsService, formatPrecedentPage, prioritiseHomeCourt } from '../ai/precedents.service';
+import { PrecedentsService, formatPrecedentPage } from '../ai/precedents.service';
 import { ProviderRegistry } from '../ai/providers/provider.registry';
 import { RagService } from '../ai/rag.service';
 import { TranscriptionService } from '../ai/transcription.service';
@@ -358,12 +358,51 @@ export class ConversationService {
       return;
     }
 
-    if (job.interactiveId) {
-      await this.handleAction(user, job.interactiveId);
-      return;
-    }
+    /*
+     * Whatever happens after this point, a charge that bought nothing is
+     * returned.
+     *
+     * The web side has had this since it was written - one catch around the
+     * whole answer, refunding before the failure is reported, because "a
+     * failure the advocate can see, that also silently cost them two credits"
+     * is what produces support mail. WhatsApp never got it, so the two channels
+     * priced the same failure differently: a Kanoon outage during a case-law
+     * search cost a credit here and nothing on the website.
+     *
+     * Only two paths refunded at all - a failed CNR lookup, and an answer
+     * WhatsApp refused to deliver. A precedent search that threw, an embedding
+     * provider that was down, a database blip between the charge and the reply:
+     * all of them took the credit and returned an apology.
+     *
+     * Rethrown, not swallowed. The worker logs the failure, marks the message
+     * FAILED and sends the apology; a caught-and-ignored error here would make
+     * the job look successful and say nothing to anybody.
+     *
+     * Safe against double-refunding: credit_refund skips a reversal whose
+     * reference already exists, so the paths that refund for themselves and
+     * return normally are not reversed twice.
+     */
+    try {
+      if (job.interactiveId) {
+        await this.handleAction(user, job.interactiveId);
+        return;
+      }
 
-    await this.runSession(user, text, job);
+      await this.runSession(user, text, job);
+    } catch (err) {
+      await this.credits
+        .refund(
+          user.id,
+          user.role,
+          spendReference(job.waMessageId),
+          'The answer could not be produced',
+        )
+        .catch((refundErr) =>
+          this.logger.warn({ refundErr, waMessageId: job.waMessageId }, 'Could not refund a failed message'),
+        );
+
+      throw err;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1150,22 +1189,60 @@ export class ConversationService {
     // Billing happens once, upstream in answerSearch(), which knows whether
     // this is a new question or the same one being pressed on. Claiming again
     // here charged twice for one search.
-    const searched = await this.precedents.search(intent);
-
-    // The advocate's own High Court binds them; everything else is persuasive.
-    // A pure date sort buries the one authority they can actually cite.
-    const result = {
-      ...searched,
-      precedents: prioritiseHomeCourt(searched.precedents, user.bar_council_state),
-    };
+    /*
+     * The advocate's own High Court binds them; everything else is persuasive.
+     * A pure date sort buries the one authority they can actually cite.
+     *
+     * Passed in rather than applied to the result, because the search enriches
+     * only the page it expects to be read - promoting rows afterwards moved
+     * unenriched judgments to the top and left the binding authority showing
+     * "Not available" where the case number and bench should be.
+     */
+    const result = await this.precedents.search(intent, user.bar_council_state);
     const pageSize = this.precedents.pageSize;
+
+    /*
+     * A search that found nothing is refunded, as it already was on the web.
+     *
+     * Credits buy authorities and none arrived. "Your query matched nothing"
+     * and "this deployment has no judgments to match against" are
+     * indistinguishable from the advocate's side, and one of the two is
+     * entirely our problem - so charging for either is what produces refund
+     * requests. The same search was already free on the website when it came
+     * back empty; one feature should not have two prices depending on which
+     * screen it was asked from.
+     */
+    if (result.precedents.length === 0) {
+      await this.credits
+        .refund(user.id, user.role, spendReference(job.waMessageId), 'Search returned no authorities')
+        .catch((err) => this.logger.warn({ err }, 'Could not refund an empty precedent search'));
+    }
 
     const body = formatPrecedentPage(result.precedents, 0, pageSize, intent.searchQuery, {
       lexicalOnly: result.lexicalOnly,
       source: result.source,
       namedCase: result.namedCase,
     });
-    await this.api.sendText(job.from, body);
+    const delivery = await this.api.sendText(job.from, body);
+
+    /*
+     * The send result was being discarded here, and checked in answerWithRag.
+     *
+     * A page WhatsApp refuses - the service window closed, the number blocked
+     * us - is a charge for something nobody received. The RAG path refunds
+     * exactly this; the precedent path threw the result away, and the advocate
+     * paid for a reply that never arrived.
+     */
+    if (!delivery.ok) {
+      await this.credits
+        .refund(
+          user.id,
+          user.role,
+          spendReference(job.waMessageId),
+          'WhatsApp refused delivery of the results',
+        )
+        .catch((err) => this.logger.warn({ err }, 'Could not refund an undelivered precedent page'));
+    }
 
     /*
      * The result set is handed back, not written.

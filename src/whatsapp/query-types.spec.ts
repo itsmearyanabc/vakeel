@@ -593,3 +593,97 @@ describe('a pleasantry is never a purchase', () => {
     expect(charged(credits)).toEqual({ action: 'SECTION_LOOKUP', cost: CREDIT_COST.SECTION_LOOKUP });
   });
 });
+
+describe('a credit that bought nothing comes back', () => {
+  /*
+   * The website has wrapped its whole answer in a catch that refunds since it
+   * was written - "a failure the advocate can see, that also silently cost them
+   * two credits, is the version of this that generates support mail". WhatsApp
+   * never got the same treatment, so the two channels priced the same failure
+   * differently.
+   *
+   * Only two paths refunded here at all: a failed CNR lookup, and an answer
+   * WhatsApp refused to deliver. Everything else - a Kanoon outage mid-search,
+   * an embedding provider down, a blip between the charge and the reply - took
+   * the credit and returned an apology.
+   */
+  it('refunds when the search itself throws', async () => {
+    const { service, precedents, credits } = build({
+      intent: 'PRECEDENT_SEARCH',
+      conversations: atMenu(),
+    });
+    precedents.search.mockRejectedValue(new Error('indian kanoon is down'));
+
+    await expect(service.handle(job({ text: 'case law on anticipatory bail' }))).rejects.toThrow(
+      'indian kanoon is down',
+    );
+
+    expect(credits.refund).toHaveBeenCalledWith(
+      'user-1',
+      expect.anything(),
+      'spend:wa:wamid.1',
+      expect.any(String),
+    );
+  });
+
+  it('rethrows, so the worker still logs it and apologises', async () => {
+    // Swallowing the error here would mark the job successful and say nothing
+    // to anybody - a silent non-answer instead of a visible failure.
+    const { service, precedents } = build({ intent: 'PRECEDENT_SEARCH', conversations: atMenu() });
+    precedents.search.mockRejectedValue(new Error('boom'));
+
+    await expect(service.handle(job({ text: 'case law on bail' }))).rejects.toThrow('boom');
+  });
+
+  it('refunds a search that found nothing, as the website already did', async () => {
+    // Credits buy authorities and none arrived. The same search was free on the
+    // web when it came back empty; one feature should not have two prices
+    // depending on which screen it was asked from.
+    const { service, credits } = build({
+      intent: 'PRECEDENT_SEARCH',
+      precedents: [],
+      conversations: atMenu(),
+    });
+
+    await service.handle(job({ text: 'case law on something nobody litigates' }));
+
+    expect(credits.refund).toHaveBeenCalledWith(
+      'user-1',
+      expect.anything(),
+      'spend:wa:wamid.1',
+      'Search returned no authorities',
+    );
+  });
+
+  it('refunds a page WhatsApp refused to deliver', async () => {
+    // The RAG path checked the send result and refunded; the precedent path
+    // threw it away, so the advocate paid for a reply that never arrived.
+    const { service, credits } = build({
+      intent: 'PRECEDENT_SEARCH',
+      precedents: [precedent('k1')],
+      deliverable: false,
+      conversations: atMenu(),
+    });
+
+    await service.handle(job({ text: 'case law on bail' }));
+
+    expect(credits.refund).toHaveBeenCalledWith(
+      'user-1',
+      expect.anything(),
+      'spend:wa:wamid.1',
+      'WhatsApp refused delivery of the results',
+    );
+  });
+
+  it('does not refund a search that worked', async () => {
+    const { service, credits } = build({
+      intent: 'PRECEDENT_SEARCH',
+      precedents: [precedent('k1')],
+      conversations: atMenu(),
+    });
+
+    await service.handle(job({ text: 'case law on bail' }));
+
+    expect(credits.refund).not.toHaveBeenCalled();
+  });
+});

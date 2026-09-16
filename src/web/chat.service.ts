@@ -5,7 +5,6 @@ import {
   NOT_AVAILABLE,
   PrecedentsService,
   legalPrinciple,
-  prioritiseHomeCourt,
   splitParties,
   stripEllipsis,
 } from '../ai/precedents.service';
@@ -401,11 +400,16 @@ export class ChatService {
 
     yield { type: 'stage', stage: 'searching' };
 
-    const searched = await this.precedents.search(intent);
-
-    // The advocate's own High Court binds them; everything else is persuasive.
-    // A pure date sort buries the one authority they can actually cite.
-    const rows = prioritiseHomeCourt(searched.precedents, user.bar_council_state);
+    /*
+     * The advocate's own High Court binds them; everything else is persuasive.
+     * A pure date sort buries the one authority they can actually cite.
+     *
+     * Passed in rather than applied to the result: the search enriches only the
+     * page it expects to be read, so reordering afterwards promoted rows that
+     * no document had been fetched for.
+     */
+    const searched = await this.precedents.search(intent, user.bar_council_state);
+    const rows = searched.precedents;
 
     const citations = rows.map(
       (p) => p.neutral_citation ?? p.reporter_citations?.[0] ?? p.case_title,
