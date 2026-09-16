@@ -248,7 +248,10 @@ describe('courtFilter', () => {
     ['Patna High Court', 'patna'],
     ['Supreme Court', 'supremecourt'],
     ['Madras High Court', 'chennai'],
-    ['Calcutta High Court', 'kolkata'],
+    // Both sides of the Calcutta High Court. Kanoon documents the appellate side
+    // as its own doctype, kolkata_app, and a search restricted to one half of a
+    // court silently misses the other.
+    ['Calcutta High Court', 'kolkata,kolkata_app'],
   ])('maps %s', (phrase, slug) => {
     // Several High Courts are known by a city rather than their state, and
     // advocates use both names.
@@ -263,13 +266,87 @@ describe('courtFilter', () => {
     expect(applyCourtFilter('anticipatory bail')).toBe('anticipatory bail');
   });
 
-  it('leaves an unmapped court unfiltered rather than guessing a slug', () => {
-    // A wrong doctypes: returns nothing, which reads as "no authority exists".
-    // Unfiltered is merely less precise.
-    expect(courtFilter('Sikkim High Court on bail')).toBeNull();
+  it('leaves a court with no documented slug unfiltered rather than guessing', () => {
+    /*
+     * This asserted Sikkim, which Kanoon does document - the test was locking in
+     * a gap in the table, not a principle. The principle stands for a court the
+     * documentation genuinely does not list: a wrong doctypes returns nothing,
+     * which reads as "no authority exists", and unfiltered is merely less precise.
+     */
+    expect(courtFilter('Telangana High Court on bail')).toBeNull();
   });
 
   it('does not fire on "sc" inside another word', () => {
     expect(courtFilter('prescription period in High Court appeals')).toBeNull();
+  });
+});
+
+describe('every court Indian Kanoon documents', () => {
+  /*
+   * The table held fifteen High Court names and no tribunals. Punjab and
+   * Haryana, Madhya Pradesh, Himachal Pradesh, Uttarakhand, Chhattisgarh, J&K,
+   * Sikkim and Meghalaya, and every tribunal, got no filter at all - so a
+   * question naming one of them searched all of India. The slugs asserted here
+   * are the ones api.indiankanoon.org/documentation lists, in Kanoon's own
+   * spellings.
+   */
+  it.each([
+    ['Punjab and Haryana High Court', 'punjab'],
+    ['Punjab & Haryana HC', 'punjab'],
+    ['Madhya Pradesh High Court', 'madhyapradesh'],
+    ['Himachal Pradesh High Court', 'himachal_pradesh'],
+    ['Uttarakhand High Court', 'uttaranchal'],
+    ['Chhattisgarh High Court', 'chattisgarh'],
+    ['Andhra Pradesh High Court', 'andhra'],
+    ['Gauhati High Court', 'gauhati'],
+    ['Jharkhand High Court', 'jharkhand'],
+    ['Sikkim High Court', 'sikkim'],
+    ['Meghalaya High Court', 'meghalaya'],
+  ])('%s -> %s', (phrase, slug) => {
+    expect(courtFilter(`judgments from the ${phrase} on bail`)).toBe(slug);
+  });
+
+  it.each([
+    ['Allahabad High Court', 'allahabad,lucknow'],
+    ['Rajasthan High Court', 'rajasthan,jodhpur'],
+    ['Calcutta High Court', 'kolkata,kolkata_app'],
+    ['J&K High Court', 'jammu,srinagar'],
+    ['Jammu and Kashmir High Court', 'jammu,srinagar'],
+  ])('%s covers every bench Kanoon indexes separately', (phrase, slug) => {
+    // Comma-separated doctypes are documented. An advocate naming the court
+    // means all of it, not only its principal seat.
+    expect(courtFilter(`${phrase} on bail`)).toBe(slug);
+  });
+
+  it.each([
+    ['ITAT on section 68', 'itat'],
+    ['NGT environmental clearance', 'greentribunal'],
+    ['CESTAT service tax', 'cegat'],
+    ['Competition Commission of India abuse of dominance', 'cci'],
+  ])('reads the tribunal in %p', (question, slug) => {
+    expect(courtFilter(question)).toBe(slug);
+  });
+
+  it('means every High Court when it says "high courts"', () => {
+    expect(courtFilter('all high courts on section 482')).toBe('highcourts');
+  });
+});
+
+describe('which court a question means', () => {
+  it('restricts SC/ST Act questions to the court named, not the Supreme Court', () => {
+    // A bare "sc" in the table matched the SC in SC/ST Act - one of the most
+    // litigated statutes in the country - and sent the search to the Supreme
+    // Court when the advocate had asked for the Patna High Court.
+    expect(courtFilter('SC/ST Act judgments from Patna High Court')).toBe('patna');
+  });
+
+  it('takes the name next to "High Court", not the first name in the table', () => {
+    // Table order used to decide: Delhi is listed before Karnataka, so a
+    // question about the Karnataka High Court that mentioned Delhi went to Delhi.
+    expect(courtFilter('Karnataka High Court on a Delhi company dispute')).toBe('karnataka');
+  });
+
+  it('reads "the High Court of Kerala" as well as "Kerala High Court"', () => {
+    expect(courtFilter('judgments of the High Court of Kerala')).toBe('kerala');
   });
 });

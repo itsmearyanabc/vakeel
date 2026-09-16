@@ -131,73 +131,192 @@ export function documentUrl(tid: number): string {
 }
 
 /**
- * Kanoon's `doctypes:` slugs for the courts an advocate is likely to name.
+ * Every court and tribunal filter Indian Kanoon documents, and what advocates
+ * call them.
  *
- * Keyed by the words people actually type. Several High Courts are known by a
- * city rather than their state ("Bombay" for Maharashtra, "Madras" for Tamil
- * Nadu), and advocates use both, so both are listed.
+ * ## Why this was rewritten from the documentation
  *
- * Deliberately incomplete: a slug that is wrong is worse than one that is
- * missing, because a wrong `doctypes:` returns *nothing* and reads as "there is
- * no authority on this". Anything not listed here falls back to an unfiltered
- * search, which is merely less precise.
+ * The table used to hold fifteen High Court names and no tribunals, on the
+ * reasoning that "a slug that is wrong is worse than one that is missing" -
+ * true, and it had turned into a slug that is missing for most of the country.
+ * Punjab and Haryana, Madhya Pradesh, Himachal Pradesh, Andhra Pradesh,
+ * Uttarakhand, Chhattisgarh, Jammu and Kashmir, Sikkim and Meghalaya, and
+ * every tribunal, got no filter at all - so "judgments from the Punjab and
+ * Haryana High Court" searched all of India. That is the "random results"
+ * report, for a dozen courts at once.
+ *
+ * The slugs below are exactly the ones in api.indiankanoon.org/documentation
+ * ("The doctypes value for individual courts are ..."), including Kanoon's own
+ * spellings: `chattisgarh`, `uttaranchal`, `himachal_pradesh`, `madhyapradesh`.
+ *
+ * ## Where one High Court is more than one slug
+ *
+ * The documentation allows comma-separated values ("doctypes:highcourts,cci"),
+ * and several courts are split across benches Kanoon indexes separately. An
+ * advocate naming the court means all of it:
+ *
+ *   Allahabad High Court  -> allahabad,lucknow   (Lucknow bench)
+ *   Rajasthan High Court  -> rajasthan,jodhpur   (principal seat at Jodhpur)
+ *   Calcutta High Court   -> kolkata,kolkata_app (appellate side)
+ *   J&K High Court        -> jammu,srinagar
+ *
+ * ## What is deliberately absent
+ *
+ * Telangana, Manipur and Tripura High Courts have no documented slug. They are
+ * left unfiltered rather than mapped to a neighbour, because a wrong doctypes
+ * returns nothing, and nothing reads as "there is no authority on this".
  */
-const COURT_SLUGS: Record<string, string> = {
-  'supreme court': 'supremecourt',
-  supremecourt: 'supremecourt',
-  sc: 'supremecourt',
+interface CourtEntry {
+  /** Lowercase, as they appear in a question. Longer names first where one contains another. */
+  names: string[];
+  /** A documented doctypes value, or a comma-separated list of them. */
+  slug: string;
+}
 
-  delhi: 'delhi',
-  bombay: 'bombay',
-  maharashtra: 'bombay',
-  calcutta: 'kolkata',
-  kolkata: 'kolkata',
-  'west bengal': 'kolkata',
-  madras: 'chennai',
-  chennai: 'chennai',
-  'tamil nadu': 'chennai',
-  karnataka: 'karnataka',
-  bangalore: 'karnataka',
-  bengaluru: 'karnataka',
-  kerala: 'kerala',
-  gujarat: 'gujarat',
-  rajasthan: 'rajasthan',
-  allahabad: 'allahabad',
-  'uttar pradesh': 'allahabad',
-  patna: 'patna',
-  bihar: 'patna',
-  orissa: 'orissa',
-  odisha: 'orissa',
-  jharkhand: 'jharkhand',
-  gauhati: 'gauhati',
-  assam: 'gauhati',
-};
+const HIGH_COURTS: CourtEntry[] = [
+  { names: ['supreme court of india', 'supreme court', 'apex court'], slug: 'supremecourt' },
+  { names: ['delhi'], slug: 'delhi' },
+  { names: ['bombay', 'maharashtra', 'mumbai', 'nagpur', 'aurangabad', 'goa'], slug: 'bombay' },
+  { names: ['calcutta', 'kolkata', 'west bengal'], slug: 'kolkata,kolkata_app' },
+  { names: ['madras', 'chennai', 'tamil nadu', 'madurai'], slug: 'chennai' },
+  { names: ['allahabad', 'uttar pradesh'], slug: 'allahabad,lucknow' },
+  { names: ['lucknow'], slug: 'lucknow' },
+  { names: ['andhra pradesh', 'andhra'], slug: 'andhra' },
+  { names: ['chhattisgarh', 'chattisgarh', 'bilaspur'], slug: 'chattisgarh' },
+  { names: ['gauhati', 'guwahati', 'assam'], slug: 'gauhati' },
+  { names: ['jammu and kashmir', 'jammu & kashmir', 'j&k', 'jammu', 'kashmir', 'ladakh'], slug: 'jammu,srinagar' },
+  { names: ['srinagar'], slug: 'srinagar' },
+  { names: ['kerala'], slug: 'kerala' },
+  { names: ['orissa', 'odisha', 'cuttack'], slug: 'orissa' },
+  { names: ['uttarakhand', 'uttaranchal', 'nainital'], slug: 'uttaranchal' },
+  { names: ['gujarat'], slug: 'gujarat' },
+  { names: ['himachal pradesh', 'himachal', 'shimla'], slug: 'himachal_pradesh' },
+  { names: ['jharkhand', 'ranchi'], slug: 'jharkhand' },
+  { names: ['karnataka', 'bangalore', 'bengaluru', 'dharwad', 'kalaburagi'], slug: 'karnataka' },
+  { names: ['madhya pradesh', 'jabalpur', 'indore', 'gwalior'], slug: 'madhyapradesh' },
+  { names: ['patna', 'bihar'], slug: 'patna' },
+  { names: ['punjab and haryana', 'punjab & haryana', 'punjab', 'haryana', 'chandigarh'], slug: 'punjab' },
+  { names: ['rajasthan', 'jaipur'], slug: 'rajasthan,jodhpur' },
+  { names: ['jodhpur'], slug: 'jodhpur' },
+  { names: ['sikkim'], slug: 'sikkim' },
+  { names: ['meghalaya'], slug: 'meghalaya' },
+];
 
 /**
- * Pull a court restriction out of a natural-language query.
+ * Tribunals, which are named without the words "High Court".
  *
- * "case law from Karnataka High Court" used to be sent to Kanoon verbatim,
- * where it is just relevance text - so the search happily returned Delhi and
- * Bombay judgments and the advocate's one explicit constraint was the only part
- * of the question ignored.
+ * Their acronyms are distinctive enough to stand alone, which the state names
+ * above are not: "the Karnataka Excise Act" must not restrict a search to the
+ * Karnataka High Court, but nobody writes "ITAT" meaning anything else. Where
+ * an acronym is also an ordinary word - "sat", "cat" - only the full name is
+ * accepted.
+ */
+const TRIBUNALS: CourtEntry[] = [
+  { names: ['itat', 'income tax appellate tribunal'], slug: 'itat' },
+  { names: ['ngt', 'national green tribunal', 'green tribunal'], slug: 'greentribunal' },
+  { names: ['cestat', 'cegat', 'customs excise and service tax appellate tribunal'], slug: 'cegat' },
+  { names: ['central administrative tribunal'], slug: 'cat' },
+  { names: ['aptel', 'appellate tribunal for electricity'], slug: 'aptel' },
+  { names: ['drat', 'debts recovery appellate tribunal'], slug: 'drat' },
+  { names: ['securities appellate tribunal'], slug: 'sebisat' },
+  { names: ['tdsat'], slug: 'tdsat' },
+  { names: ['competition commission of india', 'competition commission'], slug: 'cci' },
+  { names: ['central information commission'], slug: 'cic' },
+  { names: ['ncdrc', 'consumer commission', 'consumer forum', 'consumer court'], slug: 'consumer' },
+  { names: ['cerc', 'central electricity regulatory commission'], slug: 'cerc' },
+  { names: ['ipab', 'intellectual property appellate board'], slug: 'ipab' },
+  { names: ['company law board'], slug: 'clb' },
+  { names: ['copyright board'], slug: 'copyrightboard' },
+  { names: ['mrtp commission', 'mrtpc'], slug: 'mrtp' },
+];
+
+/** A name as a word-bounded, whitespace-tolerant pattern source. */
+function namePattern(name: string): string {
+  return name
+    .split(/\s+/)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('\\s+');
+}
+
+/**
+ * The first position at which any of an entry's names occurs, or -1.
  *
- * Only fires when the query actually names a court: matching a bare state name
- * would restrict "bail under the Karnataka Excise Act" to Karnataka judgments,
- * which is a different question from the one asked.
+ * `(?![a-z])` rather than a closing `\b`, because "j&k" ends in a letter but
+ * "punjab & haryana" contains a character `\b` does not treat as a word edge.
+ */
+function firstIndex(text: string, entry: CourtEntry, suffix = ''): number {
+  let best = -1;
+  for (const name of entry.names) {
+    const match = new RegExp(`(?<![a-z])${namePattern(name)}(?![a-z])${suffix}`).exec(text);
+    if (match && (best === -1 || match.index < best)) best = match.index;
+  }
+  return best;
+}
+
+/**
+ * The doctypes restriction for the court named in a question, or null.
+ *
+ * ## The order of preference, and the bug each step closes
+ *
+ * 1. **A tribunal, by name.** Distinctive without the words "High Court".
+ *
+ * 2. **All High Courts** - "high courts" in the plural means every one of them,
+ *    and Kanoon has an aggregate for exactly that.
+ *
+ * 3. **The name next to "High Court".** This used to take the first name in the
+ *    table that appeared anywhere in the question, so table order decided the
+ *    court: "Karnataka High Court on a Delhi company" returned Delhi, because
+ *    Delhi is listed first. The name that qualifies the court is the one
+ *    directly before "High Court" or "HC", or directly after "High Court of".
+ *
+ * 4. **Any name, if a court is named at all.** "Judgments of the High Court,
+ *    Patna" puts the name after the court.
+ *
+ * A court still has to be named as a court for a state to count: "bail under
+ * the Karnataka Excise Act" restricts nothing.
+ *
+ * There is no bare "sc" any more. It was in the table and it matched the SC in
+ * "SC/ST Act" - the Scheduled Castes and Tribes (Prevention of Atrocities) Act,
+ * which is one of the most litigated statutes in the country - so a question
+ * about SC/ST Act judgments in the Patna High Court was restricted to the
+ * Supreme Court.
  */
 export function courtFilter(query: string): string | null {
-  const lower = query.toLowerCase();
+  const text = query.toLowerCase();
 
-  // The court has to be *named as a court*, not merely mentioned.
-  if (!/\b(high\s+court|supreme\s+court|hc\b)/.test(lower)) return null;
+  // 1. Tribunals.
+  const tribunal = TRIBUNALS.map((entry) => ({ entry, at: firstIndex(text, entry) }))
+    .filter((hit) => hit.at >= 0)
+    .sort((a, b) => a.at - b.at)[0];
+  if (tribunal) return tribunal.entry.slug;
 
-  for (const [needle, slug] of Object.entries(COURT_SLUGS)) {
-    // Word-boundary matched so "sc" does not fire inside "prescription".
-    if (new RegExp(`\\b${needle.replace(/\s+/g, '\\s+')}\\b`).test(lower)) {
-      return slug;
-    }
-  }
-  return null;
+  // 2. Every High Court.
+  if (/\b(?:all\s+(?:the\s+)?)?high\s+courts\b/.test(text)) return 'highcourts';
+
+  const namesCourt = /\b(high\s+court|hc|supreme\s+court|apex\s+court)\b/.test(text);
+  if (!namesCourt) return null;
+
+  // 3. The name that qualifies "High Court" - before it, or after "High Court of".
+  const adjacent = HIGH_COURTS.map((entry) => {
+    const before = firstIndex(text, entry, '\\s+(?:high\\s+court|hc)\\b');
+    const after = new RegExp(
+      `high\\s+court\\s+(?:of|at|,)\\s+(?:the\\s+state\\s+of\\s+)?(?:${entry.names.map(namePattern).join('|')})(?![a-z])`,
+    ).exec(text);
+    const at = [before, after ? after.index : -1].filter((i) => i >= 0);
+    return { entry, at: at.length ? Math.min(...at) : -1 };
+  })
+    .filter((hit) => hit.at >= 0)
+    .sort((a, b) => a.at - b.at);
+  if (adjacent.length > 0) return adjacent[0].entry.slug;
+
+  // The Supreme Court is named by its own words, never by a state.
+  if (/\b(supreme|apex)\s+court\b/.test(text)) return 'supremecourt';
+
+  // 4. A court is named and a state appears somewhere near it.
+  const anywhere = HIGH_COURTS.map((entry) => ({ entry, at: firstIndex(text, entry) }))
+    .filter((hit) => hit.at >= 0)
+    .sort((a, b) => a.at - b.at)[0];
+  return anywhere ? anywhere.entry.slug : null;
 }
 
 /**
