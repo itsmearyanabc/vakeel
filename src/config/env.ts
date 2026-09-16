@@ -334,12 +334,14 @@ const envSchema = z.object({
    * that window locks out every existing account and every new signup, with no
    * way through, because the codes that would open it cannot be sent yet.
    *
-   * Defaults to on. It is a deployment sequencing tool, not a feature toggle -
-   * turn it on once a real code has arrived on a real handset.
+   * Defaults to OFF, and that default is load-bearing rather than cautious.
+   * Signup no longer sends a code at all (see AuthController.signUp), so an
+   * enforced gate with nothing issuing codes locks out every new account by
+   * construction. Turn it on only together with a verification step that runs.
    */
   PHONE_VERIFICATION_REQUIRED: z
     .enum(['true', 'false'])
-    .default('true')
+    .default('false')
     .transform((v) => v === 'true'),
 
   // --- Google sign-in -------------------------------------------------------

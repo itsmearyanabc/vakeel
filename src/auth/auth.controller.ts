@@ -120,20 +120,27 @@ export class AuthController {
     );
 
     /*
-     * Awaited, not fired and forgotten.
+     * No code is sent, and none is required.
      *
-     * The account now exists but cannot be used until the number is proven, so
-     * a delivery failure is not a background inconvenience - it is the user
-     * staring at a code entry box that no code will ever arrive for. Waiting
-     * lets the response say so, and `start` returns a reason rather than
-     * throwing, so a failure here never rolls back a good signup.
+     * Signing up used to start a WhatsApp verification here and drop the new
+     * advocate on a code-entry screen. Two things were wrong with that, and the
+     * second is the worse one.
+     *
+     * The code often never arrived: delivery needs a Meta-approved template and
+     * a working WhatsApp configuration, and when either is missing the person
+     * sits in front of a box nothing will ever fill. That is the reported
+     * "code is not getting generated for new user".
+     *
+     * And completeSignIn below had already set the session cookie - so they
+     * were signed in while being told they had to verify. The screen said one
+     * thing and the cookie said another, which is the reported "it logs in even
+     * after saying that".
+     *
+     * Proving the number is still available and is still what links an account
+     * to WhatsApp; the endpoints are untouched. It is no longer the price of
+     * getting in the door.
      */
-    const delivery = await this.phones.start(session.user, body?.phoneNumber ?? '');
-
-    return {
-      ...(await this.completeSignIn(session, reply)),
-      verification: this.deliveryView(delivery),
-    };
+    return this.completeSignIn(session, reply);
   }
 
   @Post('api/auth/login')

@@ -124,11 +124,22 @@ describe('query expansion', () => {
   });
 
   it('bounds how much it adds', () => {
-    // Unbounded expansion drowns the lexical arm of the hybrid search in noise.
-    // Terms are multi-word phrases, so this asserts the overall growth is
-    // bounded rather than counting words.
+    /*
+     * Unbounded expansion drowns the lexical arm of the hybrid search in noise.
+     * The real cap is on the number of terms - six - and this stands in for it,
+     * because the terms are multi-word phrases and counting words is worse.
+     *
+     * The bound was `query.length * 3` and moved when the act synonym groups
+     * were split apart. Before, a query naming the IPC could spend one of its
+     * six terms on "bns"; now that BNS is its own act rather than an IPC
+     * synonym, the same slot goes to "code of criminal procedure". Six terms
+     * either way - longer ones. Expressed against the cap now, rather than as a
+     * multiple of the query, so it does not move again for the same reason.
+     */
     const query = 'bail fir ipc crpc quash acquittal ndps maintenance';
-    expect(expandQuery(query).length).toBeLessThan(query.length * 3);
+    const longestLegalPhrase = 40;
+
+    expect(expandQuery(query).length).toBeLessThan(query.length + 6 * longestLegalPhrase);
   });
 
   it('honours an explicit term cap', () => {

@@ -118,7 +118,13 @@ export class RagService {
       return this.answerGeneral(intent, started, history, onStage);
     }
 
-    const system = buildSectionExplanationPrompt(statutes, intent.language);
+    // describeProvision is the same phrasing the unverified-provision path uses
+    // above, so the two answers name a provision the same way.
+    const system = buildSectionExplanationPrompt(
+      statutes,
+      intent.language,
+      describeProvision(intent),
+    );
     return this.generate(system, intent, [], statutes, started, history, onStage);
   }
 

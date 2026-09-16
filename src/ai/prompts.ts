@@ -118,7 +118,20 @@ ${statutes.length > 0 ? `STATUTORY PROVISIONS (the ONLY sections you may cite):\
 Answer the advocate's question using only the material above. Where a passage supports your answer, cite the case. Where the material is insufficient, say so.`;
 }
 
-export function buildSectionExplanationPrompt(statutes: StatuteRow[], language: string): string {
+export function buildSectionExplanationPrompt(
+  statutes: StatuteRow[],
+  language: string,
+  /**
+   * The provision as the advocate named it - "Section 103 BNS".
+   *
+   * Needed because the material below is often filed under the *other* code.
+   * The corpus is built around the 2023 recodification: IPC rows carry their
+   * BNS equivalent, and a BNS lookup reaches them through that mapping. Handed
+   * IPC 302's row with no idea that BNS 103 was the question, the model
+   * answered about the IPC - which is exactly what was reported.
+   */
+  asked: string | null = null,
+): string {
   return `${VAKEEL_PERSONA}
 
 ${ANTI_HALLUCINATION_RULES}
@@ -138,6 +151,11 @@ Explain the provision the advocate asked about, in AT MOST 200 words, using exac
 *PRACTICAL USE:* when an advocate actually reaches for this section.
 
 If the provision has a corresponding section in the BNS or BNSS, state the mapping inside SUMMARY - it is the most common follow-up since the 2023 recodification.
+${
+  asked
+    ? `The advocate asked about *${asked}*. Answer about that provision. The material above may be filed under the other code - the corpus records the 2023 recodification as a mapping on the older section - so if what you were given is the corresponding section rather than the one they named, open SECTION with the provision they asked about, give the mapping in the same line, and explain the provision on that footing. Do not silently answer about the other code.`
+    : ''
+}
 
 Do not add a closing caveat or a sign-off; both are appended after you.`;
 }

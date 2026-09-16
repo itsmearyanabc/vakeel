@@ -327,8 +327,25 @@ export function extractStatuteRefs(text: string): string[] {
 const SYNONYM_GROUPS: string[][] = [
   ['bail', 'interim bail', 'anticipatory bail', 'regular bail'],
   ['fir', 'first information report'],
-  ['ipc', 'indian penal code', 'bns', 'bharatiya nyaya sanhita'],
-  ['crpc', 'code of criminal procedure', 'bnss', 'bharatiya nagarik suraksha sanhita'],
+  /*
+   * One group per act, deliberately - these used to be two groups of four,
+   * pairing each old code with the one that replaced it.
+   *
+   * That treats "IPC" and "BNS" as synonyms, and they are not: they are two
+   * different statutes, and the whole point of naming one is to exclude the
+   * other. Asking about BNS 103 had "ipc" and "indian penal code" appended to
+   * the lexical query, which then outranked everything - the corpus is almost
+   * entirely IPC - and the answer came back about the IPC. The reported
+   * symptom was "not able to search BNS, still talking about IPC".
+   *
+   * The correspondence between them is real and is not a synonym relationship.
+   * It lives on the row, in corresponding_act/corresponding_section, and
+   * migration 0017 is what searches it.
+   */
+  ['ipc', 'indian penal code'],
+  ['bns', 'bharatiya nyaya sanhita'],
+  ['crpc', 'code of criminal procedure'],
+  ['bnss', 'bharatiya nagarik suraksha sanhita'],
   ['quash', 'quashing', 'quashment'],
   ['acquittal', 'acquitted', 'acquit'],
   ['conviction', 'convicted', 'convict'],

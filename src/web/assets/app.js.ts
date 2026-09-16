@@ -233,15 +233,19 @@ function renderAuth() {
         payload.phoneNumber = $('#f-phoneNumber').value.trim();
       }
 
-      const result = await post(signup ? '/api/auth/signup' : '/api/auth/login', payload);
+      await post(signup ? '/api/auth/signup' : '/api/auth/login', payload);
 
-      // Signing up leaves the account behind the verification gate, so it goes
-      // to the code screen rather than into the app. The session cookie is
-      // already set - that is what lets the verify call authenticate.
-      if (signup) return renderVerifyPhone(result && result.verification);
-
-      // The session cookie is set by the response above; everything the app
-      // needs comes from one place so the two entry paths cannot diverge again.
+      /*
+       * Both paths enter the app the same way.
+       *
+       * Signing up used to divert to a code-entry screen, for a code signup no
+       * longer sends - while the session cookie in that same response had
+       * already signed the advocate in. The screen said "verify to continue"
+       * and the cookie said "you are in".
+       *
+       * The session cookie is set by the response above; everything the app
+       * needs comes from one place so the two entry paths cannot diverge again.
+       */
       await loadSession();
       await enterApp();
     } catch (err) {

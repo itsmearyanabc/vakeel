@@ -108,9 +108,33 @@ export function kanoonQuery(intent: ClassifiedIntent): string {
   if (name) return namedCaseQuery(name);
 
   const provision = provisionPhrase(intent);
-  if (provision) return provision;
+  if (provision) return withCourt(provision, intent.rawText);
 
   return intent.searchQuery;
+}
+
+/**
+ * Keep the court the advocate named, as a restriction rather than as words.
+ *
+ * ## The bug this closes, which is the same one twice
+ *
+ * "Karnataka high court results for 397 IPC" was answered with judgments from
+ * everywhere. Narrowing the query to the provision - `"Section 397" "Indian
+ * Penal Code"` - threw away every other word in the question, and one of those
+ * words was the only constraint the advocate actually stated.
+ *
+ * A cause-title search had exactly this fault and was fixed by resolving the
+ * court to a `doctypes:` slug; the provision branch was not given the same
+ * treatment. It is the same fix: the court restricts the search without
+ * competing with the provision for relevance, since every judgment of a court
+ * contains that court's name.
+ *
+ * applyCourtFilter finds no "high court" phrase in what comes back, so nothing
+ * is appended twice.
+ */
+function withCourt(query: string, typed: string): string {
+  const slug = courtFilter(typed);
+  return slug ? `${query} doctypes:${slug}` : query;
 }
 
 /**
