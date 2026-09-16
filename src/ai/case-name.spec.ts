@@ -218,7 +218,7 @@ describe('what actually gets sent to Indian Kanoon', () => {
       kanoonQuery(
         intent({ rawText: 'case law for Rajesh Kumar Mittal vs State of Bihar', searchQuery: 'rewritten' }),
       ),
-    ).toBe('Rajesh Kumar Mittal State of Bihar');
+    ).toBe('title: Rajesh Kumar Mittal State of Bihar');
   });
 
   it('narrows by court with the operator, never with the court name', () => {
@@ -245,13 +245,13 @@ describe('what actually gets sent to Indian Kanoon', () => {
           searchQuery: 'x',
         }),
       ),
-    ).toBe('Rajesh Kumar Mittal State of Bihar doctypes:patna');
+    ).toBe('doctypes:patna title: Rajesh Kumar Mittal State of Bihar');
   });
 
   it('sends the parties alone when no court was named', () => {
     expect(extractCaseName('Vishaka vs State of Rajasthan')?.court).toBeUndefined();
     expect(kanoonQuery(intent({ rawText: 'Vishaka vs State of Rajasthan' }))).toBe(
-      'Vishaka State of Rajasthan',
+      'title: Vishaka State of Rajasthan',
     );
   });
 
@@ -346,7 +346,7 @@ describe('searching for a provision', () => {
           actCode: 'CPC',
         }),
       ),
-    ).toBe('Rajesh Kumar Mittal State of Bihar');
+    ).toBe('title: Rajesh Kumar Mittal State of Bihar');
   });
 });
 

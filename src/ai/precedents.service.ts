@@ -13,7 +13,7 @@ import { CAVEAT, RETURN_TO_MENU } from '../whatsapp/replies';
 import { EmbeddingService } from './embedding.service';
 import { ClassifiedIntent } from './intent.service';
 import { CASE_NAME_MATCH, CaseName, caseNameScore, extractCaseName } from './case-name';
-import { expandQuery } from './legal-patterns';
+import { expandQuery, extractCitations } from './legal-patterns';
 import { buildCaseSummaryPrompt, buildPrincipleSummaryPrompt } from './prompts';
 import { parseJsonLoose } from './providers/llm-provider.interface';
 import { ProviderRegistry } from './providers/provider.registry';
@@ -80,89 +80,68 @@ function display(name: CaseName): string {
 }
 
 /**
- * What Indian Kanoon is actually asked.
+ * Every query worth sending to Indian Kanoon for this question, most specific
+ * first.
  *
- * ## Why a named case is not searched with the question around it
+ * ## Why a list, and why these operators
  *
- * Kanoon ranks by relevance over every word it is given. Handed "case law for
- * Rajesh Kumar Mittal vs State of Bihar in Patna High Court" - which is what
- * the router's rewrite produces - it is scoring "case", "law", "for", "in" and
- * "court" alongside the two things that identify the judgment. The signal is a
- * third of the string and the noise is the rest, and the case does not surface
- * even when Kanoon plainly has it.
+ * Kanoon's search API documents operators inside `formInput` for exactly the
+ * lookups advocates make, and this used to use none of them:
  *
- * When a cause title has been recognised, the parties are the query. Nothing
- * else in the sentence narrows anything.
+ *   title:  "a document will match only if those words and phrases are present
+ *            in the title of the document"
+ *   cite:   "restrict search to only documents that have a specific citation"
  *
- * The court comes along because it is the one remaining word that does narrow
- * something: Kanoon's `doctypes:` restriction is derived from phrases like
- * "Patna High Court", and applyCourtFilter needs to see them to add it. Drop
- * them and a High Court lookup silently becomes a search of everything.
+ * A named case was searched as free text over the parties, which ranks every
+ * judgment mentioning those words - so the case asked for competed with every
+ * other judgment against the same State. `title:` asks the question that was
+ * actually put: which document is *titled* this. A pasted citation was searched
+ * the same way, and `cite:` is the documented form for it.
  *
- * Anything that is not a cause title keeps the rewrite, which is what it is
- * for: "anticipatory bail after chargesheet" is better searched in the model's
- * legal vocabulary than in the advocate's.
+ * Each operator narrows, and a narrowing that matches nothing - a misspelled
+ * party, a citation Kanoon formats differently - must not become "no authority
+ * found". So each specific attempt is followed by a broader one, and the search
+ * stops at the first that answers the question.
+ *
+ * The court restriction is written before `title:` rather than after it. The
+ * documented operators run to the next operator, and a title operand followed by
+ * `doctypes:patna` could otherwise be read as a title containing "doctypes".
  */
-export function kanoonQuery(intent: ClassifiedIntent): string {
+export function kanoonQueries(intent: ClassifiedIntent): string[] {
+  const court = courtFilter(intent.rawText);
+
+  // 1. A citation the advocate pasted. Unique on its own, so no court scope.
+  const citation = extractCitations(intent.rawText)[0];
+  if (citation) return unique([`cite: ${citation}`, intent.searchQuery]);
+
+  // 2. A named case.
   const name = extractCaseName(intent.rawText);
-  if (name) return namedCaseQuery(name);
+  if (name) {
+    const parties = `${name.petitioner} ${name.respondent}`;
+    const scope = (name.court ? courtFilter(name.court) : null) ?? court;
+    return unique([
+      scope ? `doctypes:${scope} title: ${parties}` : `title: ${parties}`,
+      scope ? `${parties} doctypes:${scope}` : parties,
+      parties,
+    ]);
+  }
 
+  // 3. A provision, kept to the court the advocate named.
   const provision = provisionPhrase(intent);
-  if (provision) return withCourt(provision, intent.rawText);
+  if (provision) {
+    return unique([court ? `${provision} doctypes:${court}` : provision, intent.searchQuery]);
+  }
 
-  return intent.searchQuery;
+  return [intent.searchQuery];
 }
 
-/**
- * Keep the court the advocate named, as a restriction rather than as words.
- *
- * ## The bug this closes, which is the same one twice
- *
- * "Karnataka high court results for 397 IPC" was answered with judgments from
- * everywhere. Narrowing the query to the provision - `"Section 397" "Indian
- * Penal Code"` - threw away every other word in the question, and one of those
- * words was the only constraint the advocate actually stated.
- *
- * A cause-title search had exactly this fault and was fixed by resolving the
- * court to a `doctypes:` slug; the provision branch was not given the same
- * treatment. It is the same fix: the court restricts the search without
- * competing with the provision for relevance, since every judgment of a court
- * contains that court's name.
- *
- * applyCourtFilter finds no "high court" phrase in what comes back, so nothing
- * is appended twice.
- */
-function withCourt(query: string, typed: string): string {
-  const slug = courtFilter(typed);
-  return slug ? `${query} doctypes:${slug}` : query;
+/** The first attempt - what Kanoon is asked before any fallback. */
+export function kanoonQuery(intent: ClassifiedIntent): string {
+  return kanoonQueries(intent)[0];
 }
 
-/**
- * The parties, and the court as a filter rather than as words to match.
- *
- * ## Why the court's name cannot be left in the query
- *
- * It was, so that applyCourtFilter could see "Patna High Court" and add its
- * `doctypes:` restriction - and that put three tokens into the relevance text
- * which every judgment of that court also contains. Searching a Patna-only
- * result set for "Patna High court" scores nothing and crowds out the two words
- * that identify the case.
- *
- * The measured difference, on the same judgment:
- *
- *   "Rajesh Kumar Mittal State Of Bihar"                       -> found
- *   "Rajesh Kumar Mittal State of Bihar Patna High court ..."  -> not in ten
- *
- * So the slug is resolved here and appended as the operator alone. The court
- * still narrows the search; it just stops competing with the parties for rank.
- *
- * applyCourtFilter sees no "high court" phrase in what comes back and adds
- * nothing further, so the restriction is not applied twice.
- */
-function namedCaseQuery(name: CaseName): string {
-  const parties = `${name.petitioner} ${name.respondent}`;
-  const slug = name.court ? courtFilter(name.court) : null;
-  return slug ? `${parties} doctypes:${slug}` : parties;
+function unique(queries: string[]): string[] {
+  return queries.filter((query, index) => query && queries.indexOf(query) === index);
 }
 
 /**
@@ -356,60 +335,59 @@ export class PrecedentsService {
   }
 
   /**
-   * Kanoon, asked the narrow question first and the broad one only if needed.
+   * Try each query in turn and stop at the first that answers the question.
    *
-   * The narrowed query is a phrase match - `"Order 32" "Civil Procedure"` - and
-   * phrase syntax is the one part of this that cannot be verified from here
-   * without an API key. If Kanoon does not honour the quotes, or the phrase
-   * genuinely appears in nothing it indexes, the result is zero rows, and zero
-   * rows reads to the advocate as "there is no authority on this" - which is a
-   * far worse answer than the loose one it replaced.
+   * "Answers" depends on the question. For a named case it means a result whose
+   * title is that case - ten results that are all somebody else is not an
+   * answer, however many there are. For anything else, any result at all.
    *
-   * So the broad query stays as a fallback. It costs one extra billed call, and
-   * only on a search that would otherwise have returned nothing at all.
+   * ## What happens when an attempt fails
+   *
+   * An attempt that throws is skipped, not fatal. The operators are documented
+   * but a malformed operand is still a failed call, and one bad attempt must not
+   * cost the advocate the broader search behind it. Only when every attempt
+   * throws is the error surfaced - which is what lets the `auto` source fall back
+   * to the local corpus, and lets a charge be refunded.
+   *
+   * When nothing answers, the narrowest non-empty result set is returned as the
+   * near misses: they came from the most specific question, so they are the
+   * closest to what was asked.
+   *
+   * Cost: a hit on the first attempt is one call, as before. Only a miss pays
+   * for the broader ones.
    */
   private async searchKanoon(intent: ClassifiedIntent): Promise<PrecedentRow[]> {
-    const narrow = kanoonQuery(intent);
-    const rows = await this.kanoon.search(narrow, this.maxResults);
-
-    /*
-     * A named case that ten results did not contain is not yet a missing case.
-     *
-     * "No judgment found named ..." is a strong thing to tell an advocate, and
-     * the first attempt is the narrow one - parties plus a court restriction.
-     * Either half can hide a judgment that is really there: the court may be
-     * misremembered, or filed under a bench Kanoon slugs differently. Dropping
-     * the restriction and asking for the parties alone costs one call and is
-     * the difference between "not in this court" and "not anywhere".
-     *
-     * Only on a miss, so an ordinary hit still costs exactly one search.
-     */
+    const attempts = kanoonQueries(intent);
     const name = extractCaseName(intent.rawText);
-    if (name) {
-      const hit = (candidates: PrecedentRow[]): boolean =>
-        candidates.some((row) => caseNameScore(name, row.case_title) >= CASE_NAME_MATCH);
 
-      const parties = `${name.petitioner} ${name.respondent}`;
-      if (!hit(rows) && parties !== narrow) {
+    const answers = (rows: PrecedentRow[]): boolean =>
+      name
+        ? rows.some((row) => caseNameScore(name, row.case_title) >= CASE_NAME_MATCH)
+        : rows.length > 0;
+
+    let nearest: PrecedentRow[] = [];
+    let failures = 0;
+    let lastError: unknown = null;
+
+    for (const query of attempts) {
+      try {
+        const rows = await this.kanoon.search(query, this.maxResults);
+        if (answers(rows)) return rows;
+        if (nearest.length === 0) nearest = rows;
+
         this.logger.info(
-          { narrow, retry: parties },
-          'Named case not in the narrowed results - retrying without the court restriction',
+          { query, results: rows.length, named: Boolean(name) },
+          'Kanoon attempt did not answer the question - trying the next',
         );
-        const wider = await this.kanoon.search(parties, this.maxResults);
-        // The wider set replaces the narrow one only if it actually found the
-        // case. Otherwise the narrow results are the better near misses.
-        if (hit(wider)) return wider;
+      } catch (err) {
+        failures += 1;
+        lastError = err;
+        this.logger.warn({ err, query }, 'Kanoon attempt failed - trying the next');
       }
-      return rows;
     }
 
-    if (rows.length > 0 || narrow === intent.searchQuery) return rows;
-
-    this.logger.info(
-      { narrow, falling_back_to: intent.searchQuery },
-      'Narrowed Kanoon query matched nothing - retrying with the rewritten question',
-    );
-    return this.kanoon.search(intent.searchQuery, this.maxResults);
+    if (failures === attempts.length) throw lastError;
+    return nearest;
   }
 
   /**

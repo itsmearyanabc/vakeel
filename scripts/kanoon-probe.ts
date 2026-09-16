@@ -19,6 +19,7 @@
  *   npx ts-node -r tsconfig-paths/register scripts/kanoon-probe.ts
  *   npx ts-node -r tsconfig-paths/register scripts/kanoon-probe.ts "your query"
  *   npx ts-node -r tsconfig-paths/register scripts/kanoon-probe.ts --tid 257876
+ *   npx ts-node -r tsconfig-paths/register scripts/kanoon-probe.ts --operators
  *
  * ## What the second version looks for
  *
@@ -89,10 +90,53 @@ async function call(path: string): Promise<Record<string, unknown>> {
   return (await response.json()) as Record<string, unknown>;
 }
 
+/**
+ * Confirm the documented search operators against the live API.
+ *
+ * `title:` and `cite:` are documented, and the app now leads with them - but a
+ * documented syntax the account rejects would fail every search that uses it,
+ * and enough failures would open the circuit breaker for all searches. So they
+ * are checked here, on the real key, before anything relies on them.
+ *
+ * Four billed searches. Each prints how many documents matched and the first
+ * three titles, which is enough to see whether the operator narrowed.
+ */
+async function probeOperators(): Promise<void> {
+  const queries = [
+    'title: Kesavananda Bharati',
+    'doctypes:patna title: Rajesh Kumar Mittal State of Bihar',
+    'cite: AIR 1973 SUPREME COURT 1461',
+    'cite: 1973 AIR',
+  ];
+
+  for (const query of queries) {
+    try {
+      const result = await call(`/search/?formInput=${encodeURIComponent(query)}&pagenum=0`);
+      const docs = (result.docs as Record<string, unknown>[] | undefined) ?? [];
+      console.log(`
+=== ${query} ===`);
+      console.log(`found: ${preview(result.found)}   docs: ${docs.length}`);
+      for (const doc of docs.slice(0, 3)) {
+        console.log(`  - ${preview(doc.title, 110)}  [${preview(doc.citation ?? 'no citation', 60)}]`);
+      }
+      if (result.error || result.errmsg) console.log(`  ERROR: ${preview(result.errmsg ?? result.error)}`);
+    } catch (err) {
+      console.log(`
+=== ${query} ===
+FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   if (!KEY) throw new Error('KANOON_API_KEY is not set in .env');
 
   console.log(`base:  ${BASE}`);
+
+  if (process.argv.includes('--operators')) {
+    await probeOperators();
+    return;
+  }
 
   let tid: unknown = TID;
   if (!tid) {

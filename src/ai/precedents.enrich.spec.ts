@@ -277,3 +277,98 @@ describe('which rows get the document fetched', () => {
     expect(fetched).toEqual([1, 2, 3, 4, 5]);
   });
 });
+
+describe('the documented search operators, and falling back from them', () => {
+  /*
+   * A named case was searched as free text over the parties, so it competed
+   * with every judgment against the same State. Kanoon documents `title:` for
+   * exactly this lookup, and `cite:` for a pasted citation. Each narrows, so
+   * each is followed by a broader attempt - a narrowing that matches nothing
+   * must not become "no authority found".
+   */
+  function named(text: string) {
+    return { ...intent(text), rawText: text, searchQuery: text };
+  }
+
+  const mittal = kanoonRow({
+    judgment_id: 'kanoon:500',
+    case_title: 'Rajesh Kumar Mittal vs State Of Bihar',
+    court_name: 'Patna High Court',
+  });
+  const stranger = kanoonRow({
+    judgment_id: 'kanoon:501',
+    case_title: 'Atc Telecom Infrastructure Pvt Ltd vs The State Of Bihar',
+    court_name: 'Patna High Court',
+  });
+
+  it('asks for the title first, and stops there when it answers', async () => {
+    const { service, kanoon } = build();
+    kanoon.search.mockResolvedValue([mittal]);
+
+    await service.search(named('Rajesh Kumar Mittal vs State of Bihar in Patna High Court') as never);
+
+    expect(kanoon.search).toHaveBeenCalledTimes(1);
+    expect(kanoon.search.mock.calls[0][0]).toBe(
+      'doctypes:patna title: Rajesh Kumar Mittal State of Bihar',
+    );
+  });
+
+  it('falls back to the parties when the title search finds somebody else', async () => {
+    // Ten results that are all a different case are not an answer, however
+    // many there are.
+    const { service, kanoon } = build();
+    kanoon.search.mockImplementation(async (query: string) =>
+      query.startsWith('doctypes:patna title:') ? [stranger] : [mittal],
+    );
+
+    const result = await service.search(
+      named('Rajesh Kumar Mittal vs State of Bihar in Patna High Court') as never,
+    );
+
+    expect(kanoon.search).toHaveBeenCalledTimes(2);
+    expect(result.precedents[0].case_title).toBe('Rajesh Kumar Mittal vs State Of Bihar');
+  });
+
+  it('skips an attempt that throws instead of losing the whole search', async () => {
+    // A malformed operand is still a failed call, and it must not cost the
+    // advocate the broader search behind it.
+    const { service, kanoon } = build();
+    kanoon.search.mockImplementation(async (query: string) => {
+      if (query.includes('title:')) throw new Error('Indian Kanoon error: bad query');
+      return [mittal];
+    });
+
+    const result = await service.search(named('Rajesh Kumar Mittal vs State of Bihar') as never);
+
+    expect(result.precedents[0].case_title).toBe('Rajesh Kumar Mittal vs State Of Bihar');
+  });
+
+  it('surfaces the error only when every attempt failed', async () => {
+    // That is what lets a charge be refunded, and lets the auto source fall back.
+    const { service, kanoon } = build();
+    kanoon.search.mockRejectedValue(new Error('indian kanoon is down'));
+
+    await expect(
+      service.search(named('Rajesh Kumar Mittal vs State of Bihar') as never),
+    ).rejects.toThrow('indian kanoon is down');
+  });
+
+  it('returns the narrowest results as near misses when nothing answers', async () => {
+    const { service, kanoon } = build();
+    kanoon.search.mockResolvedValue([stranger]);
+
+    const result = await service.search(named('Rajesh Kumar Mittal vs State of Bihar') as never);
+
+    expect(result.namedCase).toEqual({ name: 'Rajesh Kumar Mittal vs State of Bihar', found: false });
+    expect(result.precedents[0].case_title).toContain('Atc Telecom');
+  });
+
+  it('uses cite: for a pasted citation', async () => {
+    const { service, kanoon } = build();
+    kanoon.search.mockResolvedValue([mittal]);
+
+    await service.search(named('AIR 1973 SC 1461') as never);
+
+    expect(kanoon.search.mock.calls[0][0]).toMatch(/^cite: AIR 1973 SC 1461/);
+  });
+});
